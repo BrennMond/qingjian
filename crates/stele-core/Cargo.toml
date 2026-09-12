@@ -1,0 +1,16 @@
+[package]
+name = "stele-core"
+description = "Stele-IME 的抽象层：Engine/Session、组件 trait、核心数据结构。零第三方依赖。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 本 crate **必须**保持零依赖（PLAN §1 D9）：
+# 它是供应链安全的锚点，也是"可纯 cargo test"的前提。
+[dependencies]
+
+[lints]
+workspace = true

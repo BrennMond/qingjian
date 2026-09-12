@@ -1,0 +1,8 @@
+# 统一格式。CI 上检查 `cargo fmt --check`（PLAN §4.8）。
+# 只启用 stable 上可用的选项，避免 nightly 依赖。
+
+edition = "2021"
+max_width = 100
+use_field_init_shorthand = true
+use_try_shorthand = true
+newline_style = "Unix"

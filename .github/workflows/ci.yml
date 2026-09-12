@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ── 门禁：把 PLAN 里的原则变成脚本，而不是靠自觉 ──────────────────────
+  gates:
+    name: 原则门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 内核里不得有输入法专属词汇（D20）
+        run: bash scripts/verify-no-ime-vocab.sh
+      - name: stele-core 必须零依赖（D9）
+        run: bash scripts/verify-zero-deps.sh
+      - name: 内核与方案数据必须分离（D20/D24）
+        run: bash scripts/verify-no-scheme-data.sh
+
+  # ── 格式、lint、测试 ──────────────────────────────────────────────
+  test:
+    name: 格式 / lint / 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 toolchain
+        run: |
+          rustup toolchain install 1.98 --profile minimal \
+            --component rustfmt,clippy
+          rustup default 1.98
+      - uses: Swatinem/rust-cache@v2
+      - name: 格式检查
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: 测试
+        run: cargo test --workspace
+      - name: 内核自检
+        run: cargo run -p stele-cli -- --check
+      - name: 称重台（记录，不作门槛）
+        run: cargo run -p stele-bench --release -- --iterations=20000 --json
+
+  # ── 交叉目标可编译性（P6/P7 的前置保障）───────────────────────────
+  cross-check:
+    name: 交叉目标 cargo check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装目标
+        run: |
+          rustup toolchain install 1.98 --profile minimal
+          rustup default 1.98
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      # 只检查内核：平台后端要到 P6/P7 才存在。
+      - name: cargo check（内核）
+        run: cargo check -p stele-core --target ${{ matrix.target }}
+        continue-on-error: true

@@ -1,0 +1,12 @@
+# 固定 toolchain 版本。
+#
+# 为什么需要它（PLAN §7）：没有固定版本，同一份代码在不同机器上编译出的
+# 结果可能不同，而我们的铁律第 2 条要求"同一输入永远逐字节相同"——
+# 这条铁律的验证（golden 测试）必须在可复现的构建上进行。
+#
+# 注意：本文件**只在安装了 rustup 时生效**。若用发行版/包管理器提供的 cargo，
+# 它会被忽略（见 PLAN §7 的 P0 待办）。
+[toolchain]
+channel = "1.98"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

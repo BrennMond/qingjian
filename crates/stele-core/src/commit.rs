@@ -1,0 +1,160 @@
+//! # Commit / Outcome
+//!
+//! 中文职责：上屏记录与按键处理结果。
+//! English role: the commit record and the per-key outcome.
+//! 架构位置：stele-core 的对外结果类型，`Session::process_key` 返回它。
+//!
+//! # 为什么不用 RIME 的写法
+//!
+//! RIME 是 `bool`（消费了没）+ 单独调用 `get_commit()`（**读取即清空**）。
+//! 两个危害：**漏读一次 = 文字永久丢失**；且布尔值不说"这一下上屏了什么"。
+//! 我们两端都是自己的代码，没有理由继承它——**上屏信息由返回值带出**。
+
+use crate::candidate::{Lane, Origin, SpellingAttr};
+
+/// 上屏的触发方式。
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Trigger {
+    /// 空格确认。
+    Space,
+    /// 回车确认。
+    Enter,
+    /// 标点自动上屏。
+    Punctuation,
+    /// 引擎自动上屏（如候选唯一）。
+    AutoCommit,
+    /// 显式选词。
+    Explicit,
+    /// 输入被放弃时部分上屏（如按 Esc 后把原始输入打出去）。
+    Fallback,
+}
+
+/// 一次上屏的完整记录。
+///
+/// `input` 与 `origin`/`attr` 是用户记忆能否实现的前提：
+/// 学习需要的三元组是 **(原始输入, 上屏文本, 来源)**。
+/// 旧设计的 `commit() -> Option<String>` 丢掉了其中两项。
+#[derive(Clone, Debug)]
+pub struct Commit {
+    /// 上屏的文本。
+    pub text: String,
+    /// 触发它的原始输入。
+    ///
+    /// **`Lane::Predict` 的候选上屏时这里是空字符串**（预测没有对应的当前输入），
+    /// 学习时必须改用 `context` 作为键（G10 / §4.3.1）。
+    pub input: String,
+    /// 上屏时的上下文（最近已上屏的词，最新的在末尾）。
+    pub context: Vec<String>,
+    /// 候选从哪来。
+    pub origin: Origin,
+    /// **学习时必须用它把 `input` 规范化成规范编码**（G10）。
+    pub attr: SpellingAttr,
+    /// 所属通道。
+    pub lane: Lane,
+    /// 触发方式。
+    pub trigger: Trigger,
+}
+
+/// 选中的来源——用于区分"键盘盲选"与"明确点选"。
+///
+/// 预测候选（`Lane::Predict`）**默认只允许后者**：用户会对
+/// `Lane::Input` 形成肌肉记忆（"敲 nihao 然后按 1"），
+/// 若预测候选也能被数字键选中且位置会变，这套肌肉记忆就崩了。
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum SelectionSource {
+    /// 键盘数字键 / 空格 —— 盲选，受肌肉记忆约束。
+    Keyboard,
+    /// 鼠标点击 / 触摸 —— 明确意图，可以选中预测候选。
+    Pointer,
+}
+
+/// `process_key` / `select` 的返回值。
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub enum Outcome {
+    /// 这个键我不处理，请前端还给操作系统。
+    Rejected,
+    /// 已处理，前端应重新读取状态并重绘。
+    Consumed,
+    /// 已处理并且上屏了。**上屏信息是返回值带出来的，前端不可能漏读。**
+    Committed(Commit),
+}
+
+/// 处理器之间的三态结果。
+///
+/// 与 [`Outcome`] 的区别：`Outcome` 是**会话对外**的结果（两态 + 上屏信息），
+/// 而 `ProcessResult` 是**处理器之间**的协商结果。三态在内部是有意义的：
+/// "还给系统"和"我不管、后面有人管"是不同的事。
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum ProcessResult {
+    /// 我不管，请走系统默认处理（例如 `Ctrl+C`）。
+    Rejected,
+    /// 我不管，但后面的处理器可能管。
+    Noop,
+    /// 我处理了。
+    Accepted,
+}
+
+/// 引擎侧异步事件。前端可以忽略。
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub enum Event {
+    /// 记录一次学习（用户记忆使用）。
+    Learned {
+        /// 原始输入（**未规范化**；接收方须按 `attr` 换算，见 G10）。
+        input: String,
+        /// 上屏文本。
+        text: String,
+        /// 候选来源。
+        origin: Origin,
+        /// 上屏时的通道。
+        lane: Lane,
+    },
+    /// 开关被引擎改动（例如自动切换到英文模式）。
+    OptionChanged {
+        /// 开关名。
+        name: String,
+        /// 新状态。
+        on: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_commit() -> Commit {
+        Commit {
+            text: "你好".into(),
+            input: "nihao".into(),
+            context: vec![],
+            origin: Origin::SystemWord,
+            attr: SpellingAttr::NORMAL,
+            lane: Lane::Input,
+            trigger: Trigger::Space,
+        }
+    }
+
+    #[test]
+    fn commit_carries_everything_learning_needs() {
+        let c = sample_commit();
+        // 学习需要的三元组：原始输入、上屏文本、来源。
+        assert!(!c.input.is_empty());
+        assert!(!c.text.is_empty());
+        assert_eq!(c.origin, Origin::SystemWord);
+        assert_eq!(c.attr, SpellingAttr::NORMAL);
+    }
+
+    #[test]
+    fn outcome_is_not_a_bool() {
+        // 上屏信息是返回值带出来的：前端不可能像"读取即清空"那样漏读。
+        let o = Outcome::Committed(sample_commit());
+        match o {
+            Outcome::Committed(c) => assert_eq!(c.text, "你好"),
+            _ => panic!("应当带上屏信息"),
+        }
+    }
+}

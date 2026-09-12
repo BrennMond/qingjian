@@ -1,0 +1,15 @@
+# Rust
+/target
+**/*.rs.bk
+
+# 调研用的 RIME 官方文档快照（.rime-wiki/）——体积小但非本项目代码，
+# 有意保留在 reference/ 里的结论即可，克隆目录不入库。
+/.rime-wiki/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 编译产物（stele 自己的）
+/schemes/**/build/
