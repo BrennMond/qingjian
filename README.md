@@ -9,7 +9,7 @@
 > **繁体不在我们适配的责任范围内**，但相关接口与配置项一律保留——
 > 需要繁体的人可以自行配置（见 `PLAN.md` D32）。
 
-**当前状态：P2.5 完成。词库编译成紧凑产物、按需分页读取——176 个测试通过。**
+**当前状态：P3 进行中。完整的 RIME 拼写代数已可用——199 个测试通过。**
 
 ```bash
 $ stele nihao                    # 拼音方案：规范拼写
@@ -63,7 +63,7 @@ $ stele --scheme-dir ./my-schemes mami
 stele/
 ├── crates/
 │   ├── stele-core/     # 抽象层：Engine/Session、组件 trait、数据结构（零依赖）
-│   ├── stele-engine/   # 原生引擎：拼写层、词库、两族翻译器、处理器、过滤器（零依赖）
+│   ├── stele-engine/   # 原生引擎：拼写代数（含自写正则）、词库、两族翻译器、处理器、过滤器（零依赖）
 │   ├── stele-config/   # YAML 子集解析、$ref 跨文件引用、分层补丁、可读诊断
 │   ├── stele-dict/     # .dict.yaml（头部 + TSV 正文 + import_tables）
 │   ├── stele-table/    # 词库编译产物：紧凑二进制 + 按需分页（零依赖、无 unsafe）

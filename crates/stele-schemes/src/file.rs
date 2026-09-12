@@ -197,7 +197,9 @@ fn load_scheme_with(
     }
 
     let mut rules: Vec<Rule> = Vec::new();
-    if let Some(rs) = speller.and_then(|s| s.get("rules")) {
+    // `algebra` 是 RIME 的叫法，`rules` 是我们的——两个都收。
+    let rules_node = speller.and_then(|s| s.get("rules").or_else(|| s.get("algebra")));
+    if let Some(rs) = rules_node {
         match rs.as_seq() {
             None => diags.push(
                 Diagnostic::new(path, "`speller.rules` 必须是列表").with_field("speller.rules"),
@@ -325,6 +327,15 @@ fn read_switch(item: &Node, path: &str, idx: usize) -> Result<Switch, Diagnostic
 }
 
 fn read_rule(item: &Node, path: &str, idx: usize) -> Result<Rule, Diagnostic> {
+    // RIME 的写法是一行字符串：`xform/^([nl])ue$/$1ve/`。
+    // **优先支持它**，因为真实方案的 `speller/algebra` 就是这么写的。
+    if let Some(spec) = item.as_str() {
+        return Rule::parse(&spec).map_err(|e| {
+            Diagnostic::new(path, format!("第 {idx} 条拼写运算有误：{e}"))
+                .with_field(format!("speller.rules[{idx}]"))
+                .with_entry(format!("第 {} 行", item.line))
+        });
+    }
     let Some(map) = item.as_map() else {
         return Err(Diagnostic::new(
             path,
@@ -370,7 +381,10 @@ fn read_rule(item: &Node, path: &str, idx: usize) -> Result<Rule, Diagnostic> {
                     .with_field(format!("speller.rules[{idx}].abbrev")));
                 }
             };
-            Ok(Rule::Abbrev { take, cost: c })
+            Rule::abbrev(take, c).map_err(|e| {
+                Diagnostic::new(path, format!("`abbrev` 参数有误：{e}"))
+                    .with_field(format!("speller.rules[{idx}].abbrev"))
+            })
         }
         "equivalence" => {
             let pairs_node = arg.get("pairs").ok_or_else(|| {
@@ -379,10 +393,7 @@ fn read_rule(item: &Node, path: &str, idx: usize) -> Result<Rule, Diagnostic> {
                     .with_entry("形如 `pairs: [[z, zh], [c, ch]]`")
             })?;
             let pairs = read_pairs(pairs_node, path, idx)?;
-            Ok(Rule::Equivalence {
-                pairs,
-                cost: cost(arg),
-            })
+            Ok(Rule::equivalence(&pairs, cost(arg)))
         }
         other => Err(Diagnostic::new(path, format!("不认识的拼写规则 `{other}`"))
             .with_field(format!("speller.rules[{idx}]"))
@@ -764,7 +775,13 @@ translator:
     fn abbrev_accepts_the_shorthand_form() {
         let text = GOOD.replace("abbrev: { take: 1, cost: 0.5 }", "abbrev: 2");
         let d = load_scheme(&text, "t", &dicts()).unwrap();
-        assert!(matches!(d.rules[0], Rule::Abbrev { take: 2, .. }));
+        // `abbrev: 2` 是语法糖，展开成一条带 ABBREV 属性的派生规则。
+        match &d.rules[0] {
+            Rule::Derive { attr, .. } => {
+                assert!(attr.contains(stele_core::SpellingAttr::ABBREV));
+            }
+            other => panic!("应当是带 ABBREV 属性的派生规则，得到 {other:?}"),
+        }
     }
 
     #[test]
@@ -774,9 +791,11 @@ translator:
             "    - equivalence: { pairs: [[z, zh]], cost: 1.0 }\n",
         );
         let d = load_scheme(&text, "t", &dicts()).unwrap();
+        // `[[z, zh]]` 取每对的首字符 → `('z','z')`，即"不变化"。
+        // 这里主要验证**解析路径**通：等价替换现在是一条带 FUZZY 属性的派生规则。
         match &d.rules[0] {
             Rule::Equivalence { pairs, .. } => assert_eq!(pairs, &[('z', 'z')]),
-            other => panic!("应当是 Equivalence，得到 {other:?}"),
+            other => panic!("应当是等价替换，得到 {other:?}"),
         }
     }
 }

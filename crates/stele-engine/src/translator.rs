@@ -272,10 +272,7 @@ mod tests {
         let a = alphabet(&["ni", "hao"]);
         let table = Arc::new(SpellingTable::compile(
             a.clone(),
-            &[Rule::Abbrev {
-                take: 1,
-                cost: Score::from_weight(0.5),
-            }],
+            &[Rule::abbrev(1, Score::from_weight(0.5)).unwrap()],
         ));
         let lex = Arc::new(
             InMemoryLexicon::from_entries(a, &[(vec!["ni", "hao"], "你好", 100.0)]).unwrap(),
