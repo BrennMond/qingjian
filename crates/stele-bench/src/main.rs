@@ -147,8 +147,8 @@ fn main() {
     // 每敲满一轮就 reset，使输入长度有界——否则测到的是"输入越来越长"的曲线，
     // 而不是单键成本。
     let t_load = Instant::now();
-    let engine =
-        stele_engine::EngineImpl::new(&stele_schemes_builtin::all()).expect("内置方案应当能编译");
+    let defs = stele_schemes::all().expect("内嵌方案必须能装载 —— 失败说明打包坏了");
+    let engine = stele_engine::EngineImpl::new(&defs).expect("默认方案应当能编译");
     let load_us = u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
 
     let mut session = engine.create_session();

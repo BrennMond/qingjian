@@ -1,6 +1,6 @@
 [package]
-name = "stele-schemes-builtin"
-description = "随引擎提供的最小方案（方案资产，不是内核的一部分）。"
+name = "stele-schemes"
+description = "随项目提供的默认方案：从 YAML 装载（方案资产，不是内核的一部分）。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,8 @@ authors.workspace = true
 [dependencies]
 stele-core = { path = "../stele-core" }
 stele-engine = { path = "../stele-engine" }
+stele-config = { path = "../stele-config" }
+stele-dict = { path = "../stele-dict" }
 
 [lints]
 workspace = true

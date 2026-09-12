@@ -8,7 +8,9 @@ resolver = "2"
 members = [
     "crates/stele-core",
     "crates/stele-engine",
-    "crates/stele-schemes-builtin",
+    "crates/stele-config",
+    "crates/stele-dict",
+    "crates/stele-schemes",
     "crates/stele-cli",
     "crates/stele-bench",
 ]

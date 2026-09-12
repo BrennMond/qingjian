@@ -72,25 +72,26 @@ impl InMemoryLexicon {
     /// 某个编码单元不在字母表里时返回 [`LexiconError::UnknownUnit`]。
     /// **这是一处加载期的响亮失败**：字母表与词库不一致，说明方案数据有错，
     /// 而不是"这个词查不到"。
-    pub fn from_entries(
+    pub fn from_entries<S: AsRef<str>, W: AsRef<str>>(
         alphabet: CodeAlphabet,
-        entries: &[(Vec<&str>, &str, f64)],
+        entries: &[(Vec<S>, W, f64)],
     ) -> Result<Self, LexiconError> {
         let mut map: BTreeMap<Vec<CodeUnitId>, Vec<Entry>> = BTreeMap::new();
 
         for (code_texts, word, weight) in entries {
             let mut code = Vec::with_capacity(code_texts.len());
             for t in code_texts {
+                let t = t.as_ref();
                 let Some(id) = alphabet.id_of(t) else {
                     return Err(LexiconError::UnknownUnit {
-                        unit: (*t).to_owned(),
-                        word: (*word).to_owned(),
+                        unit: t.to_owned(),
+                        word: word.as_ref().to_owned(),
                     });
                 };
                 code.push(id);
             }
             map.entry(code).or_default().push(Entry {
-                text: (*word).to_owned(),
+                text: word.as_ref().to_owned(),
                 score: Score::from_weight(*weight),
                 comment: None,
             });

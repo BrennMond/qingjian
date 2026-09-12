@@ -1,0 +1,79 @@
+# 石经・拼音（默认方案）
+#
+# 这是一份**方案资产**，不是内核的一部分（PLAN D24）。
+# 内核（stele-core / stele-engine）里不允许出现"拼音""音节"这类词汇——
+# 它们只出现在这里，以及解析这份文件的代码里。
+#
+# 文字形态：**简体**。繁体转换的开关保留在下面，但项目不维护繁体数据（D32）。
+
+schema:
+  schema_id: pinyin
+  name: 石经・拼音
+  version: "0.1.0"
+  family: stele-pinyin      # 同族方案共享用户词典（D29）
+
+# 开关全部由方案声明；**引擎不认识任何一个名字**（PLAN D20）。
+switches:
+  - name: ascii_mode
+    states: [中, Ａ]
+    reset: 0
+  - name: ascii_punct
+    states: [¥, $]
+    reset: 0
+  # 繁体转换：能力保留，数据自备（D32）。
+  - name: traditionalization
+    states: [简, 繁]
+    reset: 0
+
+engine:
+  # 分段标签 —— 翻译器按 tag 绑定（G3）。
+  tag: abc
+  # 用哪族翻译器。这里选"拼写图"：编码集合可枚举，因此能构造拼写 → 编码的映射。
+  translator: spelling_graph
+  candidate_cap: 200
+
+speller:
+  # 编码字母表：拼音方案下就是一个音节表。
+  # 每个编码单元在运行期会被编成一个整数编号，热路径上不再比较字符串。
+  alphabet:
+    - ni
+    - hao
+    - wo
+    - yao
+    - da
+    - zi
+    - shi
+    - jie
+    - zhong
+    - guo
+    - ren
+    - min
+    - de
+    - le
+    - bu
+    - ma
+    - he
+    - zhang
+    - san
+    - li
+    - hui
+    - shuo
+    - kan
+    - ting
+    - zuo
+    - chi
+    - shui
+    - hua
+    - lai
+    - qu
+    - xiang
+
+  # 拼写规则。**规范拼写永远是基线**，规则只在其上派生更多有效拼写。
+  #
+  # 下面这条就是"简拼"：每个音节取首字母，于是 `nh` 也能命中 `ni hao`。
+  # 引擎不知道它叫简拼，只知道这些边带 ABBREV 属性、代价是 ln(0.5)。
+  rules:
+    - abbrev: { take: 1, cost: 0.5 }
+
+translator:
+  dictionary: pinyin

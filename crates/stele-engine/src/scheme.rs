@@ -46,6 +46,7 @@ pub enum TranslatorKind {
 }
 
 /// 一份方案的声明（编译前的数据）。
+#[derive(Debug)]
 pub struct SchemeDef {
     /// 元数据。
     pub info: SchemaInfo,
@@ -58,11 +59,30 @@ pub struct SchemeDef {
     /// 拼写规则（[`TranslatorKind::ExactCode`] 时会忽略）。
     pub rules: Vec<Rule>,
     /// 词条：`(编码单元文本序列, 词, 权重)`。
-    pub entries: Vec<(Vec<&'static str>, &'static str, f64)>,
+    ///
+    /// **拥有 `String` 而非 `&'static str`**：方案数据现在是从文件读来的，
+    /// 生命周期在运行时。用 [`entry`] 可以少写一堆 `.to_owned()`。
+    pub entries: Vec<(Vec<String>, String, f64)>,
     /// 用哪族翻译器。
     pub translator: TranslatorKind,
     /// 候选总量上限。
     pub candidate_cap: usize,
+}
+
+/// 构造一个词条的便捷函数。
+///
+/// ```ignore
+/// entries: vec![
+///     entry(&["ni", "hao"], "你好", 10_000.0),
+/// ]
+/// ```
+#[must_use]
+pub fn entry(code: &[&str], word: &str, weight: f64) -> (Vec<String>, String, f64) {
+    (
+        code.iter().map(|s| (*s).to_owned()).collect(),
+        word.to_owned(),
+        weight,
+    )
 }
 
 impl SchemeDef {
@@ -93,7 +113,7 @@ impl SchemeDef {
                             format!("scheme:{}", self.info.schema_id),
                             format!("词条引用了字母表里没有的编码单元「{unit}」"),
                         )
-                        .with_entry((*word).to_owned()),
+                        .with_entry(word.clone()),
                     );
                 }
             }
@@ -278,7 +298,7 @@ mod tests {
             tag: "abc",
             alphabet: vec!["a".into(), "b".into()],
             rules: vec![],
-            entries: vec![(vec!["a", "b"], "十", 10.0)],
+            entries: vec![entry(&["a", "b"], "十", 10.0)],
             translator,
             candidate_cap: CANDIDATE_CAP,
         }
@@ -318,7 +338,7 @@ mod tests {
     #[test]
     fn inconsistent_scheme_data_fails_loudly_at_load() {
         let mut d = def(TranslatorKind::ExactCode);
-        d.entries.push((vec!["a", "z"], "坏词", 1.0)); // z 不在字母表里
+        d.entries.push(entry(&["a", "z"], "坏词", 1.0)); // z 不在字母表里
         let err = d.compile().unwrap_err();
         match err {
             SchemaError::Invalid { diagnostics, .. } => {

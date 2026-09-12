@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 stele-core = { path = "../stele-core" }
 stele-engine = { path = "../stele-engine" }
-stele-schemes-builtin = { path = "../stele-schemes-builtin" }
+stele-schemes = { path = "../stele-schemes" }
 
 # 可执行文件名与包名分开：用户敲的是 `stele`，不是 `stele-cli`。
 [[bin]]

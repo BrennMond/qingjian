@@ -451,13 +451,59 @@ rustc --version && cargo --version
 6. **测量尺子太粗。** 称重台最初用微秒，release 下所有数字都显示 `0µs`。
    **一把读数恒为 0 的尺子等于没有尺子**——已改为纳秒。
 
-### 下一步：P2
+### P2 已完成（实建记录）
 
-1. 装 rustup（**需你同意**：它会写 `~/.cargo` 与 `~/.rustup`，在工作区之外）。
-2. 实现 `stele-engine`：拼写代数（简版）→ 切分（DP，含变体拼写）→ 内存词库 → 候选 → 会话状态机。
-3. 自建小词库（`schemes/stele-default/` 下，数百条，格式照 `docs/engine-design.md`）。
-4. 跑通 `stele nihao` → 「你好」与 `stele nh` → 「你好」。
-5. 用 `stele-bench` 记录第一组**真实管线**的内存 / 延迟数字，回填 §0.2。
+**验收标准达成**：`stele --scheme-dir <目录>` **能加载自建的方案与词库并正常出候选**，
+且**不需要重新编译**。
+
+```bash
+$ stele --scheme-dir /tmp/myscheme --list
+demo           我的方案                       family=-
+$ stele --scheme-dir /tmp/myscheme mami
+猫咪
+$ stele --scheme-dir /tmp/myscheme mm      # 缩写规则同样生效
+猫咪
+```
+
+**新增 crate**
+
+| crate | 职责 | 依赖 |
+| --- | --- | --- |
+| `stele-config` | YAML 子集解析、`$ref` 跨文件引用、分层补丁、可读诊断 | 仅 `stele-core` |
+| `stele-dict` | `.dict.yaml`（YAML 头部 + TSV 正文 + `import_tables`） | `stele-config` |
+| `stele-schemes` | 方案装载；内嵌默认方案；目录装载 | 三者 + `stele-engine` |
+
+**新增数据资产**：`schemes/stele-default/`（`pinyin` / `shape` 两份方案 + 三份词库）。
+它们通过 `include_str!` **内嵌**，因此"文件是真身、二进制里是同一份"——
+**单一数据来源**；而且 `stele` 每次启动走的都是**真正的解析器**，
+不是一条"只有测试才会走"的旁路。**旁路从来不坏，也从来不证明什么。**
+
+**P2 过程中发现的问题**
+
+1. **装载器的响亮报错抓住了我自己的数据错误。** 词库里用了 `hua`，
+   但方案的 `alphabet` 里没有它——装载期直接报出
+   「词条引用了字母表里没有的编码单元「hua」」。
+   若在运行期静默跳过，症状会是"有的词永远打不出来"，极难排查。
+   **这条检查第一次真正运行就证明了价值。**
+2. **`SchemeDef` 原本用 `&'static str` 存词条与标签**，而方案现在是运行时读来的。
+   已改为拥有 `String`。**这正是"当时不改、以后就是重写"的那类改动。**
+3. **手写 YAML 子集解析器是对的**，理由具体到三条：RIME 的节点级指令
+   （`__include` / `__patch`）**在 serde 的数据模型里没有节点身份**；
+   我们需要行号来做诊断；map 的书写顺序参与语义。
+4. **`--scheme-dir` 的值一度被当成按键序列打了出来**——我自己写的参数解析 bug，
+   **单元测试全绿也没发现，是"真的跑一遍"抓到的**。
+   教训：功能必须端到端验证，"能编译 + 测试绿"不等于"能用"。
+5. 不支持的语法（锚点、别名、标签、制表符缩进）**一律明确报错并解释原因**，
+   而不是猜一个。被静默当成字符串的 `*alias` 会变成最难查的一类问题。
+
+### 下一步：P3（方案行为复刻）
+
+1. `Formatter`（预编辑串的音节分隔显示，例如 `ni'hao`）——P1/P2 都欠着它。
+2. 按音节退格（RIME：「以音節爲單位回退刪除拼音」）。
+3. 词条补全（`enable_word_completion`）。
+4. 完整拼写代数（`xform` / `derive` / `erase` 的正则语义），取代 P1 的简化规则集。
+5. `$ref` + 分层补丁接进方案装载路径（机制已在 `stele-config` 里实现并有测试）。
+6. 跑通 rime-ice 的 `others/no_lua_schema`（P3 的验收线）。
 
 ---
 

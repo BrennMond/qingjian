@@ -34,6 +34,7 @@ Stele-IME（石经）命令行调试前端
   -V, --version         显示版本
       --list            列出已装载的方案
       --schema <id>     选择方案（默认第一个）
+      --scheme-dir <p>  从目录装载方案（不指定则用内嵌的默认方案）
       --candidates      打印候选列表，而不只是上屏结果
       --check           运行内核自检（不变式）
       --dump-config     打印合并后的完整方案（P2/P3 实现）
@@ -42,7 +43,8 @@ Stele-IME（石经）命令行调试前端
   stele nihao                   拼音：上屏「你好」
   stele nh                      拼音：简拼也上屏「你好」（分数更低）
   stele --candidates ni         看候选列表（含分数 / 来源 / 属性）
-  stele --schema shape-demo ab  精确编码方案：上屏「十」
+  stele --schema shape ab       精确编码方案：上屏「十」
+  stele --scheme-dir ./my-schemes --list    装载自己的方案目录
 
 说明：
   本程序是开发期的调试前端。真实的输入法前端是 platforms/windows（TSF）
@@ -73,10 +75,28 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let engine = match stele_engine::EngineImpl::new(&stele_schemes_builtin::all()) {
+    // 方案来源：`--scheme-dir` 指定的目录，否则是**内嵌的 YAML**
+    // （单一数据来源，因此两种路径走的都是同一个解析器）。
+    let scheme_dir = args
+        .iter()
+        .position(|a| a == "--scheme-dir")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let defs = match &scheme_dir {
+        Some(dir) => stele_schemes::load_dir(std::path::Path::new(dir)),
+        None => stele_schemes::all(),
+    };
+    let defs = match defs {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("装载方案失败：{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let engine = match stele_engine::EngineImpl::new(&defs) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("装载内置方案失败：{e}");
+            eprintln!("编译默认方案失败：{e}");
             return ExitCode::FAILURE;
         }
     };
@@ -95,13 +115,21 @@ fn main() -> ExitCode {
 
     let schema_pos = args.iter().position(|a| a == "--schema");
     let schema_id = schema_pos.and_then(|i| args.get(i + 1)).cloned();
+    let dir_pos = args.iter().position(|a| a == "--scheme-dir");
     let show_candidates = args.iter().any(|a| a == "--candidates");
 
-    // 按键序列 = 所有不以 `-` 开头、且不是 `--schema` 之值的位置参数。
+    // 按键序列 = 所有不以 `-` 开头、且不是某个**选项之值**的位置参数。
+    // 漏掉任何一个选项都会让它的值被当成按键打出去 —— 这就是下面那句注释存在的理由。
     let keys: String = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| !a.starts_with('-') && schema_pos.is_none_or(|p| *i != p + 1))
+        .filter(|(i, a)| {
+            let is_option_value = [schema_pos, dir_pos]
+                .into_iter()
+                .flatten()
+                .any(|p| *i == p + 1);
+            !a.starts_with('-') && !is_option_value
+        })
         .map(|(_, a)| a.as_str())
         .collect();
 
@@ -265,7 +293,8 @@ fn self_check() -> ExitCode {
     }
 
     // 不变式 6（P1 新增）：两族翻译器都必须可用 —— 这是 D33 的通用性保证。
-    if !stele_schemes_builtin::uses_both_translator_families() {
+    let defs = stele_schemes::all().unwrap_or_default();
+    if !stele_schemes::uses_both_translator_families(&defs) {
         failures.push("内置方案不再覆盖两族翻译器（D33 的通用性保证失效）".into());
     }
 
@@ -288,8 +317,9 @@ fn self_check() -> ExitCode {
 
 /// 端到端冒烟：用**同一个引擎**跑两个方案，覆盖两族翻译器。
 fn engine_smoke_test() -> Result<(), String> {
-    let engine = stele_engine::EngineImpl::new(&stele_schemes_builtin::all())
-        .map_err(|e| format!("内置方案装载失败：{e}"))?;
+    let defs = stele_schemes::all().map_err(|e| format!("默认方案装载失败：{e}"))?;
+    let engine =
+        stele_engine::EngineImpl::new(&defs).map_err(|e| format!("默认方案编译失败：{e}"))?;
 
     let run = |schema: &str, keys: &str| -> Result<String, String> {
         let mut s = engine.create_session();
@@ -306,17 +336,17 @@ fn engine_smoke_test() -> Result<(), String> {
     };
 
     // ① 拼写图族：规范拼写。
-    let a = run("pinyin-demo", "nihao")?;
+    let a = run("pinyin", "nihao")?;
     if a != "你好" {
         return Err(format!("pinyin-demo/nihao 应当上屏「你好」，得到「{a}」"));
     }
     // ② 拼写图族：变体拼写（简拼）。
-    let b = run("pinyin-demo", "nh")?;
+    let b = run("pinyin", "nh")?;
     if b != "你好" {
         return Err(format!("pinyin-demo/nh 应当上屏「你好」，得到「{b}」"));
     }
     // ③ 精确编码族：完全不同的输入法，同一个引擎。
-    let c = run("shape-demo", "ab")?;
+    let c = run("shape", "ab")?;
     if c != "十" {
         return Err(format!("shape-demo/ab 应当上屏「十」，得到「{c}」"));
     }

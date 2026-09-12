@@ -1,0 +1,17 @@
+# 石经・拼音 —— 主词典（导入清单）
+#
+# 这个文件本身也可以写词条（RIME 的 rime_ice.dict.yaml 就同时做两件事），
+# 但默认方案这里只做导入，让"基础词库"与"扩展词库"分开，
+# 以便演示 `import_tables` 的合并与优先级。
+
+---
+name: pinyin
+version: "0.1.0"
+sort: by_weight
+import_tables:
+  - cn_dicts/base
+...
+
+# 主词典自己的词条（在导入的词条**之前**，因此同码时优先）。
+你	ni	20000
+我	wo	18000

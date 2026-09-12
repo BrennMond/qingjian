@@ -8,7 +8,7 @@ version = "0.0.0"
 dependencies = [
  "stele-core",
  "stele-engine",
- "stele-schemes-builtin",
+ "stele-schemes",
 ]
 
 [[package]]
@@ -17,12 +17,27 @@ version = "0.0.0"
 dependencies = [
  "stele-core",
  "stele-engine",
- "stele-schemes-builtin",
+ "stele-schemes",
+]
+
+[[package]]
+name = "stele-config"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
 ]
 
 [[package]]
 name = "stele-core"
 version = "0.0.0"
+
+[[package]]
+name = "stele-dict"
+version = "0.0.0"
+dependencies = [
+ "stele-config",
+ "stele-core",
+]
 
 [[package]]
 name = "stele-engine"
@@ -32,9 +47,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "stele-schemes-builtin"
+name = "stele-schemes"
 version = "0.0.0"
 dependencies = [
+ "stele-config",
  "stele-core",
+ "stele-dict",
  "stele-engine",
 ]

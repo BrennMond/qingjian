@@ -9,15 +9,20 @@
 > **繁体不在我们适配的责任范围内**，但相关接口与配置项一律保留——
 > 需要繁体的人可以自行配置（见 `PLAN.md` D32）。
 
-**当前状态：P1 完成。核心管线可用——两个方案都能打字，99 个测试通过。**
+**当前状态：P2 完成。方案与词库已经是真正的数据文件——159 个测试通过。**
 
 ```bash
 $ stele nihao                    # 拼音方案：规范拼写
 你好
 $ stele nh                       # 拼音方案：缩写（简拼），分数更低
 你好
-$ stele --schema shape-demo ab   # 精确编码方案：同一个引擎，完全不同的输入法
+$ stele --schema shape ab        # 精确编码方案：同一个引擎，完全不同的输入法
 十
+
+# 换一套自己的方案与词库 —— 不需要重新编译
+$ stele --scheme-dir ./my-schemes --list
+$ stele --scheme-dir ./my-schemes mami
+猫咪
 ```
 
 **第一组实测**（release，演示词库）：按键路径 P50 **241 ns** / P99 **351 ns**，
@@ -54,13 +59,16 @@ stele/
 ├── crates/
 │   ├── stele-core/     # 抽象层：Engine/Session、组件 trait、数据结构（零依赖）
 │   ├── stele-engine/   # 原生引擎：拼写层、词库、两族翻译器、处理器、过滤器（零依赖）
-│   ├── stele-schemes-builtin/  # 随项目提供的方案资产（**与内核分属不同 crate**）
+│   ├── stele-config/   # YAML 子集解析、$ref 跨文件引用、分层补丁、可读诊断
+│   ├── stele-dict/     # .dict.yaml（头部 + TSV 正文 + import_tables）
+│   ├── stele-schemes/  # 方案装载 + 内嵌默认方案（**与内核分属不同 crate**）
 │   ├── stele-cli/      # 命令行调试前端（可执行文件名为 `stele`）
 │   └── stele-bench/    # 称重台：内存与延迟测量
+├── schemes/            # 方案资产（与内核解耦）
+│   └── stele-default/  # 默认方案：pinyin（拼写图族）/ shape（精确编码族）+ 词库
 ├── docs/
 │   └── engine-design.md   # 引擎设计的权威定义
 ├── reference/          # 调研资料（RIME 官方文档对比、librime 内部机制、前端对接）
-├── schemes/            # 方案资产（与内核解耦；默认方案见 P3.5）
 └── PLAN.md             # 项目章程与决策记录（ADR）
 ```
 
@@ -77,8 +85,12 @@ cargo test --workspace
 cargo run -p stele-cli -- nihao                 # 规范拼写 → 你好
 cargo run -p stele-cli -- nh                    # 缩写拼写 → 你好
 cargo run -p stele-cli -- --candidates ni       # 看候选（分数 / 来源 / 属性）
-cargo run -p stele-cli -- --schema shape-demo ab # 精确编码方案 → 十
-cargo run -p stele-cli -- --list                # 列出方案
+cargo run -p stele-cli -- --schema shape ab      # 精确编码方案 → 十
+cargo run -p stele-cli -- --list                 # 列出方案
+
+# 装载自己的方案目录（方案与词库都是数据文件，改完不必重编译）
+cargo run -p stele-cli -- --scheme-dir ./my-schemes --list
+cargo run -p stele-cli -- --scheme-dir ./my-schemes mami
 
 # 内核自检（验证"可复现 / 精确优先 / 通用性"等 7 组不变式）
 cargo run -p stele-cli -- --check
@@ -88,8 +100,22 @@ cargo run -p stele-bench --release -- --iterations=200000
 cargo run -p stele-bench --release -- --json    # 便于 CI 记录历史
 ```
 
-**注意**：`--dump-config` 目前明确报告未实现（它需要 P2/P3 的方案加载与配置分层）。
-**宁可报未实现，也不打印一份假的配置**——一个会骗人的调试工具比没有更糟。
+**注意**：`--dump-config` 目前明确报告未实现（配置分层的机制已在 `stele-config` 里
+实现并有测试，但还没接到 CLI 上）。**宁可报未实现，也不打印一份假的配置**——
+一个会骗人的调试工具比没有更糟。
+
+## 写自己的方案
+
+方案与词库都是数据文件，放在一个目录里用 `--scheme-dir` 指过去即可：
+
+```
+my-schemes/
+├── demo.schema.yaml     # 方案：字母表、规则、用哪族翻译器
+└── demo.dict.yaml       # 词库：词 <TAB> 编码 <TAB> 权重
+```
+
+配置写错时会**一次报出全部问题，每条带行号**——而不是静默忽略其中一个字段。
+完整格式见 `schemes/stele-default/` 里的两份示例，以及 `docs/engine-design.md` §6。
 
 ---
 

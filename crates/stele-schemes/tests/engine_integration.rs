@@ -16,10 +16,11 @@ use stele_core::{
     Trigger,
 };
 use stele_engine::EngineImpl;
-use stele_schemes_builtin::{all, pinyin_scheme, shape_scheme};
+use stele_schemes::all;
 
 fn engine() -> EngineImpl {
-    EngineImpl::new(&[pinyin_scheme(), shape_scheme()]).expect("内置方案应当能编译")
+    let defs = all().expect("内嵌方案必须能装载 —— 失败说明打包坏了");
+    EngineImpl::new(&defs).expect("默认方案应当能编译")
 }
 
 /// 敲一串字符（不提交）。
@@ -116,7 +117,7 @@ fn every_candidate_is_priceable_and_something_is_always_committable() {
 fn shape_scheme_runs_on_the_same_engine() {
     let e = engine();
     let mut s = e.create_session();
-    s.switch_schema("shape-demo").unwrap();
+    s.switch_schema("shape").unwrap();
 
     type_text(&mut s, "ab");
     assert_eq!(s.candidates()[0].text, "十");
@@ -130,7 +131,7 @@ fn shape_scheme_has_no_spelling_variants() {
     // 因此它命中的候选**永远是 NORMAL 属性**。
     let e = engine();
     let mut s = e.create_session();
-    s.switch_schema("shape-demo").unwrap();
+    s.switch_schema("shape").unwrap();
 
     for keys in ["a", "ab", "abc"] {
         s.reset();
@@ -160,12 +161,12 @@ fn switching_schema_keeps_the_session_usable() {
     assert!(s.switch_schema("no-such-scheme").is_err());
     type_text(&mut s, "hao");
     assert_eq!(s.candidates()[0].text, "你好");
-    assert_eq!(s.schema_id(), "pinyin-demo");
+    assert_eq!(s.schema_id(), "pinyin");
 
     // 切换成功。
-    assert!(s.switch_schema("shape-demo").is_ok());
+    assert!(s.switch_schema("shape").is_ok());
     assert!(s.composition().input.is_empty(), "切换后应当清空输入");
-    assert_eq!(s.schema_id(), "shape-demo");
+    assert_eq!(s.schema_id(), "shape");
 }
 
 #[test]
@@ -288,8 +289,8 @@ fn scheme_catalog_lists_what_it_ships() {
         .iter()
         .map(|i| i.schema_id.as_str())
         .collect();
-    assert_eq!(ids, ["pinyin-demo", "shape-demo"]);
-    assert!(e.schemas().acquire("pinyin-demo").is_ok());
+    assert_eq!(ids, ["pinyin", "shape"]);
+    assert!(e.schemas().acquire("pinyin").is_ok());
     assert!(e.schemas().acquire("nope").is_err());
-    assert_eq!(all().len(), 2);
+    assert_eq!(all().unwrap().len(), 2);
 }

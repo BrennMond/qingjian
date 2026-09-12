@@ -1,6 +1,6 @@
 [package]
-name = "stele-bench"
-description = "称重台：测量按键延迟分布、常驻内存、冷启动。PLAN §9 的 P0 交付物。"
+name = "stele-config"
+description = "方案与词典的配置模型：YAML 子集解析、$ref 引用、分层补丁、可读诊断。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# 允许依赖内核的抽象（诊断类型），但不依赖引擎。
 [dependencies]
 stele-core = { path = "../stele-core" }
-stele-engine = { path = "../stele-engine" }
-stele-schemes = { path = "../stele-schemes" }
 
 [lints]
 workspace = true
