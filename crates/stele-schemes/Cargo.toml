@@ -16,6 +16,7 @@ stele-core = { path = "../stele-core" }
 stele-engine = { path = "../stele-engine" }
 stele-config = { path = "../stele-config" }
 stele-dict = { path = "../stele-dict" }
+stele-table = { path = "../stele-table" }
 
 [lints]
 workspace = true

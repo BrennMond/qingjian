@@ -134,7 +134,10 @@ mod tests {
                 .compile()
                 .unwrap_or_else(|e| panic!("方案 {} 编译失败：{e}", d.info.schema_id));
             assert!(!s.alphabet().is_empty());
-            assert!(!s.lexicon().is_empty());
+            // 词库现在是 `Arc<dyn Lexicon>`（引擎只以 trait 的身份使用它），
+            // 所以这里不再断言"条数" —— 那是实现细节，不是契约。
+            // 真正证明词库可用的是下面的端到端集成测试。
+            let _ = s.lexicon();
         }
     }
 
@@ -169,14 +172,17 @@ mod tests {
     fn dictionary_imports_are_expanded() {
         let defs = all().unwrap();
         let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
+        let stele_engine::scheme::DictSource::Inline(entries) = &p.dictionary else {
+            panic!("内嵌方案应当用内联词条");
+        };
         // 主词典自己 2 条 + 导入的 base 若干条。
         assert!(
-            p.entries.len() > 10,
+            entries.len() > 10,
             "导入应当被展开，实得 {} 条",
-            p.entries.len()
+            entries.len()
         );
         // 根词典的词条在**前** —— 于是"先出现者优先"这条规则可以直接照做。
-        assert_eq!(p.entries[0].1, "你");
+        assert_eq!(entries[0].1, "你");
     }
 
     #[test]
@@ -191,7 +197,10 @@ mod tests {
         // PLAN D32：随项目提供的方案数据只做简体。
         let traditional = ['這', '國', '學', '體', '經', '門', '個', '們', '繁'];
         for d in all().unwrap() {
-            for (_, word, _) in &d.entries {
+            let stele_engine::scheme::DictSource::Inline(entries) = &d.dictionary else {
+                continue;
+            };
+            for (_, word, _) in entries {
                 for c in word.chars() {
                     assert!(
                         !traditional.contains(&c),

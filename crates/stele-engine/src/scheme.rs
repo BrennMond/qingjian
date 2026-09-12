@@ -28,6 +28,30 @@ use crate::translator::{EchoTranslator, ExactCodeTranslator, SpellingGraphTransl
 /// 当前方案格式版本（PLAN D27 的两级版本门禁之一）。
 pub const SCHEME_FORMAT_VERSION: u32 = 1;
 
+/// 词库从哪来。
+#[non_exhaustive]
+pub enum DictSource {
+    /// 直接给出词条。
+    ///
+    /// 适合内嵌的小方案与测试——几十条词，怎么做都快。
+    /// 用 [`entry`] 可以少写一堆 `.to_owned()`。
+    Inline(Vec<(Vec<String>, String, f64)>),
+    /// 一个**已经编译好**的词库实现。
+    ///
+    /// `stele-engine` 不知道它是内存表、紧凑二进制还是别的什么——
+    /// 它只调用 `Lexicon::lookup`。
+    External(Arc<dyn stele_core::Lexicon>),
+}
+
+impl core::fmt::Debug for DictSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Inline(v) => write!(f, "DictSource::Inline({} 条)", v.len()),
+            Self::External(_) => write!(f, "DictSource::External(<编译好的词库>)"),
+        }
+    }
+}
+
 /// 方案用哪一族翻译器。
 ///
 /// 选择权在**方案**，不在引擎——这是 D33 要验证的通用性。
@@ -58,11 +82,12 @@ pub struct SchemeDef {
     pub alphabet: Vec<String>,
     /// 拼写规则（[`TranslatorKind::ExactCode`] 时会忽略）。
     pub rules: Vec<Rule>,
-    /// 词条：`(编码单元文本序列, 词, 权重)`。
+    /// 词库从哪来。
     ///
-    /// **拥有 `String` 而非 `&'static str`**：方案数据现在是从文件读来的，
-    /// 生命周期在运行时。用 [`entry`] 可以少写一堆 `.to_owned()`。
-    pub entries: Vec<(Vec<String>, String, f64)>,
+    /// **引擎只认识这个枚举，不认识任何存储格式**——
+    /// 紧凑二进制表、mmap、远程词库，都通过 [`DictSource::External`] 注入。
+    /// 这正是 `Lexicon` 做成 trait 的兑现点（`docs/engine-design.md` §5）。
+    pub dictionary: DictSource,
     /// 用哪族翻译器。
     pub translator: TranslatorKind,
     /// 候选总量上限。
@@ -105,7 +130,12 @@ impl SchemeDef {
         let alphabet = CodeAlphabet::new(self.alphabet.clone());
 
         // 逐条检查词条引用的单元是否存在——一次报完所有问题。
-        for (code, word, _) in &self.entries {
+        // 只有内联词条需要检查；外部词库在它自己的装载期已经校验过。
+        let inline_entries: &[(Vec<String>, String, f64)] = match &self.dictionary {
+            DictSource::Inline(v) => v,
+            DictSource::External(_) => &[],
+        };
+        for (code, word, _) in inline_entries {
             for unit in code {
                 if alphabet.id_of(unit).is_none() {
                     diagnostics.push(
@@ -126,15 +156,20 @@ impl SchemeDef {
             });
         }
 
-        let lexicon = InMemoryLexicon::from_entries(alphabet.clone(), &self.entries).map_err(
-            |e: LexiconError| SchemaError::Invalid {
-                schema_id: self.info.schema_id.clone(),
-                diagnostics: vec![stele_core::Diagnostic::new(
-                    format!("scheme:{}", self.info.schema_id),
-                    e.to_string(),
-                )],
-            },
-        )?;
+        let lexicon: Arc<dyn stele_core::Lexicon> = match &self.dictionary {
+            DictSource::Inline(v) => {
+                Arc::new(InMemoryLexicon::from_entries(alphabet.clone(), v).map_err(
+                    |e: LexiconError| SchemaError::Invalid {
+                        schema_id: self.info.schema_id.clone(),
+                        diagnostics: vec![stele_core::Diagnostic::new(
+                            format!("scheme:{}", self.info.schema_id),
+                            e.to_string(),
+                        )],
+                    },
+                )?)
+            }
+            DictSource::External(l) => Arc::clone(l),
+        };
 
         let spelling = match self.translator {
             TranslatorKind::ExactCode => None,
@@ -155,7 +190,7 @@ impl SchemeDef {
             tag: self.tag,
             alphabet,
             spelling,
-            lexicon: Arc::new(lexicon),
+            lexicon,
             kind: self.translator,
             candidate_cap: self.candidate_cap,
         })
@@ -163,14 +198,16 @@ impl SchemeDef {
 }
 
 /// 编译好的、可装载的方案。
-#[derive(Debug)]
+///
+/// **不实现 `Debug`**：它持有 `Arc<dyn Lexicon>`，而词库实现没有
+/// （也不该有）`Debug`。想调试就打印 [`LoadedScheme::info`]。
 pub struct LoadedScheme {
     info: SchemaInfo,
     options: Options,
     tag: Tag,
     alphabet: CodeAlphabet,
     spelling: Option<Arc<SpellingTable>>,
-    lexicon: Arc<InMemoryLexicon>,
+    lexicon: Arc<dyn stele_core::Lexicon>,
     kind: TranslatorKind,
     candidate_cap: usize,
 }
@@ -194,9 +231,9 @@ impl LoadedScheme {
         &self.alphabet
     }
 
-    /// 词库。
+    /// 词库（**引擎只以 `Lexicon` 的身份使用它**）。
     #[must_use]
-    pub fn lexicon(&self) -> Arc<InMemoryLexicon> {
+    pub fn lexicon(&self) -> Arc<dyn stele_core::Lexicon> {
         Arc::clone(&self.lexicon)
     }
 
@@ -245,7 +282,7 @@ impl LoadedSchema for LoadedScheme {
             TranslatorKind::ExactCode => vec![
                 Box::new(ExactCodeTranslator::new(
                     &self.alphabet,
-                    Arc::clone(&self.lexicon) as Arc<dyn stele_core::Lexicon>,
+                    Arc::clone(&self.lexicon),
                 )),
                 // 兜底永远在最后：查不到也要能上屏（G4）。
                 Box::new(EchoTranslator::new()),
@@ -259,7 +296,7 @@ impl LoadedSchema for LoadedScheme {
                 vec![
                     Box::new(SpellingGraphTranslator::new(
                         spelling,
-                        Arc::clone(&self.lexicon) as Arc<dyn stele_core::Lexicon>,
+                        Arc::clone(&self.lexicon),
                     )),
                     Box::new(EchoTranslator::new()),
                 ]
@@ -298,7 +335,7 @@ mod tests {
             tag: "abc",
             alphabet: vec!["a".into(), "b".into()],
             rules: vec![],
-            entries: vec![entry(&["a", "b"], "十", 10.0)],
+            dictionary: DictSource::Inline(vec![entry(&["a", "b"], "十", 10.0)]),
             translator,
             candidate_cap: CANDIDATE_CAP,
         }
@@ -310,7 +347,6 @@ mod tests {
             let scheme = def(kind).compile().unwrap();
             assert_eq!(scheme.kind(), kind);
             assert_eq!(scheme.alphabet().len(), 2);
-            assert_eq!(scheme.lexicon().len(), 1);
         }
     }
 
@@ -338,8 +374,14 @@ mod tests {
     #[test]
     fn inconsistent_scheme_data_fails_loudly_at_load() {
         let mut d = def(TranslatorKind::ExactCode);
-        d.entries.push(entry(&["a", "z"], "坏词", 1.0)); // z 不在字母表里
-        let err = d.compile().unwrap_err();
+        if let DictSource::Inline(v) = &mut d.dictionary {
+            v.push(entry(&["a", "z"], "坏词", 1.0)); // z 不在字母表里
+        }
+        // `LoadedScheme` 持有 `Arc<dyn Lexicon>`，没有 `Debug`，
+        // 所以这里 match 而不是 `unwrap_err()`。
+        let Err(err) = d.compile() else {
+            panic!("坏方案不该编译成功");
+        };
         match err {
             SchemaError::Invalid { diagnostics, .. } => {
                 assert_eq!(diagnostics.len(), 1);
@@ -353,7 +395,7 @@ mod tests {
     fn empty_alphabet_is_rejected() {
         let mut d = def(TranslatorKind::ExactCode);
         d.alphabet.clear();
-        d.entries.clear();
+        d.dictionary = DictSource::Inline(vec![]);
         assert!(d.compile().is_err());
     }
 

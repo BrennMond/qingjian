@@ -129,88 +129,23 @@ pub fn parse_dict(text: &str, path: &str) -> Result<DictFile, DictError> {
 
     let mut entries = Vec::new();
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-
-    for (i, raw) in text.lines().enumerate().skip(body_start - 1) {
-        #[allow(clippy::cast_possible_truncation)]
-        let no = (i + 1) as u32;
-        let line = raw.trim_end();
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            continue;
-        }
-        if !line.contains('\t') {
+    for_each_body_line(text, body_start, path, |e| {
+        if !seen.insert((e.word.clone(), e.code.clone())) {
             return Err(DictError::new(
                 path,
-                no,
+                e.line,
                 format!(
-                    "词条必须用 TAB 分隔（词 <TAB> 编码 <TAB> 权重），但这一行没有 TAB：`{}`。\
-                     编码本身含空格（`ni hao`），所以分隔符只能是 TAB——\
-                     用空格的话「编码」和「权重」就分不开了。",
-                    truncate(line, 40)
-                ),
-            ));
-        }
-
-        // 允许行尾注释：`你好\tni hao\t100  # 说明`
-        let content = strip_trailing_comment(line);
-        let mut cols = content.split('\t');
-        let word = cols.next().unwrap_or("").trim().to_owned();
-        let code = cols.next().unwrap_or("").trim().to_owned();
-        let weight_text = cols.next().unwrap_or("").trim();
-        let extra = cols.next();
-
-        if word.is_empty() {
-            return Err(DictError::new(path, no, "词条的第一列（词）是空的"));
-        }
-        if code.is_empty() {
-            return Err(DictError::new(
-                path,
-                no,
-                format!("词条「{word}」缺少第二列（编码）"),
-            ));
-        }
-        if extra.is_some() {
-            return Err(DictError::new(
-                path,
-                no,
-                format!("词条「{word}」超过了三列——本格式只有「词 / 编码 / 权重」三列"),
-            ));
-        }
-
-        let weight = if weight_text.is_empty() {
-            0.0
-        } else {
-            weight_text.parse::<f64>().map_err(|_| {
-                DictError::new(
-                    path,
-                    no,
-                    format!(
-                        "词条「{word}」的权重 `{weight_text}` 不是数字。\
-                         权重是相对词频（整数或小数），省略即视为最低。"
-                    ),
-                )
-            })?
-        };
-
-        if !seen.insert((word.clone(), code.clone())) {
-            return Err(DictError::new(
-                path,
-                no,
-                format!(
-                    "词条「{word} / {code}」重复了。\
+                    "词条「{} / {}」重复了。\
                      重复不会报错但会让「为什么这个词的权重是 3 而不是 5000」\
                      变成一场考古，所以这里直接拒绝。\
-                     （同一个词的不同读音是合法的，那算两条不同的记录。）"
+                     （同一个词的不同读音是合法的，那算两条不同的记录。）",
+                    e.word, e.code
                 ),
             ));
         }
-
-        entries.push(RawEntry {
-            word,
-            code,
-            weight,
-            line: no,
-        });
-    }
+        entries.push(e);
+        Ok(())
+    })?;
 
     Ok(DictFile {
         path: path.to_owned(),
@@ -303,6 +238,207 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         format!("{}…", s.chars().take(n).collect::<String>())
     }
+}
+
+/// 逐行解析正文，对每一条合法词条调用 `f`。
+///
+/// **抽出来是为了让"流式编译"不必先攒一个 `Vec<RawEntry>`**——
+/// 雾凇规模的词库有 188 万条，光是那个中间向量就要几百 MB。
+fn for_each_body_line<F>(
+    text: &str,
+    body_start: usize,
+    path: &str,
+    mut f: F,
+) -> Result<(), DictError>
+where
+    F: FnMut(RawEntry) -> Result<(), DictError>,
+{
+    for (i, raw) in text.lines().enumerate().skip(body_start.saturating_sub(1)) {
+        #[allow(clippy::cast_possible_truncation)]
+        let no = (i + 1) as u32;
+        let line = raw.trim_end();
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if !line.contains('\t') {
+            return Err(DictError::new(
+                path,
+                no,
+                format!(
+                    "词条必须用 TAB 分隔（词 <TAB> 编码 <TAB> 权重），但这一行没有 TAB：`{}`。\
+                     编码本身含空格（`ni hao`），所以分隔符只能是 TAB——\
+                     用空格的话「编码」与「权重」就分不开了。",
+                    truncate(line, 40)
+                ),
+            ));
+        }
+
+        let content = strip_trailing_comment(line);
+        let mut cols = content.split('\t');
+        let word = cols.next().unwrap_or("").trim().to_owned();
+        let code = cols.next().unwrap_or("").trim().to_owned();
+        let weight_text = cols.next().unwrap_or("").trim();
+        let extra = cols.next();
+
+        if word.is_empty() {
+            return Err(DictError::new(path, no, "词条的第一列（词）是空的"));
+        }
+        if code.is_empty() {
+            return Err(DictError::new(
+                path,
+                no,
+                format!("词条「{word}」缺少第二列（编码）"),
+            ));
+        }
+        if extra.is_some() {
+            return Err(DictError::new(
+                path,
+                no,
+                format!("词条「{word}」超过了三列——本格式只有「词 / 编码 / 权重」三列"),
+            ));
+        }
+
+        let weight = if weight_text.is_empty() {
+            0.0
+        } else {
+            weight_text.parse::<f64>().map_err(|_| {
+                DictError::new(
+                    path,
+                    no,
+                    format!(
+                        "词条「{word}」的权重 `{weight_text}` 不是数字。\
+                         权重是相对词频（整数或小数），省略即视为最低。"
+                    ),
+                )
+            })?
+        };
+
+        f(RawEntry {
+            word,
+            code,
+            weight,
+            line: no,
+        })?;
+    }
+    Ok(())
+}
+
+/// 流式遍历一份词典（含 `import_tables`），**不构造中间向量**。
+///
+/// 返回所有源文件的字节数（供调用方算校验和，见 PLAN D28）。
+///
+/// # Errors
+///
+/// 与 [`load_with_imports`] 相同。
+pub fn for_each_entry<F>(
+    src: &dyn Source,
+    rel_path: &str,
+    display_name: &str,
+    mut f: F,
+) -> Result<u64, DictError>
+where
+    F: FnMut(&str, &str, f64) -> Result<(), DictError>,
+{
+    let mut checksum = 0u64;
+    let mut stack: Vec<String> = Vec::new();
+    stream_collect(
+        src,
+        rel_path,
+        display_name,
+        &mut f,
+        &mut stack,
+        &mut checksum,
+    )?;
+    Ok(checksum)
+}
+
+/// 只算校验和（不取词条）。
+///
+/// 部署期用它判断"产物还能不能用"——**读一遍源文件是不可避免的代价**，
+/// 但比"重新编译一遍"便宜得多。
+///
+/// # Errors
+///
+/// 与 [`for_each_entry`] 相同。
+pub fn checksum_of(src: &dyn Source, rel_path: &str, display_name: &str) -> Result<u64, DictError> {
+    for_each_entry(src, rel_path, display_name, |_, _, _| Ok(()))
+}
+
+fn stream_collect<F>(
+    src: &dyn Source,
+    rel_path: &str,
+    display_name: &str,
+    f: &mut F,
+    stack: &mut Vec<String>,
+    checksum: &mut u64,
+) -> Result<(), DictError>
+where
+    F: FnMut(&str, &str, f64) -> Result<(), DictError>,
+{
+    if stack.iter().any(|p| p == rel_path) {
+        return Err(DictError::new(
+            display_name,
+            0,
+            format!(
+                "词典循环导入：`{rel_path}` 已在导入链里（{}）。",
+                stack.join(" → ")
+            ),
+        ));
+    }
+    let text = src.read(rel_path).ok_or_else(|| {
+        DictError::new(
+            display_name,
+            0,
+            format!("找不到词典文件 `{rel_path}`（已尝试原路径、加 `.dict.yaml`、加 `.yaml`）"),
+        )
+    })?;
+    // FNV-1a 逐字节地累积——多份文件（含 import）都会并进来，
+    // 因此任何一份源文件变了，校验和都会变。
+    *checksum = combine(*checksum, text.as_bytes());
+
+    let (header_text, header_start, body_start) = split_sections(&text, rel_path)?;
+    let header_node = parse_at(&header_text, header_start).map_err(|e| {
+        DictError::new(rel_path, e.line, format!("词典头部解析失败：{}", e.message))
+    })?;
+    let header = read_header(&header_node, rel_path)?;
+
+    for_each_body_line(&text, body_start, rel_path, |e| {
+        f(&e.word, &e.code, e.weight)
+    })?;
+
+    stack.push(rel_path.to_owned());
+    for import in &header.import_tables {
+        stream_collect(src, import, display_name, f, stack, checksum)?;
+    }
+    stack.pop();
+    Ok(())
+}
+
+/// FNV-1a 64 位，把一段字节并进已有校验和。
+fn combine(h: u64, bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = if h == 0 { OFFSET } else { h };
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(PRIME);
+    }
+    h
+}
+
+/// 只读头部（流式路径用不到整个 [`DictFile`] 时）。
+///
+/// # Errors
+///
+/// 找不到文件或头部有错时返回 [`DictError`]。
+pub fn read_header_only(src: &dyn Source, rel_path: &str) -> Result<DictHeader, DictError> {
+    let text = src
+        .read(rel_path)
+        .ok_or_else(|| DictError::new(rel_path, 0, "找不到词典文件"))?;
+    let (header_text, header_start, _) = split_sections(&text, rel_path)?;
+    let node = parse_at(&header_text, header_start)
+        .map_err(|e| DictError::new(rel_path, e.line, e.message))?;
+    read_header(&node, rel_path)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

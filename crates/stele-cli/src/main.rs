@@ -83,7 +83,12 @@ fn main() -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .cloned();
     let defs = match &scheme_dir {
-        Some(dir) => stele_schemes::load_dir(std::path::Path::new(dir)),
+        // 目录装载走**部署路径**：词库编译成紧凑产物，按需分页地读。
+        // 内嵌方案只有几十条词，用内存表更快，所以两条路各走各的。
+        Some(dir) => {
+            let root = std::path::Path::new(dir);
+            stele_schemes::load_dir_deployed(root, &root.join(".stele-cache"))
+        }
         None => stele_schemes::all(),
     };
     let defs = match defs {

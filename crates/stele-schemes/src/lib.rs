@@ -30,5 +30,5 @@
 pub mod file;
 pub mod minimal;
 
-pub use file::{load_dir, load_scheme};
+pub use file::{load_dir, load_dir_deployed, load_scheme};
 pub use minimal::{all, embedded, uses_both_translator_families, EmbeddedSource, EMBEDDED};

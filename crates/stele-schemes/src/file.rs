@@ -23,7 +23,7 @@
 
 use stele_config::{Node, Value};
 use stele_core::Score;
-use stele_core::{Diagnostic, SchemaError, SchemaInfo, Switch};
+use stele_core::{CodeAlphabet, Diagnostic, SchemaError, SchemaInfo, Switch};
 use stele_dict as dict;
 use stele_engine::pipeline::CANDIDATE_CAP;
 use stele_engine::scheme::{entry, SchemeDef, TranslatorKind, SCHEME_FORMAT_VERSION};
@@ -57,6 +57,23 @@ pub fn load_scheme(
     text: &str,
     path: &str,
     dicts: &dyn dict::Source,
+) -> Result<SchemeDef, SchemaError> {
+    load_scheme_with(text, path, dicts, &DictMode::Inline)
+}
+
+/// 词库怎么来。
+enum DictMode<'a> {
+    /// 读进内存（内嵌的小方案、测试）。
+    Inline,
+    /// 编译成紧凑产物（部署路径）。
+    Deployed(&'a std::path::Path),
+}
+
+fn load_scheme_with(
+    text: &str,
+    path: &str,
+    dicts: &dyn dict::Source,
+    mode: &DictMode<'_>,
 ) -> Result<SchemeDef, SchemaError> {
     let root = stele_config::parse(text).map_err(|e| SchemaError::Invalid {
         schema_id: path.to_owned(),
@@ -201,22 +218,33 @@ pub fn load_scheme(
         .get("translator")
         .and_then(|t| t.get("dictionary"))
         .and_then(Node::as_str);
+    // 部署路径需要字母表来把编码文本转成编号，故先建好。
+    let alphabet_ids = CodeAlphabet::new(alphabet.clone());
     let mut entries: Vec<(Vec<String>, String, f64)> = Vec::new();
+    let mut external: Option<std::sync::Arc<dyn stele_core::Lexicon>> = None;
     match dict_name {
         None => diags.push(
             Diagnostic::new(path, "缺少 `translator.dictionary`（要挂载哪本词典）")
                 .with_field("translator.dictionary"),
         ),
-        Some(name) => match dict::load_with_imports(dicts, &name, &name) {
-            Ok(loaded) => {
-                for e in &loaded.entries {
-                    entries.push(entry(&e.units(), &e.word, e.weight));
+        Some(name) => match *mode {
+            // 内联：读进内存。
+            DictMode::Inline => match dict::load_with_imports(dicts, &name, &name) {
+                Ok(loaded) => {
+                    for e in &loaded.entries {
+                        entries.push(entry(&e.units(), &e.word, e.weight));
+                    }
                 }
-            }
-            Err(e) => diags.push(
-                Diagnostic::new(path, format!("词典装载失败：{e}"))
-                    .with_field("translator.dictionary"),
-            ),
+                Err(e) => diags.push(
+                    Diagnostic::new(path, format!("词典装载失败：{e}"))
+                        .with_field("translator.dictionary"),
+                ),
+            },
+            // 部署：**根本不构造内联词条**——那正是 245 MB 峰值的来源。
+            DictMode::Deployed(cache) => match deploy_dict(dicts, &name, &alphabet_ids, cache) {
+                Ok(l) => external = Some(l),
+                Err(d) => diags.push(d),
+            },
         },
     }
 
@@ -241,7 +269,10 @@ pub fn load_scheme(
         tag,
         alphabet,
         rules,
-        entries,
+        dictionary: match external {
+            Some(l) => stele_engine::scheme::DictSource::External(l),
+            None => stele_engine::scheme::DictSource::Inline(entries),
+        },
         translator: translator.expect("已在上面校验过"),
         candidate_cap,
     })
@@ -460,6 +491,157 @@ pub fn load_dir(root: &std::path::Path) -> Result<Vec<SchemeDef>, SchemaError> {
     Ok(out)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 部署：把词库编译成紧凑产物，并按需分页地读它
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 从一个目录装载方案，并把词库**编译成紧凑产物**（P2.5）。
+///
+/// # 为什么需要它
+///
+/// 内存实现在 50 万词条上实测**峰值 245 MiB**，外推到雾凇的 188 万词条约
+/// **0.9 GB**——与 RIME 实测的 780 MB–1 GB 部署峰值同一量级。
+/// 而项目的红线是常驻 < 30 MB、部署峰值 < 150 MB。
+///
+/// 编译产物把常驻内存压到**只留索引**（188 万词条约 4 MB），
+/// 词条与词字符串留在文件里按需读取。
+///
+/// # 缓存
+///
+/// 产物路径含源数据校验和（`<dict>.<checksum>.table`）。
+/// 校验和一致就复用，不一致就重编——**并且旧产物对不上时是拒绝加载，
+/// 而不是凑合跑**（PLAN D28）。
+///
+/// # Errors
+///
+/// 目录不可读、没有方案、方案有错、词库编译失败时返回 [`SchemaError`]。
+///
+/// # Panics
+///
+/// 不会 panic。
+pub fn load_dir_deployed(
+    root: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<Vec<SchemeDef>, SchemaError> {
+    let src = dict::DirSource::new(root);
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let entries = std::fs::read_dir(root).map_err(|e| SchemaError::Invalid {
+        schema_id: root.display().to_string(),
+        diagnostics: vec![Diagnostic::new(
+            root.display().to_string(),
+            format!("读不了这个目录：{e}"),
+        )],
+    })?;
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.ends_with(".schema.yaml") {
+            files.push(p);
+        }
+    }
+    files.sort();
+
+    if files.is_empty() {
+        return Err(SchemaError::Invalid {
+            schema_id: root.display().to_string(),
+            diagnostics: vec![Diagnostic::new(
+                root.display().to_string(),
+                "这个目录里没有 `*.schema.yaml`",
+            )],
+        });
+    }
+
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let name = f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_owned();
+        let text = std::fs::read_to_string(&f).map_err(|e| SchemaError::Invalid {
+            schema_id: name.clone(),
+            diagnostics: vec![Diagnostic::new(&name, format!("读不了文件：{e}"))],
+        })?;
+        out.push(load_scheme_with(
+            &text,
+            &name,
+            &src,
+            &DictMode::Deployed(cache_dir),
+        )?);
+    }
+    Ok(out)
+}
+
+/// 部署一份词库：算校验和 → 需要就编译 → 以按需分页的方式打开。
+///
+/// **注意它不经过内联路径**——内联会把全部词条读进内存，
+/// 而那正是我们要消灭的 245 MB 峰值。
+fn deploy_dict(
+    src: &dyn dict::Source,
+    dict_name: &str,
+    alphabet: &CodeAlphabet,
+    cache_dir: &std::path::Path,
+) -> Result<std::sync::Arc<dyn stele_core::Lexicon>, Diagnostic> {
+    let bad = |m: String| Diagnostic::new(dict_name, m).with_field("translator.dictionary");
+
+    let checksum = dict::checksum_of(src, dict_name, dict_name)
+        .map_err(|e| bad(format!("算词库校验和失败：{e}")))?;
+    let table_path = cache_dir.join(format!("{dict_name}.{checksum:016x}.table"));
+
+    if !table_path.exists() {
+        std::fs::create_dir_all(cache_dir)
+            .map_err(|e| bad(format!("建不了缓存目录 {}：{e}", cache_dir.display())))?;
+
+        // 流式：词条一条条喂进写入器，**中间没有 Vec<RawEntry>**。
+        let r = stele_table::compile(
+            checksum,
+            |w| {
+                dict::for_each_entry(src, dict_name, dict_name, |word, code, weight| {
+                    let mut ids: Vec<u16> = Vec::with_capacity(4);
+                    for unit in code.split_whitespace() {
+                        let Some(id) = alphabet.id_of(unit) else {
+                            return Err(dict::DictError {
+                                path: dict_name.to_owned(),
+                                line: 0,
+                                message: format!(
+                                    "词条「{word}」引用了字母表里没有的编码单元「{unit}」"
+                                ),
+                            });
+                        };
+                        match u16::try_from(id.0) {
+                            Ok(v) => ids.push(v),
+                            Err(_) => {
+                                return Err(dict::DictError {
+                                    path: dict_name.to_owned(),
+                                    line: 0,
+                                    message: format!(
+                                        "编码单元「{unit}」的编号超过 65535，产物无法表达"
+                                    ),
+                                })
+                            }
+                        }
+                    }
+                    w.push(word, &ids, weight).map_err(|e| dict::DictError {
+                        path: dict_name.to_owned(),
+                        line: 0,
+                        message: e.to_string(),
+                    })
+                })
+                .map(|_| ())
+                .map_err(|e| stele_table::CompileError::Io(e.to_string()))
+            },
+            &table_path,
+        );
+        if let Err(e) = r {
+            return Err(bad(format!("词库编译失败：{e}")));
+        }
+    }
+
+    let lex = stele_table::TableLexicon::open_checked(&table_path, Some(checksum))
+        .map_err(|e| bad(format!("词库产物加载失败：{e}")))?;
+    Ok(std::sync::Arc::new(lex))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,8 +691,11 @@ translator:
         assert_eq!(d.tag, "abc");
         assert_eq!(d.translator, TranslatorKind::SpellingGraph);
         assert_eq!(d.alphabet, ["ni", "hao"]);
-        assert_eq!(d.entries.len(), 1);
-        assert_eq!(d.entries[0].1, "你好");
+        let stele_engine::scheme::DictSource::Inline(e) = &d.dictionary else {
+            panic!("应当走内联路径");
+        };
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].1, "你好");
         assert_eq!(d.switches.len(), 1);
     }
 

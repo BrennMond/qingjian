@@ -54,4 +54,12 @@ dependencies = [
  "stele-core",
  "stele-dict",
  "stele-engine",
+ "stele-table",
+]
+
+[[package]]
+name = "stele-table"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
 ]
