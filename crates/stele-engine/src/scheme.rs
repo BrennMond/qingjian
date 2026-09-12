@@ -92,6 +92,13 @@ pub struct SchemeDef {
     pub translator: TranslatorKind,
     /// 候选总量上限。
     pub candidate_cap: usize,
+    /// 预编辑串的音节分隔符（RIME 的 `speller.delimiter` 第一位）。
+    pub preedit_delimiter: Option<char>,
+    /// 方案装载器附带的自由信息（例如 RIME 风格 `engine:` 列表的覆盖报告）。
+    ///
+    /// **引擎不解释它的内容**——这是"装载器 → 工具链"的一条旁路，
+    /// 用来让 `--dump-config` 之类的东西能报告装载细节，而不必让引擎认识它们。
+    pub custom: std::collections::BTreeMap<String, String>,
 }
 
 /// 构造一个词条的便捷函数。
@@ -193,6 +200,7 @@ impl SchemeDef {
             lexicon,
             kind: self.translator,
             candidate_cap: self.candidate_cap,
+            preedit_delimiter: self.preedit_delimiter,
         })
     }
 }
@@ -210,6 +218,7 @@ pub struct LoadedScheme {
     lexicon: Arc<dyn stele_core::Lexicon>,
     kind: TranslatorKind,
     candidate_cap: usize,
+    preedit_delimiter: Option<char>,
 }
 
 impl LoadedScheme {
@@ -305,14 +314,22 @@ impl LoadedSchema for LoadedScheme {
 
         let filters: Vec<Box<dyn Filter>> = vec![Box::new(Uniquifier)];
 
-        Box::new(PipelineImpl::new(
-            self.tag,
-            processors,
-            translators,
-            filters,
-            Vec::new(),
-            self.candidate_cap,
-        ))
+        let spelling: Option<Arc<dyn stele_core::Spelling>> = self
+            .spelling
+            .clone()
+            .map(|s| s as Arc<dyn stele_core::Spelling>);
+
+        Box::new(
+            PipelineImpl::new(
+                self.tag,
+                processors,
+                translators,
+                filters,
+                Vec::new(),
+                self.candidate_cap,
+            )
+            .with_preedit(self.preedit_delimiter, spelling),
+        )
     }
 }
 
@@ -338,6 +355,8 @@ mod tests {
             dictionary: DictSource::Inline(vec![entry(&["a", "b"], "十", 10.0)]),
             translator,
             candidate_cap: CANDIDATE_CAP,
+            preedit_delimiter: None,
+            custom: std::collections::BTreeMap::new(),
         }
     }
 

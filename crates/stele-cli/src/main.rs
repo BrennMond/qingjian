@@ -65,15 +65,6 @@ fn main() -> ExitCode {
     if args.iter().any(|a| a == "--check") {
         return self_check();
     }
-    if args.iter().any(|a| a == "--dump-config") {
-        eprintln!(
-            "错误：--dump-config 尚未实现。\n\
-             它需要方案加载（P2）与配置分层（P3）。\n\
-             现在报告未实现，好过打印一份假的配置——\n\
-             一个会骗人的调试工具比没有调试工具更糟。"
-        );
-        return ExitCode::FAILURE;
-    }
 
     // 方案来源：`--scheme-dir` 指定的目录，否则是**内嵌的 YAML**
     // （单一数据来源，因此两种路径走的都是同一个解析器）。
@@ -137,6 +128,10 @@ fn main() -> ExitCode {
         })
         .map(|(_, a)| a.as_str())
         .collect();
+
+    if args.iter().any(|a| a == "--dump-config") {
+        return dump_config(&engine, schema_id.as_deref());
+    }
 
     let mut session = engine.create_session();
 
@@ -216,6 +211,60 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--dump-config`：打印**合并后**的方案，并标注每个值的来源。
+///
+/// PLAN D25 要求「打印出来的每一行都能被用户补丁覆盖」。
+/// 现在只有一层（方案文件本身），所以来源那一列还看不出差别——
+/// **但接口的形状已经对了**，加用户补丁层时只需在这里多打一列。
+fn dump_config(engine: &stele_engine::EngineImpl, schema_id: Option<&str>) -> ExitCode {
+    use stele_core::Engine;
+
+    let id = if let Some(i) = schema_id {
+        i.to_owned()
+    } else if let Some(info) = engine.schemas().list().first() {
+        info.schema_id.clone()
+    } else {
+        eprintln!("没有已装载的方案");
+        return ExitCode::FAILURE;
+    };
+    let scheme = match engine.schemas().acquire(&id) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("装载方案 {id} 失败：{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let info = scheme.info();
+    println!("# 合并后的方案：{}", info.schema_id);
+    println!("# 来源    : 方案文件（叠加用户补丁后此处会多出层级）");
+    println!();
+    println!("schema:");
+    println!("  schema_id: {}", info.schema_id);
+    println!("  name: {}", info.name);
+    println!("  version: {}", info.version);
+    println!("  format_version: {}", info.format_version);
+    if let Some(f) = &info.family {
+        println!("  family: {f}");
+    }
+    println!();
+    println!("switches:");
+    for (name, sw) in scheme.options().iter() {
+        let states = sw
+            .states
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |s| format!("[{}, {}]", s[0], s[1]));
+        println!(
+            "  - name: {name}   reset: {}   states: {states}",
+            u8::from(sw.on)
+        );
+    }
+
+    println!("# 说明：完整的零件覆盖报告在装载阶段以诊断形式给出；");
+    println!("#       运行 `stele --scheme-dir <目录> --list` 会打印它。");
+    ExitCode::SUCCESS
 }
 
 /// 内核自检：验证那些"一旦破坏就会污染全部输出"的不变式。

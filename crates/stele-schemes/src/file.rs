@@ -147,7 +147,7 @@ fn load_scheme_with(
         .and_then(|e| e.get("translator"))
         .and_then(Node::as_str)
         .unwrap_or_default();
-    let translator = match translator_text.as_str() {
+    let mut translator = match translator_text.as_str() {
         TRANSLATOR_SPELLING_GRAPH => Some(TranslatorKind::SpellingGraph),
         TRANSLATOR_EXACT_CODE => Some(TranslatorKind::ExactCode),
         "" => {
@@ -215,6 +215,12 @@ fn load_scheme_with(
         }
     }
 
+    // RIME 的 `speller.delimiter: " '"` —— 第一位是自动插入的分隔符。
+    let preedit_delimiter = speller
+        .and_then(|sp| sp.get("delimiter"))
+        .and_then(Node::as_str)
+        .and_then(|d| d.chars().next());
+
     // ── translator 段：取词典 ──
     let dict_name = root
         .get("translator")
@@ -250,6 +256,68 @@ fn load_scheme_with(
         },
     }
 
+    // ── RIME 风格的 `engine:` 列表 ──
+    //
+    // 我们自己的短写法是 `engine.translator: spelling_graph`；
+    // RIME 的方案则列出零件**名字**。两种都收：有列表就先解析并出覆盖报告，
+    // 短写法缺省时可以从列表里推断翻译器族。
+    let mut coverage: Option<stele_engine::registry::CoverageReport> = None;
+    let mut custom_summary: Option<String> = None;
+    if let Some(eng) = root.get("engine") {
+        let mut names: Vec<String> = Vec::new();
+        for slot in ["processors", "segmentors", "translators", "filters"] {
+            if let Some(seq) = eng.get(slot).and_then(Node::as_seq) {
+                for it in seq {
+                    if let Some(n) = it.as_str() {
+                        names.push(n);
+                    }
+                }
+            }
+        }
+        if !names.is_empty() {
+            let rep = stele_engine::registry::CoverageReport::of(&names);
+            // 供 `--dump-config` 打印。
+            custom_summary = Some(rep.summary());
+            // 缺口逐条报出来，**按类分开**——"你缺数据"和"我们缺代码"
+            // 对使用者意味着完全不同的下一步。
+            for n in &rep.needs_data {
+                diags.push(
+                    Diagnostic::new(path, format!("零件 `{n}` 需要外部数据"))
+                        .with_field("engine")
+                        .with_entry("机制已实现；请自行提供数据（例如 OpenCC 的转换表）"),
+                );
+            }
+            for n in &rep.not_yet {
+                diags.push(
+                    Diagnostic::new(path, format!("零件 `{n}` 尚未实现"))
+                        .with_field("engine")
+                        .with_entry("这是本项目的缺口，不是你的配置问题"),
+                );
+            }
+            for n in &rep.unknown {
+                diags.push(
+                    Diagnostic::new(path, format!("不认识的零件名 `{n}`"))
+                        .with_field("engine")
+                        .with_entry(format!(
+                            "已知的零件：{}",
+                            stele_engine::registry::implemented_names().join("、")
+                        )),
+                );
+            }
+            coverage = Some(rep.clone());
+            // 没写短写法时，从列表里推断翻译器族。
+            if translator.is_none() {
+                if names.iter().any(|n| n.starts_with("script_translator")) {
+                    translator = Some(TranslatorKind::SpellingGraph);
+                } else if names.iter().any(|n| n.starts_with("table_translator")) {
+                    translator = Some(TranslatorKind::ExactCode);
+                }
+            }
+        }
+    }
+
+    let _ = coverage;
+
     // ── 汇总 ──
     if !diags.is_empty() {
         return Err(SchemaError::Invalid {
@@ -277,6 +345,14 @@ fn load_scheme_with(
         },
         translator: translator.expect("已在上面校验过"),
         candidate_cap,
+        preedit_delimiter,
+        custom: custom_summary
+            .map(|s| {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("component_coverage".to_owned(), s);
+                m
+            })
+            .unwrap_or_default(),
     })
 }
 

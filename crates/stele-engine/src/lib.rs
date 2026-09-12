@@ -25,6 +25,7 @@ pub mod lexicon;
 pub mod pipeline;
 pub mod processor;
 pub mod regex;
+pub mod registry;
 pub mod scheme;
 pub mod spelling;
 pub mod translator;
@@ -35,6 +36,7 @@ pub use lexicon::{Entry, InMemoryLexicon, LexiconError};
 pub use pipeline::{PipelineImpl, CANDIDATE_CAP};
 pub use processor::{Editor, Selector, Speller};
 pub use regex::{Regex, RegexError};
+pub use registry::{Availability, CoverageReport, Slot};
 pub use scheme::{LoadedScheme, SchemeDef, TranslatorKind, SCHEME_FORMAT_VERSION};
 pub use spelling::{Rule, SpellingTable};
 pub use translator::{

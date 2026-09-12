@@ -180,14 +180,32 @@ fn control_keys_are_returned_to_the_os() {
 }
 
 #[test]
-fn backspace_and_escape_edit_the_composition() {
+fn backspace_removes_a_whole_syllable() {
+    // RIME：「輸入拼音後按退格鍵，也會以音節爲單位回退刪除拼音」。
+    // 敲 `nihao` 按一下退格 → `ni`，而不是 `niha`。
     let e = engine();
     let mut s = e.create_session();
     type_text(&mut s, "nihao");
     press(&mut s, NamedKey::Backspace);
-    assert_eq!(s.composition().input, "niha");
+    assert_eq!(s.composition().input, "ni", "退格应当按音节，而不是按字符");
+
+    // 再按一下：只剩一个音节，清空。
+    press(&mut s, NamedKey::Backspace);
+    assert_eq!(s.composition().input, "");
+
+    // Esc 同样清空。
+    type_text(&mut s, "nihao");
     press(&mut s, NamedKey::Escape);
     assert!(s.composition().input.is_empty());
+}
+
+#[test]
+fn preedit_shows_syllable_boundaries() {
+    // 预编辑串按切分结果渲染成 `ni'hao` —— 用户能看见引擎把输入切成了什么。
+    let e = engine();
+    let mut s = e.create_session();
+    type_text(&mut s, "nihao");
+    assert_eq!(s.composition().preedit, "ni'hao");
 }
 
 #[test]

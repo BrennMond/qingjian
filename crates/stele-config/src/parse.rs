@@ -574,36 +574,37 @@ fn unescape_double(s: &str) -> String {
 /// 解析流式集合（`[...]` / `{...}`），支持嵌套。
 fn parse_flow(s: &str, no: u32) -> Result<Node, ParseError> {
     let mut p = Flow {
-        s: s.as_bytes(),
+        chars: s.chars().collect(),
         pos: 0,
         no,
     };
     let v = p.value()?;
     p.skip_ws();
-    if p.pos < p.s.len() {
+    if p.pos < p.chars.len() {
+        let rest: String = p.chars[p.pos..].iter().collect();
         return Err(ParseError {
             line: no,
-            message: format!("流式集合后面还有多余内容：`{}`", &s[p.pos..]),
+            message: format!("流式集合后面还有多余内容：`{rest}`"),
         });
     }
     Ok(Node::at(v, no))
 }
 
-struct Flow<'a> {
-    s: &'a [u8],
+struct Flow {
+    chars: Vec<char>,
     pos: usize,
     no: u32,
 }
 
-impl Flow<'_> {
+impl Flow {
     fn skip_ws(&mut self) {
-        while self.pos < self.s.len() && (self.s[self.pos] as char).is_whitespace() {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
             self.pos += 1;
         }
     }
 
     fn peek(&self) -> Option<char> {
-        self.s.get(self.pos).map(|b| *b as char)
+        self.chars.get(self.pos).copied()
     }
 
     fn value(&mut self) -> Result<Value, ParseError> {

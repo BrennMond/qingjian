@@ -32,6 +32,14 @@ pub struct PipelineImpl {
     filters: Vec<Box<dyn Filter>>,
     rankers: Vec<Arc<dyn Ranker>>,
     cap: usize,
+    /// 预编辑串的音节分隔符（`speller.delimiter`）。
+    ///
+    /// 有它时，预编辑串按**切分结果**渲染成 `ni'hao` 而不是 `nihao`——
+    /// 这正是 RIME 的 `speller/delimiter` 的作用，也让用户能看清引擎
+    /// 把输入切成了什么。
+    delimiter: Option<char>,
+    /// 用于渲染预编辑串的拼写层（拼写 → 编码单元 → 规范写法）。
+    spelling: Option<Arc<dyn stele_core::Spelling>>,
 }
 
 impl PipelineImpl {
@@ -54,7 +62,21 @@ impl PipelineImpl {
             filters,
             rankers,
             cap,
+            delimiter: None,
+            spelling: None,
         }
+    }
+
+    /// 设置预编辑串的音节分隔符与渲染所需的拼写层。
+    #[must_use]
+    pub fn with_preedit(
+        mut self,
+        delimiter: Option<char>,
+        spelling: Option<Arc<dyn stele_core::Spelling>>,
+    ) -> Self {
+        self.delimiter = delimiter;
+        self.spelling = spelling;
+        self
     }
 
     /// 本方案的标签。
@@ -80,6 +102,53 @@ impl PipelineImpl {
 /// 它被抽成函数，是为了让"未知变体走这条分支"这件事**只有一个定义点**——
 /// 将来真的加了变体，改这里一处即可。
 fn continue_checking() {}
+
+impl PipelineImpl {
+    /// 用**最优切分**渲染预编辑串，并给出每个音节的字节区间。
+    ///
+    /// 返回 `(预编辑串, 各音节的区间)`。没有拼写层时退回"整串一段"。
+    ///
+    /// 为什么两件事一起做：预编辑串的音节分隔（`ni'hao`）与按音节退格
+    /// **用的是同一份切分结果**。分开算就可能不一致——那种 bug 很难看，
+    /// 用户会看到"显示的边界"和"退格的边界"对不上。
+    fn segment_for_display(&self, input: &str) -> (String, Vec<Span>) {
+        let Some(sp) = self.spelling.as_ref() else {
+            return (input.to_owned(), vec![Span::new(0, input.len())]);
+        };
+        let mut buf = Vec::new();
+        {
+            let mut sink = stele_core::ExpansionSink::new(&mut buf, 1);
+            sp.expand(input, &mut sink);
+        }
+        let Some(best) = buf.first() else {
+            return (input.to_owned(), vec![Span::new(0, input.len())]);
+        };
+
+        let alphabet = sp.alphabet();
+        let mut parts: Vec<&str> = Vec::with_capacity(best.code.len());
+        let mut spans: Vec<Span> = Vec::with_capacity(best.code.len());
+        let mut pos = 0usize;
+        for u in &best.code {
+            let Some(t) = alphabet.text(*u) else { continue };
+            parts.push(t);
+            spans.push(Span::new(pos, pos + t.len()));
+            pos += t.len();
+        }
+        if parts.is_empty() {
+            return (input.to_owned(), vec![Span::new(0, input.len())]);
+        }
+        let text = match self.delimiter {
+            Some(d) => parts.join(&d.to_string()),
+            None => input.to_owned(),
+        };
+        // 拼不回去说明切分与输入串不一致（理论上不该发生）——
+        // 这时宁可退回整串一段，也不要给出错位的边界。
+        if pos != input.len() {
+            return (input.to_owned(), vec![Span::new(0, input.len())]);
+        }
+        (text, spans)
+    }
+}
 
 impl Pipeline for PipelineImpl {
     fn process_key(&mut self, state: &mut SessionState, key: &stele_core::Key) -> ProcessResult {
@@ -159,16 +228,22 @@ impl Pipeline for PipelineImpl {
 
         // ── 写回显示信息 ──
         //
-        // 预编辑串暂时就是输入串本身。带音节分隔的显示（`ni'hao`）属于
-        // `Formatter` 的职责，是 P2 的内容。
-        state.composition.preedit = state.composition.input.clone();
+        // 预编辑串与分段**用同一份切分结果**得出。
+        //
+        // 预编辑串带音节分隔不只是好看：它让用户看见引擎把输入切成了什么。
+        // 当 `xian` 被切成 `xi'an` 而不是 `xian` 时，用户能立刻明白候选为什么不对。
+        let (preedit, spans) = self.segment_for_display(&state.composition.input);
+        state.composition.preedit = preedit;
 
-        let mut seg = Segment::new(span);
-        seg.status = SegmentStatus::Guess;
-        seg.tags.push(self.tag);
-        seg.candidates.extend_from_slice(out);
         let mut segs = Segmentation::default();
-        segs.segments.push(seg);
+        for sp in spans {
+            let mut seg = Segment::new(sp);
+            seg.status = SegmentStatus::Guess;
+            seg.tags.push(self.tag);
+            // 候选只挂在**覆盖整串**的那一段上；逐音节的分段只用于显示与退格。
+            seg.candidates.extend_from_slice(out);
+            segs.segments.push(seg);
+        }
         state.composition.segments = segs;
     }
 }

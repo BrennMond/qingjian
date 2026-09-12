@@ -71,9 +71,15 @@ impl stele_core::Processor for Speller {
 
 /// 编辑处理器：退格与取消。
 ///
-/// **P1 的退格按"一个字符"回退。** RIME 支持"按音节回退"
-/// （「輸入拼音後按退格鍵，也會以音節爲單位回退刪除拼音」）——那需要知道
-/// 音节边界，属于 P2 的细化。这里先做对最朴素的行为。
+/// # 退格是**按音节**的
+///
+/// RIME：「輸入拼音後按退格鍵，也會以音節爲單位回退刪除拼音」。
+/// 也就是说敲了 `nihao` 按一下退格，应当回到 `ni` 而不是 `niha`。
+///
+/// 实现靠**上一次切分的结果**（`composition.segments`）：最后一段的起点
+/// 就是要截到的位置。切分结果每次 `compose` 都会重算，所以它总是最新的。
+///
+/// 若没有切分结果（例如输入还没被处理过），退回按一个字符删。
 pub struct Editor;
 
 impl stele_core::Processor for Editor {
@@ -83,13 +89,23 @@ impl stele_core::Processor for Editor {
         }
         match key.code {
             KeyCode::Named(NamedKey::Backspace) => {
-                if state.composition.input.pop().is_some() {
-                    state.composition.caret = state.composition.input.len();
-                    ProcessResult::Accepted
-                } else {
+                if state.composition.input.is_empty() {
                     // 输入串已空：退格应该还给系统（去删别处的文字）。
-                    ProcessResult::Noop
+                    return ProcessResult::Noop;
                 }
+                // 优先按音节回退。
+                let cut = last_segment_start(&state.composition)
+                    .filter(|c| *c < state.composition.input.len());
+                match cut {
+                    Some(pos) => state.composition.input.truncate(pos),
+                    None => {
+                        state.composition.input.pop();
+                    }
+                }
+                state.composition.caret = state.composition.input.len();
+                // 截断之后旧的分段不再成立，清掉以免下一次退格用错边界。
+                state.composition.segments.clear();
+                ProcessResult::Accepted
             }
             KeyCode::Named(NamedKey::Escape) => {
                 if state.composition.is_active() {
@@ -140,6 +156,11 @@ impl stele_core::Processor for Selector {
     }
 }
 
+/// 最后一段的起始字节位置。
+fn last_segment_start(c: &stele_core::Composition) -> Option<usize> {
+    c.segments.segments.last().map(|s| s.span.start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +195,33 @@ mod tests {
         let mut p = Speller::default();
         assert_eq!(p.process(&mut s, &Key::ch('\'')), ProcessResult::Accepted);
         assert_eq!(s.composition.input, "'");
+    }
+
+    #[test]
+    fn backspace_removes_a_whole_unit_when_segmented() {
+        // 敲 nihao 后按一下退格：按音节回退到 `ni`，而不是 `niha`。
+        let mut s = state();
+        s.composition.input = "nihao".into();
+        s.composition.caret = 5;
+        // `nihao` 切成 [ni][hao] 两段 —— 退格应当回到最后一段的起点（2）。
+        for (a, b) in [(0usize, 2usize), (2, 5)] {
+            let mut seg = stele_core::Segment::new(stele_core::Span::new(a, b));
+            seg.tags.push("abc");
+            s.composition.segments.segments.push(seg);
+        }
+
+        let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
+        assert_eq!(Editor.process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(s.composition.input, "ni");
+    }
+
+    #[test]
+    fn backspace_falls_back_to_one_char_without_segments() {
+        let mut s = state();
+        s.composition.input = "nihao".into();
+        let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
+        assert_eq!(Editor.process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(s.composition.input, "niha");
     }
 
     #[test]
