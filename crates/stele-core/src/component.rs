@@ -72,7 +72,16 @@ pub struct Query<'a> {
 //   5. **注册即"可撤销的效果"**：切换方案时上一个方案注册的组件不会泄漏。
 
 /// 处理器：决定"这一下按键算不算输入"。
-pub trait Processor {
+///
+/// # 为什么要求 `Send`
+///
+/// 流水线整体是 `Send` 的（会话要能被搬到别的线程——Windows TSF 组件跑在
+/// 别人的进程里，前端也有工作线程）。组件被流水线**按值拥有**，故必须 `Send`。
+///
+/// **但不要求 `Sync`**：组件是每会话一份的（它们可以有内部状态，
+/// 例如缓存与光标），因此不需要被多个线程共享。昂贵的资源
+/// （词库、拼写表）另以 `Arc` 共享——见 [`crate::session::Pipeline`]。
+pub trait Processor: Send {
     /// 处理一个按键。可以修改会话状态（输入串、光标、开关）。
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult;
 
@@ -83,7 +92,7 @@ pub trait Processor {
 }
 
 /// 切分器：把输入串切成若干段，并给每段打标签。
-pub trait Segmentor {
+pub trait Segmentor: Send {
     /// 从当前位置继续切分。
     ///
     /// 返回 `false` 表示"这一回合到此结束，后面的切分器不必再看"。
@@ -95,7 +104,7 @@ pub trait Segmentor {
 }
 
 /// 翻译器：为一段输入产出候选。
-pub trait Translator {
+pub trait Translator: Send {
     /// 候选写进 `sink`，由 sink 负责限流。
     fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>);
 
@@ -110,7 +119,7 @@ pub trait Translator {
 }
 
 /// 滤镜：对候选列表做后处理（去重、纠错、简繁、标点、置顶）。
-pub trait Filter {
+pub trait Filter: Send {
     /// 就地改写候选列表：可以修改、丢弃、插入、重排。
     fn apply(&self, q: &Query<'_>, span: Span, cands: &mut Vec<Candidate>);
 
@@ -127,7 +136,7 @@ pub trait Filter {
 ///
 /// **这是早期设计漏掉的一个类别。** RIME 有它（`formatter.h`，用于
 /// `preedit_format` / `comment_format`）。
-pub trait Formatter {
+pub trait Formatter: Send {
     /// 就地把 `text` 改写成要显示的样子。
     fn format(&self, q: &Query<'_>, text: &mut String);
 }
@@ -141,7 +150,7 @@ pub trait Formatter {
 /// 实现上它通常是流水线里**最后**一个翻译器，产出一个 [`Origin::Literal`]
 /// 的候选（文本就是原始输入），分数取 [`Score::FLOOR`] 之上一个很小的值——
 /// **分低，但一定在**。
-pub trait Fallback {
+pub trait Fallback: Send {
     /// 产出兜底候选。
     fn fallback(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>);
 

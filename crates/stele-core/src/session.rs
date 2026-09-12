@@ -19,7 +19,7 @@
 //! 也无法安全地多线程共享词库。
 
 use crate::candidate::Candidate;
-use crate::commit::{Commit, Event, Outcome, SelectionSource};
+use crate::commit::{Commit, Event, Outcome, ProcessResult, SelectionSource};
 use crate::component::Query;
 use crate::context::Context;
 use crate::error::SchemaError;
@@ -33,7 +33,7 @@ use std::sync::Arc;
 pub struct SchemaInfo {
     /// 方案 id，例如 `stele-default`。
     pub schema_id: String,
-    /// 显示名，例如「石經・全拼」。
+    /// 显示名，例如「石经・全拼」。
     pub name: String,
     /// 版本串。
     pub version: String,
@@ -47,15 +47,46 @@ pub struct SchemaInfo {
 }
 
 /// 一个已装载的方案。
-///
-/// **P0 只定义到这一层**；组件流水线的访问入口在 P1 加入（属加法，
-/// 不会破坏已有实现）。
 pub trait LoadedSchema: Send + Sync {
     /// 元数据。
     fn info(&self) -> &SchemaInfo;
 
     /// 该方案的开关集合（含方案声明的全部开关）。
     fn options(&self) -> &Options;
+
+    /// **为一个会话装配组件流水线。**
+    ///
+    /// # 为什么是"每会话一份"而不是共享
+    ///
+    /// 组件可以有内部状态（缓存、光标、上次处理结果），因此需要 `&mut self`。
+    /// 若把流水线共享给所有会话，就必须给每个组件加锁——那是自找的麻烦。
+    ///
+    /// **代价是可控的**：组件本身很轻，**昂贵的资源（词库、拼写表）通过
+    /// `Arc` 共享**，每个会话只是重新装配一遍引用。RIME 也是这个模型
+    /// （每个 Session 拥有一份 Engine）。
+    fn build_pipeline(&self) -> Box<dyn Pipeline + Send>;
+}
+
+/// 装配好的组件流水线。
+///
+/// 它是 `stele-engine` 与 `stele-core` 之间的**唯一接缝**：内核定义了
+/// "一次按键 → 一组候选"的形状，具体由哪些组件、按什么顺序完成，
+/// 完全由方案数据决定（PLAN D17 / D24）。
+pub trait Pipeline: Send {
+    /// 送一个按键；可以修改会话状态。
+    fn process_key(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult;
+
+    /// 由当前状态产出候选（含切分、翻译、过滤、重排）。
+    ///
+    /// 允许修改 `state` 以写回预编辑串与切分信息。
+    fn compose(&mut self, state: &mut SessionState, out: &mut Vec<Candidate>);
+
+    /// 收尾：排序与"精确优先"守卫。
+    ///
+    /// 默认实现已经正确，**实现者通常不需要覆盖它**。
+    fn finalize(&self, cands: &mut Vec<Candidate>) {
+        crate::sort::sort_candidates(cands);
+    }
 }
 
 /// 方案目录：应用级，持有已装载的方案，按内存预算惰性装载与淘汰（D29）。
@@ -124,6 +155,9 @@ pub trait Session {
 
     /// 当前候选列表，**已跨段合并、跨通道排好序**——前端照着画就行。
     ///
+    /// 它由 [`Pipeline::compose`] + [`Pipeline::finalize`] 产出，
+    /// 顺序满足"可复现"铁律（同一状态 + 同一输入 ⇒ 逐字节相同）。
+    ///
     /// 前端**不要**去读 `Segment::candidates`：它没有跨段合并、
     /// 没有跨通道排序、也没有经过最终滤镜。
     fn candidates(&self) -> &[Candidate];
@@ -149,6 +183,11 @@ pub trait Session {
 
     /// 按名字设置开关。返回 `false` 表示该开关未声明。
     fn set_option(&mut self, name: &str, on: bool) -> bool;
+
+    /// 当前方案的 id。
+    ///
+    /// 前端需要它（状态栏、方案菜单、以及"我是谁"的诊断）。
+    fn schema_id(&self) -> &str;
 
     /// 切换方案（D29）。**失败时必须保持原方案可用**（PLAN D26）。
     ///
@@ -188,6 +227,9 @@ pub struct SessionState {
     pub options: Options,
     /// 已上屏内容的滚动窗口（供预测与上下文重排使用）。
     pub context: Context,
+    /// 处理器请求的上屏；由**会话**在按键处理结束后兑现成
+    /// [`crate::Commit`]（见 [`crate::PendingCommit`]）。
+    pub pending_commit: Option<crate::commit::PendingCommit>,
 }
 
 impl SessionState {
@@ -198,6 +240,7 @@ impl SessionState {
             composition,
             options,
             context,
+            pending_commit: None,
         }
     }
 

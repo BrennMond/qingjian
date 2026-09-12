@@ -1,4 +1,4 @@
-//! # Stele-IME core / 石經内核抽象层
+//! # Stele-IME core / 石经内核抽象层
 //!
 //! 中文职责：定义引擎的一切抽象——`Engine` / `Session` 两级对象、五类骨架组件的
 //! trait、外部服务的 trait，以及贯穿全局的数据结构。
@@ -50,7 +50,7 @@ pub mod session;
 pub mod sort;
 
 pub use candidate::{is_exact, Candidate, CandidateSink, Lane, Origin, Span, SpellingAttr};
-pub use commit::{Commit, Event, Outcome, ProcessResult, SelectionSource, Trigger};
+pub use commit::{Commit, Event, Outcome, PendingCommit, ProcessResult, SelectionSource, Trigger};
 pub use component::{
     literal_candidate, Fallback, Filter, Formatter, Processor, Query, Segmentor, Translator,
     TranslatorDeps,
@@ -66,7 +66,9 @@ pub use service::{
     LiteralSpelling, MemoryEntry, MemoryStore, NoMemory, Prediction, PredictionOrigin, QueryView,
     Ranker, Spelling,
 };
-pub use session::{Engine, LoadedSchema, SchemaCatalog, SchemaInfo, Session, SessionState};
+pub use session::{
+    Engine, LoadedSchema, Pipeline, SchemaCatalog, SchemaInfo, Session, SessionState,
+};
 pub use sort::{
     clamp_bonus, compare, count_lane, has_cross_class_inversion, origin_rank, sort_candidates,
 };

@@ -7,6 +7,8 @@ name = "stele-bench"
 version = "0.0.0"
 dependencies = [
  "stele-core",
+ "stele-engine",
+ "stele-schemes-builtin",
 ]
 
 [[package]]
@@ -14,8 +16,25 @@ name = "stele-cli"
 version = "0.0.0"
 dependencies = [
  "stele-core",
+ "stele-engine",
+ "stele-schemes-builtin",
 ]
 
 [[package]]
 name = "stele-core"
 version = "0.0.0"
+
+[[package]]
+name = "stele-engine"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
+]
+
+[[package]]
+name = "stele-schemes-builtin"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
+ "stele-engine",
+]

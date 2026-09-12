@@ -82,6 +82,39 @@ pub enum Outcome {
     Committed(Commit),
 }
 
+/// 处理器**请求上屏**时填写的东西。
+///
+/// # 为什么处理器不直接产出 `Commit`
+///
+/// 只有**会话**才同时知道"已渲染的候选列表"和"当前输入"，而 `Commit`
+/// 需要这两者（`text` 来自候选，`input`/`attr`/`origin` 来自候选，
+/// `context` 来自会话历史）。处理器只表达**意图**（"选第 3 个"），
+/// 由会话兑现成完整的 [`Commit`]。
+///
+/// 这也让"[`crate::SelectionSource`] 约束预测候选不被盲选"这条规则
+/// 有一个统一的执行点。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PendingCommit {
+    /// 选中**已渲染候选列表**中的第几个（全局序号，从 0 开始）。
+    pub index: usize,
+    /// 触发方式。
+    pub trigger: Trigger,
+    /// 选择的来源（键盘盲选 / 明确点选）。
+    pub source: SelectionSource,
+}
+
+impl PendingCommit {
+    /// 键盘盲选第 `index` 个。
+    #[must_use]
+    pub const fn keyboard(index: usize, trigger: Trigger) -> Self {
+        Self {
+            index,
+            trigger,
+            source: SelectionSource::Keyboard,
+        }
+    }
+}
+
 /// 处理器之间的三态结果。
 ///
 /// 与 [`Outcome`] 的区别：`Outcome` 是**会话对外**的结果（两态 + 上屏信息），
@@ -110,6 +143,11 @@ pub enum Event {
         text: String,
         /// 候选来源。
         origin: Origin,
+        /// **这条编码是怎么拼出来的。**
+        ///
+        /// 接收方靠它决定要不要把 `input` 规范化成规范编码——
+        /// 少了这个字段，G10 那条规则**无法实现**。
+        attr: SpellingAttr,
         /// 上屏时的通道。
         lane: Lane,
     },

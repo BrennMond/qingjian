@@ -1,0 +1,217 @@
+//! # Lexicon
+//!
+//! 中文职责：把**编码**映射到词条的内存实现。
+//! English role: an in-memory `code → entries` lexicon.
+//! 架构位置：`stele-core::Lexicon` 的实现。P2.5 会加一个 mmap 实现，
+//! **引擎代码一行都不用改**——这正是把它做成 trait 的原因。
+//!
+//! # 这里只做精确匹配
+//!
+//! 变体拼写（简拼 / 模糊音 / 补全 / 纠错）**全部在拼写层解决**，
+//! 到这里的时候已经是一条确定的编码了。
+//! 好处是这张表可以简单到一次 `BTreeMap` 查找，不需要任何模糊检索结构。
+
+use std::collections::BTreeMap;
+use stele_core::{
+    Candidate, CandidateSink, CodeAlphabet, CodeUnitId, Lexicon, Origin, Score, Span, SpellingAttr,
+};
+
+/// 词条：文本 + 对数域分数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// 上屏文本。
+    pub text: String,
+    /// 对数域分数（由权重换算，换算只发生在装载期）。
+    pub score: Score,
+    /// 备注（例如拼音），可选。
+    pub comment: Option<String>,
+}
+
+/// 内存词库。
+///
+/// 内部用 `BTreeMap` 而非 `HashMap`：**凡是顺序可能影响输出的集合一律用有序容器**
+/// （PLAN §5.2）。同码词条的顺序由装载时的排序确定，不依赖哈希。
+#[derive(Debug)]
+pub struct InMemoryLexicon {
+    alphabet: CodeAlphabet,
+    map: BTreeMap<Vec<CodeUnitId>, Vec<Entry>>,
+}
+
+/// 装载词库时的错误。
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LexiconError {
+    /// 词条引用了字母表里没有的编码单元。
+    UnknownUnit {
+        /// 出错的编码单元文本。
+        unit: String,
+        /// 属于哪个词条。
+        word: String,
+    },
+}
+
+impl core::fmt::Display for LexiconError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownUnit { unit, word } => write!(
+                f,
+                "词条「{word}」引用了字母表里没有的编码单元「{unit}」——\
+                 方案数据不一致（字母表与词库必须来自同一个方案）"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LexiconError {}
+
+impl InMemoryLexicon {
+    /// 由"编码单元文本序列 → 词 → 权重"的三元组构造。
+    ///
+    /// # Errors
+    ///
+    /// 某个编码单元不在字母表里时返回 [`LexiconError::UnknownUnit`]。
+    /// **这是一处加载期的响亮失败**：字母表与词库不一致，说明方案数据有错，
+    /// 而不是"这个词查不到"。
+    pub fn from_entries(
+        alphabet: CodeAlphabet,
+        entries: &[(Vec<&str>, &str, f64)],
+    ) -> Result<Self, LexiconError> {
+        let mut map: BTreeMap<Vec<CodeUnitId>, Vec<Entry>> = BTreeMap::new();
+
+        for (code_texts, word, weight) in entries {
+            let mut code = Vec::with_capacity(code_texts.len());
+            for t in code_texts {
+                let Some(id) = alphabet.id_of(t) else {
+                    return Err(LexiconError::UnknownUnit {
+                        unit: (*t).to_owned(),
+                        word: (*word).to_owned(),
+                    });
+                };
+                code.push(id);
+            }
+            map.entry(code).or_default().push(Entry {
+                text: (*word).to_owned(),
+                score: Score::from_weight(*weight),
+                comment: None,
+            });
+        }
+
+        // 同码词条按"分数降序、文本升序"固定下来——装载期一次排好，
+        // 按键路径上不再排序（也保证同分词的顺序确定）。
+        for entries in map.values_mut() {
+            entries.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.text.cmp(&b.text)));
+        }
+
+        Ok(Self { alphabet, map })
+    }
+
+    /// 字母表。
+    #[must_use]
+    pub fn alphabet(&self) -> &CodeAlphabet {
+        &self.alphabet
+    }
+
+    /// 词条总数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.values().map(Vec::len).sum()
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 不同的编码数。
+    #[must_use]
+    pub fn code_count(&self) -> usize {
+        self.map.len()
+    }
+}
+
+impl Lexicon for InMemoryLexicon {
+    fn lookup(&self, code: &[CodeUnitId], out: &mut CandidateSink<'_>) {
+        let Some(entries) = self.map.get(code) else {
+            return;
+        };
+        // 编码覆盖整段输入；span 由翻译器在推入前统一设置，
+        // 这里先用一个占位（长度等于编码单元数，翻译器会改写）。
+        let span = Span::new(0, code.len());
+        for e in entries {
+            out.push(Candidate {
+                text: e.text.clone(),
+                comment: e.comment.clone(),
+                score: e.score,
+                origin: Origin::SystemWord,
+                attr: SpellingAttr::NORMAL,
+                span,
+                lane: stele_core::Lane::Input,
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alphabet(units: &[&str]) -> CodeAlphabet {
+        CodeAlphabet::new(units.iter().map(|s| (*s).to_owned()).collect())
+    }
+
+    #[test]
+    fn looks_up_an_exact_code() {
+        let lex = InMemoryLexicon::from_entries(
+            alphabet(&["ni", "hao"]),
+            &[(vec!["ni", "hao"], "你好", 100.0)],
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        let mut sink = CandidateSink::new(&mut buf, 16);
+        lex.lookup(&[CodeUnitId(0), CodeUnitId(1)], &mut sink);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].text, "你好");
+        assert_eq!(buf[0].origin, Origin::SystemWord);
+    }
+
+    #[test]
+    fn unknown_unit_is_a_load_error_not_a_miss() {
+        // 字母表与词库不一致必须在**装载期**响亮报错，
+        // 而不是让那个词永远查不到（那种 bug 极难排查）。
+        let err =
+            InMemoryLexicon::from_entries(alphabet(&["ni"]), &[(vec!["ni", "hao"], "你好", 1.0)])
+                .unwrap_err();
+        assert!(matches!(err, LexiconError::UnknownUnit { .. }));
+    }
+
+    #[test]
+    fn same_code_entries_are_ordered_deterministically() {
+        let lex = InMemoryLexicon::from_entries(
+            alphabet(&["a"]),
+            &[
+                (vec!["a"], "低", 1.0),
+                (vec!["a"], "高", 100.0),
+                (vec!["a"], "中", 50.0),
+            ],
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        let mut sink = CandidateSink::new(&mut buf, 16);
+        lex.lookup(&[CodeUnitId(0)], &mut sink);
+        let texts: Vec<&str> = buf.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["高", "中", "低"]);
+    }
+
+    #[test]
+    fn missing_code_returns_nothing() {
+        let lex =
+            InMemoryLexicon::from_entries(alphabet(&["a"]), &[(vec!["a"], "甲", 1.0)]).unwrap();
+        let mut buf = Vec::new();
+        let mut sink = CandidateSink::new(&mut buf, 16);
+        lex.lookup(&[CodeUnitId(99)], &mut sink);
+        assert!(buf.is_empty());
+    }
+}

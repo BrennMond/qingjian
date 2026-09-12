@@ -1,0 +1,17 @@
+[package]
+name = "stele-engine"
+description = "Stele-IME 的原生引擎：拼写层、词典、翻译器、处理器、过滤器。零第三方依赖。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 与 stele-core 一样保持零依赖（PLAN D9）：
+# 引擎骨架必须是可纯 `cargo test` 的、供应链可审计的。
+[dependencies]
+stele-core = { path = "../stele-core" }
+
+[lints]
+workspace = true

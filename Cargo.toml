@@ -7,6 +7,8 @@
 resolver = "2"
 members = [
     "crates/stele-core",
+    "crates/stele-engine",
+    "crates/stele-schemes-builtin",
     "crates/stele-cli",
     "crates/stele-bench",
 ]
@@ -14,7 +16,8 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.75"
+# 由 rust-toolchain.toml 固定为 1.98；MSRV 取一个我们真正验证过的下限。
+rust-version = "1.82"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/example/stele-ime"
 authors = ["Stele-IME contributors"]
@@ -26,6 +29,10 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+# 少数 pedantic 项是纯风格，且"改"只会让代码更难读。**逐条列出**，
+# 而不是关掉整个 pedantic——关掉整组等于放弃了那几百条有用的检查。
+too_many_lines = "allow"          # CLI 的参数分派与自检函数，拆开反而更难跟
+
 
 [profile.release]
 lto = "thin"
