@@ -22,7 +22,10 @@
 # 注意：tools/oracle/ 的对照数据**要入库**（它是实验记录）。
 
 # 方案目录里的词库产物缓存（`stele --scheme-dir <目录>` 建的）。
-/schemes/**/.stele-cache/
+# 用 `**` 而不是 `/schemes/**`：测试夹具目录（如
+# `crates/stele-schemes/tests/schemes-inline/`）里的缓存同样是构建产物，
+# 原先的写法只覆盖 `schemes/`，于是它会被 `git add -A` 卷进提交。
+**/.stele-cache/
 
 # 部署期从上游取回的**源数据**（词表 / OpenCC），以及生成过程中的中间文件。
 # 它们不进仓库：最大几块的授权状态混合（PLAN §10），
