@@ -36,8 +36,8 @@
 
 | | |
 | --- | --- |
-| 提交 | 11 个 |
-| 测试 | **281 个**（clippy 零警告，三条 CI 门禁全过） |
+| 提交 | 12 个 |
+| 测试 | **282 个**（clippy 零警告，三条 CI 门禁全过） |
 | crate | 8 个 |
 | Rust | 约 16000 行 |
 
@@ -195,13 +195,14 @@ RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_pres
 | 18 | **`Query::composition` 让流水线每键克隆三份会话状态**，而全项目零个使用者 —— P50 301ns→1.55µs | 加字段前先问"谁读它"，实测会告诉你 |
 | 19 | **我把猜出来的约定写进文档并称之为"RIME 约定"**（`prefix: uU` / "RIME 也做 leading 缓存"） | 不确定就写"这是我们的选择"，或引源码；猜的约定写进文档比写进代码更危险 |
 | 20 | **语义改了 `KeyBinder` 却忘了改 `pipeline`** —— `redirecting` 永远是 false，而测试当时是绿的 | 跨两处的语义改动，要有一条**只在正确实现下**才过的测试 |
+| 21 | **目录装载从来没应用过用户补丁** —— 接线写在 `load_scheme_layered` 里，而 CLI 走的是目录那条路；测试也只覆盖了前者 | "机制存在"与"机制被走到"是两件事。**手工跑一遍并对照两份输出**才发现的（P2.5 的接线 bug 是同一形状，这是第二次） |
 
 ---
 
 ## 6. 现在怎么跑
 
 ```bash
-cargo build --workspace && cargo test --workspace      # 281 个测试
+cargo build --workspace && cargo test --workspace      # 282 个测试
 cargo run -p stele-cli -- --check                      # 7 组内核不变式
 cargo run -p stele-cli -- nihao                        # → 你好
 cargo run -p stele-cli -- nh                           # → 你好（简拼）
