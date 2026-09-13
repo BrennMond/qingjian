@@ -13,7 +13,8 @@ version: "0.2.0"
 sort: by_weight
 import_tables:
   # **词级读音人工覆盖表**（审计 §2.I）——必须排在 generated **之前**：
-  # 生成器只会按单字首读音猜词编码，猜错的那些要靠这张表补上正确读音。
+  # 生成器只会按**单字首选读音**拼词编码（词级读音不在任何一份可分发数据里），
+  # 拼错的那些要靠这张表补上正确读音。
   # 见 `cn_dicts/word_pinyin.override.dict.yaml` 的文件头。
   - cn_dicts/word_pinyin.override
   # 手写的演示词库（P1 起就在，用来验证装载路径）。

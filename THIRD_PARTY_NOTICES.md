@@ -56,9 +56,9 @@
 头部注释写明"生成产物，不要手改"。
 
 **怎么来的**：`tools/wordlist-gen`（本项目自写）读取 §2 的锁定的源数据，
-做以下**修改性转换**：去声调、多音字单字表启发式选音、按 `TSCharacters.txt`
-过滤繁体词条、去重、生成 `speller.alphabet`。转换脚本与参数在
-`tools/wordlist-gen/src/main.rs`（`ReadingPolicy::CorpusFrequent`）。
+做以下**修改性转换**：去声调、单字取 `pinyin.txt` 的**首选读音**（每行列表
+首个）、按 `TSCharacters.txt` 过滤繁体词条、去重、生成 `speller.alphabet`、
+落盘前自检"码 = 首选读音"。转换脚本与参数在 `tools/wordlist-gen/src/main.rs`。
 
 **是否修改**：**是**——是转换与再编排的产物，不是上游文件的副本。
 
@@ -72,26 +72,31 @@
 | BYVoid/OpenCC（`TSCharacters.txt`） | <https://github.com/BYVoid/OpenCC> | `c363a7ba51d487950982bd8a589211ffbfd95ba1` | 未署名（文件头声明 `License: Apache-2.0`） | Apache-2.0 | [`LICENSE-APACHE`](LICENSE-APACHE) |
 
 **可复现性（实测，不是声明）**：用上述四个 revision 的输入重新运行生成器，
-产出的词库**正文 414,525 条逐字节一致**，`pinyin.schema.yaml` 的音节表
-**零差异**（只有生成器头部注释 3 行因本次整改的文字订正而不同）。
-命令与输出见 §6.4。
+产出的整份词库**逐字节一致**，`pinyin.schema.yaml` 的音节表**零差异**
+（命令与输出见 §6.4）。
 
-> **已知缺陷（不影响许可，影响准确性）**：当前**已提交**的
-> `generated.dict.yaml` 头部把 `jieba_dict.txt` 标成「THUOCL，MIT」。
-> 生成器已修正（`tools/wordlist-gen/src/main.rs`），下一次重新生成即消失。
+> **已消除的历史缺陷（保留记录）**：旧版生成器把 `jieba_dict.txt` 标成
+> 「THUOCL，MIT」，于产物头部留下了一句错误署名。生成器已修正，**并在
+> 本轮重新生成后消失**——现在头部写的是 `jieba_dict.txt（jieba，MIT）`。
 
 ### 1.2 `schemes/qingjian-default/pinyin.schema.yaml` 的 `speller.alphabet:` 段（**派生子段**）
 
 整个文件是本项目自撰的方案（字母表、规则、翻译器配置）；
 其中 `speller.alphabet:` 这一段由 `tools/wordlist-gen` **整段重写**，
-内容是生成词库中出现过的音节集合（399 个编码单元），因此它是 §1.1 的
+内容是生成词库中出现过的音节集合（405 个编码单元），因此它是 §1.1 的
 派生物，随词库一起适用上表的许可。文件的其余每一行都是人写的方案决策。
 `base.dict.yaml` / `shape.dict.yaml` / `z-pinyin-demo.schema.yaml` 是自造演示数据
 （`base.dict.yaml` 头部明确写"几百条规模的演示词库"），**不含**第三方内容。
 
-> **已知缺陷**：`schemes/qingjian-default/opencc.manifest.yaml` 把 `emoji`
-> 转换器的 `license` 写成了 `Apache-2.0`。按 §2 的核实，rime-ice 的
-> `opencc/emoji.*` 是 **GPL-3.0-only**。该文件需要改（见 §5.2）。
+> **`z-pinyin-demo.schema.yaml` 与本段的同步**：它是默认方案的**内嵌孪生体**
+> （字段相同，词库指向几百条的手写演示词表），其 `speller.alphabet` 必须与
+> `pinyin.schema.yaml` 逐项一致——`crates/qingjian-schemes/tests/spelling_resource_bounds.rs`
+> 用它的字母表规模来测真实方案。本轮重新生成后两份都已更新到同一份 405 项列表。
+
+> **已修正（保留记录）**：`schemes/qingjian-default/opencc.manifest.yaml` 曾把
+> `emoji` 转换器的 `license` 写成 `Apache-2.0`。按 §2 的核实，rime-ice 的
+> `opencc/emoji.*` 是 **GPL-3.0-only**；该文件现已改为 `GPL-3.0-only`，
+> 并在注释里说明"该数据不随本仓库分发"。
 
 ### 1.3 `tools/librime-probe/probe.c`（**部分抄自 librime**）
 
@@ -261,12 +266,15 @@ calc_oracle --test number_oracle` 验证）。
 **残留**：git **历史**里仍有这三个文件的旧版本。历史清理（`filter-repo` 等）
 不在本次范围；如需彻底移除需另做一次带备份的历史改写。
 
-### 5.2 待修：`opencc.manifest.yaml` 把 emoji 标成 Apache-2.0
+### 5.2 已修：`opencc.manifest.yaml` 的 emoji 许可曾标成 Apache-2.0
 
 位置：`schemes/qingjian-default/opencc.manifest.yaml`，
-`converters[0]`（`name: emoji`）的 `license: Apache-2.0`。
-应改为 `GPL-3.0-only`，并把 `source` 补上固定 revision。
-本次整改未改 `schemes/`（超出本任务的修改范围），在此登记。
+`converters[0]`（`name: emoji`）的 `license`。
+
+**现状**：已改为 `GPL-3.0-only`（文件里另有一条注释说明"该数据不随本仓库
+分发，只在本地 `tools/fetch-sources.sh` 取回"）。
+本条保留记录，是为了让"这里曾经标错"可被回溯——先前的记录是
+「本次整改未改 `schemes/`，在此登记」，那已经过时。
 
 ### 5.3 未解决：Rime wiki 两份逐字副本的许可
 
@@ -364,14 +372,19 @@ cargo run --offline --manifest-path tools/wordlist-gen/Cargo.toml -- \
     --sources schemes/qingjian-default/build --out "$PWD/.work/regen"
 diff <(grep -v '^#' schemes/qingjian-default/cn_dicts/generated.dict.yaml) \
      <(grep -v '^#' .work/regen/cn_dicts/generated.dict.yaml)
-# → 无输出（414,525 条正文与 YAML 头逐字节一致）
+# → 无输出（414,525 条正文逐字节一致）
+diff schemes/qingjian-default/cn_dicts/generated.dict.yaml \
+     .work/regen/cn_dicts/generated.dict.yaml
+# → 无输出（**含 YAML 头部**也逐字节一致：jieba 的署名已不再是「THUOCL」）
 diff schemes/qingjian-default/pinyin.schema.yaml .work/regen/pinyin.schema.yaml
 # → 无输出（音节表零差异）
 ```
 
 生成器 stderr 摘要：拼音表 44,435 字（6,992 多音字）；去重后 653,447 词；
 简繁过滤滤掉 236,127 条；最终 **414,525 条**（414 单字 + 414,111 词），
-399 个编码单元——与已跟踪产物的头部数字一致。
+**405 个编码单元**——与已跟踪产物的头部数字一致。落盘前的两条自检都在
+stderr 里留下了记录：`414525 条词条的编码与 pinyin.txt 的首选读音逐字一致`、
+`产出的词库能被装载器解析`。
 
 ### 6.5 确认仓库里没有 registry 依赖
 

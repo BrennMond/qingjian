@@ -17,6 +17,7 @@
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 cargo test --workspace --offline --locked          # 40 个测试目标
+cargo test --workspace --offline --locked -- --include-ignored   # 含唯一一条 #[ignore]（会话边界）
 for f in scripts/verify-*.sh; do bash "$f"; done   # 四项门禁
 target/release/qingjian --check                       # 8 组不变式
 bash tools/fetch-sources.sh                        # 源数据固定 revision + sha256 校验
@@ -74,7 +75,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | --- | --- | --- | --- |
 | 1 | README 状态、测试数、功能边界更新 | `README.md` 已按阶段 1–4 的事实校正（删掉"不含第三方词典数据"、"完全兼容 Rime"等） | ✅ |
 | 2 | 删除或改正对 Rime 隐私/现代性的无证据推论 | `README.md` / `PLAN.md` / `docs/HANDOFF.md` 已删；改为审计 §3.1 的口径 | ✅ |
-| 3 | 默认词库明示实验性质和已知词级读音限制 | `schemes/qingjian-default/pinyin.dict.yaml` 与 `cn_dicts/word_pinyin.override.dict.yaml` 文件头明示；**覆盖表只修了枚举到的词**，表外多音字词仍靠生成器猜（`phase-3-4.md` §5.4.1） | ⚠️ |
+| 3 | 默认词库明示实验性质和已知词级读音限制 | `schemes/qingjian-default/pinyin.dict.yaml` 与 `cn_dicts/word_pinyin.override.dict.yaml` 文件头，以及生成词库头部（写明"单字取首选读音、不做覆盖、落盘前自检"）都明示了；**覆盖表只修了枚举到的词**，表外的多音字词只能按单字首选读音拼——没有可分发的词级读音数据源（`phase-3-4.md` §5.4.2） | ⚠️ |
 | 4 | 第三方 notices、固定版本、哈希、许可证齐全 | `THIRD_PARTY_NOTICES.md`（400 行）、`tools/sources.lock`（16 条固定 revision + SHA-256）、`licenses/`；**`reference/wiki-*.md` 的许可 UNVERIFIED**（rime/home 无通用 LICENSE） | ⚠️ |
 | 5 | 隐私模型不把"没有联网代码"简化成完整隐私证明 | `docs/privacy-model.md` 专门分节区分"代码已核实"与"依赖前端/OS"；禁学 API 明确标注**尚未实现** | ✅ |
 
@@ -88,6 +89,17 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 
 | 6.4 #3 | 词库质量 | 没有可分发的**词级拼音数据集**；覆盖表是人工枚举 |
 | 6.4 #4 | 许可 | `reference/wiki-*.md` 许可未定（三种处置待决） |
+
+**本轮已消除的两项**（此前记在这里的"生成器单字编码错误"与
+"`--include-ignored` 下有一条编不过的 doctest"）：
+
+- `家 → jie`：生成器改为只取 `pinyin.txt` 的首选读音，并加落盘前
+  「码 = 首选读音」自检；原先 `#[ignore]` 的集成验收测试已转正，
+  另加两条生成器单测。证据：`tools/wordlist-gen/src/main.rs`、
+  `crates/qingjian-schemes/tests/word_pinyin_quality.rs`，
+  过程与复现命令见 `phase-3-4.md` §5.4.1 与 `THIRD_PARTY_NOTICES.md` §6.4。
+- `scheme::entry` 的 ` ```ignore ` 文档示例不是合法 Rust，`--include-ignored`
+  会在它上面失败；现已改成会编译会跑的例子。
 
 另外三处**功能**层面的已知缺口（不在 §6 检查单里，但同样是审计点名的）：
 

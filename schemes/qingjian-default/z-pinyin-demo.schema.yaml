@@ -218,6 +218,7 @@ speller:
     - hei
     - hen
     - heng
+    - hm
     - hong
     - hou
     - hu
@@ -269,6 +270,7 @@ speller:
     - lei
     - leng
     - li
+    - lia
     - lian
     - liang
     - liao
@@ -284,6 +286,7 @@ speller:
     - luo
     - lv
     - lve
+    - m
     - ma
     - mai
     - man
@@ -312,6 +315,7 @@ speller:
     - ne
     - nei
     - nen
+    - neng
     - ni
     - nian
     - niang
@@ -327,6 +331,7 @@ speller:
     - nuo
     - nv
     - nve
+    - o
     - ou
     - pa
     - pai
@@ -369,6 +374,7 @@ speller:
     - rong
     - rou
     - ru
+    - rua
     - ruan
     - rui
     - run

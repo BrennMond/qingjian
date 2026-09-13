@@ -21,12 +21,17 @@
 use qingjian_core::{CodeAlphabet, Engine, Expansion, ExpansionSink, Key};
 use qingjian_engine::spelling::{ExpansionLimits, ExpansionStats, SpellingTable};
 
-/// 真实默认拼音方案的拼写表（399 个音节 + 一条缩写规则）。
+/// 真实默认拼音方案的拼写表（405 个音节 + 一条缩写规则）。
 ///
 /// 用**内嵌的演示孪生体**（`z-pinyin-demo`）：它的 `alphabet` 与 `rules`
 /// 与 `schemes/qingjian-default/pinyin.schema.yaml` 完全一致，只是词库指向
 /// 手写的小词典（见 `minimal.rs` 的模块文档）。因此这里测的是
 /// **真实的字母表规模**，却不必在测试里编译 41 万词条。
+///
+/// "完全一致"不是注释里的自我声明：`the_embedded_demo_alphabet_matches_the_real_scheme`
+/// 会拿磁盘上的真实方案逐项对照。这条断言是必要的——真实方案的
+/// `speller.alphabet` 由 `tools/wordlist-gen` **整段重写**，一次重新生成
+/// （399 → 405 个音节）就足以让上面这句话变成假话。
 fn real_pinyin_table() -> SpellingTable {
     let defs = qingjian_schemes::all().expect("内嵌方案必须能装载");
     let p = defs
@@ -278,4 +283,69 @@ fn release_single_key_expansion_is_under_ten_milliseconds() {
             "`{spelling}` 的单键展开最坏 {worst:?}，超过 10 ms 红线"
         );
     }
+}
+
+/// 读出方案文件里 `speller.alphabet` 那一段的列表项。
+///
+/// 与 `tools/wordlist-gen::rewrite_alphabet` 认的是同一段结构：
+/// 一行 `  alphabet:`，后面跟着缩进更深的 `- 项`。
+fn alphabet_block(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_end() == "  alphabet:")
+        .expect("真实方案的 speller 段里必须有 `  alphabet:`");
+    let mut out = Vec::new();
+    for l in &lines[start + 1..] {
+        let indent = l.len() - l.trim_start().len();
+        let item = l.trim_start();
+        if item.starts_with("- ") && indent > 2 {
+            out.push(item[2..].trim().to_owned());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// **内嵌演示孪生体的字母表必须与磁盘上的真实方案逐项一致。**
+///
+/// 上面 [`real_pinyin_table`] 的整个前提就是这一条：它拿演示体测
+/// "真实规模"。而真实方案的 `speller.alphabet` 是 `tools/wordlist-gen`
+/// 生成并**整段重写**的——重新生成一次词库（本轮：399 → 405 个音节）
+/// 就会让演示体过期，症状是"测试还绿，但它测的已经不是真实规模了"。
+/// 所以这里把它变成一条会红的断言，而不是一句注释。
+#[test]
+fn the_embedded_demo_alphabet_matches_the_real_scheme() {
+    let schemes_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemes/qingjian-default");
+    let real_text = std::fs::read_to_string(schemes_dir.join("pinyin.schema.yaml"))
+        .expect("真实方案 pinyin.schema.yaml 必须在仓库里");
+    let mut real_units = alphabet_block(&real_text);
+    assert!(
+        real_units.len() >= 300,
+        "真实方案的字母表应当有几百个音节，实得 {}",
+        real_units.len()
+    );
+    real_units.sort();
+    real_units.dedup();
+
+    let defs = qingjian_schemes::all().expect("内嵌方案必须能装载");
+    let demo = defs
+        .iter()
+        .find(|d| d.translator == qingjian_engine::scheme::TranslatorKind::SpellingGraph)
+        .expect("必须存在拼写图族方案（拼音）");
+    let mut demo_units = demo.alphabet.clone();
+    demo_units.sort();
+    demo_units.dedup();
+
+    assert_eq!(
+        demo_units, real_units,
+        "内嵌的 `z-pinyin-demo` 与真实方案的字母表已经分叉。\
+         重新生成词库后必须同步 `schemes/qingjian-default/z-pinyin-demo.schema.yaml` \
+         的 `speller.alphabet`（两份必须逐项相同，见该文件头部的 ⚠️）。"
+    );
+
+    // 演示体自己也要能编译成拼写表——避免"字母表对但规则坏"。
+    assert!(!demo.rules.is_empty(), "拼音方案必须有拼写规则（缩写）");
 }

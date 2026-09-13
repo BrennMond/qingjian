@@ -3,7 +3,8 @@
 > **对应**：`docs/INDEPENDENT_AUDIT_AND_DEEPSEEK_PLAN.md` §4 阶段 3 与阶段 4。
 >
 > **本页必须与"没做什么"一起读。** 阶段 4 的第 1 项
-> （词级读音与词库质量评测）**没有完成**，见 §5。
+> （词级读音与词库质量评测）**是部分完成**，见 §5：单字读音这一块
+> 本轮修好了（§5.4.1），**词级读音**仍然没有可分发的数据源（§5.4.2）。
 
 ---
 
@@ -12,10 +13,18 @@
 ```bash
 cargo fmt --all -- --check                                                  # ✓
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings     # ✓
-cargo test --workspace --offline --locked                                    # ✓ 38 个测试目标全绿
+cargo test --workspace --offline --locked                                    # ✓ 全绿
+cargo test --workspace --offline --locked -- --include-ignored               # ✓ 含唯一一条 #[ignore]（会话边界，见 phase-2.md §8）
 for f in scripts/verify-*.sh; do bash "$f"; done                             # ✓ 四项门禁
 target/release/qingjian --check                                                 # ✓ 8 组不变式
 ```
+
+> **常规 `cargo test` 通过 ≠ 全部完成**。本页 §5.4 那条
+> 词级读音的验收点原先是一条 `#[ignore]`——现在它**已转正**，
+> 因为生成器的单字编码错误已经修掉（§5.4.1）。
+> 工作区里剩下的唯一一条 `#[ignore]` 是
+> `session_state_machine.rs::reopen_is_not_a_full_commit_history`，
+> 它记录的是**仍然存在**的会话边界。
 
 ---
 
@@ -173,12 +182,19 @@ CLI 启动路径改用报告入口，并把被跳过的方案逐条打印。
 
 ### 5.4 阶段 4 第 1 项：词级读音与词库质量评测（审计 §2.I）——**部分完成**
 
+这一项由**两块**拼起来，各自的完成度不同，必须分开看：
+
+| 块 | 做什么 | 状态 |
+| --- | --- | --- |
+| **单字读音（生成器）** | `tools/wordlist-gen` 取 `pinyin.txt` 的**首选读音**，落盘前自检「码 = 首选读音」 | ✅ **本轮修好**（§5.4.1 第 0 条） |
+| **词级读音（人工覆盖表）** | 常见多音字词的正确读音，手工枚举 | ⚠️ **只覆盖枚举到的词**（§5.4.2 第 1–4 条） |
+
 审计点名的四例**已修**，并且有可执行的评测集：
 
 ```text
 $ cargo test -p qingjian-schemes --test word_pinyin_quality --offline -- --nocapture
 词级读音质量（26 条）：召回 26/26（100%），首选 26/26（100%），前五 26/26（100%）
-test result: ok. 3 passed
+test result: ok. 4 passed
 ```
 
 | 审计的点名 | 修复前 | 现在 |
@@ -203,25 +219,55 @@ test result: ok. 3 passed
 人名 / 简拼；报告**召回率、首选率、前五命中**与逐条失败明细。
 另有三条断言守着：覆盖表必须有来源、必须被导入、必须排在 `generated` 之前。
 
-### 5.4.1 ❌ 仍未做的部分
+### 5.4.1 ✅ 本轮修掉的：生成器的单字编码错误
 
-0. **生成器的单字编码错误**（本轮实测发现的**具体实例**）。
-   `generated.dict.yaml` 里 `家` 的码是 `jie`（权重 41023），而「家」读 `jia`。
-   后果是连锁的：`jie` 的首选变成「家」，`nihaoshijie` 被动态规划拼成
-   「你好**是家**」而不是「你好**世界**」（「家」的权重把两词组合顶掉了）。
-   覆盖表已补上 `家 jia`（于是 `jia` 能正确召回），但**错误的那条仍在
-   生成词库里**——根本修法是改 `tools/wordlist-gen` 并在生成后做一次
-   "码与读音一致性"自检。
-   验收点是 `word_pinyin_quality.rs` 里那条 `#[ignore]` 的
-   `the_wrong_reading_of_a_generator_entry_does_not_hijack_a_correct_one`：
-   **它绿了，就说明生成器修好了**。
+**`家 → jie`：根因在生成器，已修，验收测试已转正。**
+
+旧版 `tools/wordlist-gen` 有一条"同声母微调"：主读音取 `pinyin.txt`
+首个之后，再在**声母相同**的候选里挑"该音节在单字表里出现得更多"的
+那个。它把**音节**的语料频率当成了**这个字**的读音证据——
+`pinyin.txt` 里「家」是 `jiā,jia,jià,jie,gū`，`jie` 在单音字里出现
+238 次、`jia` 只有 136 次，于是产物写成 `家 → jie`（权重 41023）。
+实测代价：**838 个多音字**被改离首选读音；连锁后果是 `jie` 的首选
+变成「家」、`nihaoshijie` 被拼成「你好**是家**」。
+
+**修法（两处，缺一不可）**：
+
+1. `tools/wordlist-gen`：删除那条启发式，改为 `primary_readings()`
+   —— 只取 `pinyin.txt` 每行列表的首个；
+2. 落盘前的**独立自检** `verify_primary_codes()`：拿 `pinyin.txt` 的
+   首选读音重算每条词条的编码并逐字对照，不一致就中止、不写文件
+   （放在 `--dry-run` 之前，所以干跑也会跑这条检查）。
+
+为什么"能被装载器解析"挡不住它：`家 → jie` 那份产物能解析、能装载、
+能打字，**只是打出来的字不对**。两条自检是两件事。
+
+**回归**（验收 §5.1"不能只依赖最终大词库测试"）：
+
+- 生成器单测 `a_more_common_syllable_does_not_hijack_a_characters_primary_reading`
+  （用「家」的最小复现钉住"音节频率不许覆盖首选读音"）；
+- 生成器单测 `the_consistency_check_catches_a_code_that_is_not_the_primary_reading`
+  （自检能抓、且不误伤）；
+- `word_pinyin_quality.rs::the_wrong_reading_of_a_generator_entry_does_not_hijack_a_correct_one`
+  ——**原先 `#[ignore]`，现在转正**，并补了"`jia` 仍召回「家」"与
+  "`nihaoshijie` 首选 = 你好世界"两条断言；
+- 覆盖表里那条 `家 jia 41023` 兜底条目**已删除**（生成器自己对了，
+  留着只会让人以为它还没修好）。
+
+**重新生成与可复现**：先跑 `bash tools/fetch-sources.sh`（16 条全部
+sha256 校验通过），再重新生成；词库正文 414,525 条与 YAML 头部
+**逐字节可复现**，音节表 399 → **405** 个编码单元（`z-pinyin-demo`
+内嵌孪生体同步更新）。命令与输出见 `THIRD_PARTY_NOTICES.md` §6.4。
+
+### 5.4.2 ❌ 仍未做的部分
+
 1. **没有引入可分发的"词级拼音"数据集**（审计 §2.I 第 2 条）。
    覆盖表是**人工枚举**的，因此它只修了表里那些词；
-   表外的多音字词（`行`/`重`/`长`/`乐` 的其它组合）**仍然依赖生成器的猜测**。
+   表外的多音字词（`行`/`重`/`长`/`乐` 的其它组合）**只能按单字首选读音拼**。
    要把这一类整体修掉，需要一份覆盖全词表的词级读音数据 + 许可审查，
    并按审计要求记录许可证、版权、版本、hash、转换脚本与合并规则。
 2. **生成器本身没有改成"词级读音优先"**（第 1 条的后半）。
-   现在的顺序是"生成器猜 + 人工覆盖"，而不是"有词级读音就用它"。
+   现在的顺序是"按单字首选读音拼 + 人工覆盖"，而不是"有词级读音就用它"。
 3. **词库格式没有表达"一个词有多个读音与权重"**（第 5 条的下半）。
    现在的做法是"两条独立的词条"（覆盖表一条、生成表一条），
    效果等价，但格式上不是"一个词多读音"的结构。
@@ -236,7 +282,9 @@ test result: ok. 3 passed
 | --- | --- |
 | 阅读 `reference/wiki-*.md` 的许可 | **UNVERIFIED**：rime/home 无通用 LICENSE、wiki 页面无声明；已在 notices §5.3 标为待决（取得许可 / 改自撰摘要 / 移除） |
 | `tools/librime-probe/probe.c` 文件头 | 缺 BSD-3-Clause 随附声明（notices §1.4 已指向 licenses/） |
-| 已提交的 `generated.dict.yaml` 头部 | 把 jieba 标成 THUOCL；生成器已修，**下次重新生成即消失**（未手改产物） |
+| 已提交的 `generated.dict.yaml` 头部 | ~~把 jieba 标成 THUOCL~~ **已消除**：本轮重新生成后头部写的是 `jieba_dict.txt（jieba，MIT）` |
+| `opencc.manifest.yaml` 的 emoji 许可 | ~~标成 Apache-2.0~~ **已消除**：现为 `GPL-3.0-only`（notices §5.2 已同步） |
+| `scheme::entry` 的文档示例 | ~~` ```ignore ` 且不是合法 Rust~~ **已消除**：改成会编译会跑的例子，`--include-ignored` 下也过 |
 | git 历史 | 仍含被移除的 GPL Lua 旧版本（历史改写不在本次范围） |
 | 会话分段 / 重开（阶段 2 的 F） | **部分完成**：余码保留与标点语义已交付并有测试；逐段确认、重开、任意 span 未做。见 `docs/validation/phase-2.md` §8 |
 | 正则引擎的自动机替换 | 只有缓解 + 设计，见 `docs/regex-engine-design.md` |
@@ -261,5 +309,7 @@ test result: ok. 3 passed
 | 多 translator 实例使用各自资源 | `instance_dictionaries.rs` |
 | 内存/部署词库能力不静默差异 | `lexicon_capability.rs` |
 
-**未达成的是"完成"本身**：阶段 4 的词库质量工作（§5.4）与阶段 2 的会话
-闭环（任务包 F）仍然是缺口，本页不把它们算作已交付。
+**未达成的是"完成"本身**：阶段 4 的**词级**读音工作（§5.4.2）与阶段 2 的
+会话闭环（任务包 F）仍然是缺口，本页不把它们算作已交付。
+本轮消除的是其中**具体、可验收**的一项——生成器的单字编码错误
+（§5.4.1，含原先 `#[ignore]` 的验收点转正）。

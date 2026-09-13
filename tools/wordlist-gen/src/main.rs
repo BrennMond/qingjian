@@ -31,11 +31,22 @@
 //!
 //! # 三条必须说清的取舍
 //!
-//! 1. **多音字用"语料里哪个读音更常见"来定**（而不是取第一个）。
-//!    `pinyin.txt` 给每个字一个有序的读音列表，但它是按字典习惯排的，
-//!    不是按语料频率。我们拿整份词表当一个微型语料：一个读音在词表的
-//!    音节里出现得越多，它就越可能是常用读法。**这是启发式，不是真理**——
-//!    所以它写在参数里（`ReadingPolicy`），并且产物头部如实注明。
+//! 1. **多音字取 `pinyin.txt` 的首选读音（列表首个），不做任何覆盖。**
+//!    `pinyin.txt` 的每一行是"首要读音在前"的有序列表，首个就是字典口径
+//!    的读音（`U+5BB6: jiā,jia,jià,jie,gū  # 家` → `jia`）。
+//!
+//!    **这里曾经做过覆盖，而且做错了**：旧版还有一条"同声母微调"——
+//!    在声母相同的候选里挑"该音节在单字表里出现得更多"的那个。它把
+//!    **音节**的语料频率当成了**这个字**的读音证据，于是把「家」编成
+//!    `jie`（`jie` 在单音字里出现 238 次，`jia` 只有 136 次，而「家」读
+//!    `jiā`）。实测代价是 **838 个多音字**被改离首选读音。这条启发式已
+//!    移除；[`primary_readings`] 取列表首个，[`verify_primary_codes`]
+//!    在落盘前逐条复查"码 = 首选读音"。
+//!
+//!    **边界仍然要说清**：单字表里没有"这个字在词里读什么"的信息，
+//!    所以「银行」`yinhang` 这类**词级**读音拼不出来——那是人工覆盖表
+//!    `schemes/qingjian-default/cn_dicts/word_pinyin.override.dict.yaml`
+//!    的事，不是本工具能猜的（审计 §2.I）。
 //! 2. **不猜拼音**：任何一个字在 `pinyin.txt` 里查不到，**整条词条被丢弃**，
 //!    并计数报出来。把汉字原样当拼音塞进去，会造出"永远打不出来"的条目。
 //! 3. **音节表由产物反推**：词库里出现的音节必须**全部**在方案的
@@ -146,13 +157,35 @@ fn next_usize(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize
 /// 声调符落在 a/e/i/o/u/ü 上。注意 `ü` 的四种声调（ǖǘǚǜ）
 /// **不属于** `ü` 本身，必须单独列。
 const TONE_MARKS: &[(char, char)] = &[
-    ('ā', 'a'), ('á', 'a'), ('ǎ', 'a'), ('à', 'a'),
-    ('ē', 'e'), ('é', 'e'), ('ě', 'e'), ('è', 'e'),
-    ('ī', 'i'), ('í', 'i'), ('ǐ', 'i'), ('ì', 'i'),
-    ('ō', 'o'), ('ó', 'o'), ('ǒ', 'o'), ('ò', 'o'),
-    ('ū', 'u'), ('ú', 'u'), ('ǔ', 'u'), ('ù', 'u'),
-    ('ǖ', 'v'), ('ǘ', 'v'), ('ǚ', 'v'), ('ǜ', 'v'),
-    ('ü', 'v'), ('ń', 'n'), ('ň', 'n'), ('ǹ', 'n'), ('ḿ', 'm'),
+    ('ā', 'a'),
+    ('á', 'a'),
+    ('ǎ', 'a'),
+    ('à', 'a'),
+    ('ē', 'e'),
+    ('é', 'e'),
+    ('ě', 'e'),
+    ('è', 'e'),
+    ('ī', 'i'),
+    ('í', 'i'),
+    ('ǐ', 'i'),
+    ('ì', 'i'),
+    ('ō', 'o'),
+    ('ó', 'o'),
+    ('ǒ', 'o'),
+    ('ò', 'o'),
+    ('ū', 'u'),
+    ('ú', 'u'),
+    ('ǔ', 'u'),
+    ('ù', 'u'),
+    ('ǖ', 'v'),
+    ('ǘ', 'v'),
+    ('ǚ', 'v'),
+    ('ǜ', 'v'),
+    ('ü', 'v'),
+    ('ń', 'n'),
+    ('ň', 'n'),
+    ('ǹ', 'n'),
+    ('ḿ', 'm'),
 ];
 
 /// 有调拼音 → 无调 ASCII 音节。
@@ -278,7 +311,11 @@ pub struct Word {
 /// # Errors
 ///
 /// 没有 TAB、词为空、词频里一个数字都没有时返回带行号的说明。
-pub fn parse_wordlist(words: &str, name: &str, warn: &mut Vec<String>) -> Result<Vec<Word>, String> {
+pub fn parse_wordlist(
+    words: &str,
+    name: &str,
+    warn: &mut Vec<String>,
+) -> Result<Vec<Word>, String> {
     let mut out = Vec::new();
     for (i, raw) in words.lines().enumerate() {
         let no = i + 1;
@@ -288,11 +325,10 @@ pub fn parse_wordlist(words: &str, name: &str, warn: &mut Vec<String>) -> Result
         }
         // 分隔符：THUOCL 用 TAB，jieba 用空格。**两种都收**，
         // 因为这两种文件的**第二列都是词频**，而词本身不含空白。
-        let Some((w, f)) = line
-            .split_once('\t')
-            .or_else(|| line.split_once(' '))
-        else {
-            return Err(format!("{name}:{no}：这一行既没有 TAB 也没有空格：`{line}`"));
+        let Some((w, f)) = line.split_once('\t').or_else(|| line.split_once(' ')) else {
+            return Err(format!(
+                "{name}:{no}：这一行既没有 TAB 也没有空格：`{line}`"
+            ));
         };
         // 第三列（jieba 的词性）忽略——它对排序没有用，而我们不假装用它。
         let f = f.split_whitespace().next().unwrap_or(f);
@@ -333,112 +369,104 @@ pub fn parse_wordlist(words: &str, name: &str, warn: &mut Vec<String>) -> Result
 // 组词：把汉字串转成音节序列
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 选取哪个读音的策略。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReadingPolicy {
-    /// 取 `pinyin.txt` 里的第一个（字典习惯，最保守）。
-    First,
-    /// 主读音取列表首个，再在**同声母**的候选里按单字表证据微调。
-    /// 平票时退回第一个——**结果因此是确定的**（铁律第 2 条）。
-    CorpusFrequent,
+/// 每个字用哪个读音：**`pinyin.txt` 里的首个**（字典口径的"首选读音"）。
+///
+/// # 为什么这里没有第二种策略（曾经有，而且是错的）
+///
+/// 旧版有一个 `ReadingPolicy::CorpusFrequent`：主读音取首个，再在**同声母**
+/// 的候选里按"该音节在单字表里出现多少次"微调。它的动机是「血」xue/xiě
+/// 这类字，但它用的统计量说的是**音节**有多常见，不是**这个字**读哪个音——
+/// 两者没有关系。实测的代价：
+///
+/// ```text
+/// $ grep -m1 '^家' schemes/qingjian-default/cn_dicts/generated.dict.yaml
+/// 家    jie    41023        ← 「家」读 jia；jie 只是它的一个轻声异读（源码里是 TAB）
+/// ```
+///
+/// 「家」在 `pinyin.txt` 里是 `jiā,jia,jià,jie,gū`：`jie` 在单音字里出现
+/// 238 次、`jia` 只有 136 次，于是首选读音被"更常见的音节"顶掉了。
+/// 整份词表里有 **838 个多音字**被这条规则改离首选读音。
+/// 单字表里**没有**"这个字在词里读什么"的信息（审计 §2.I），所以这里
+/// 取字典首选、不做猜测；词级读音的缺口由人工覆盖表兜
+/// （`cn_dicts/word_pinyin.override.dict.yaml`）。
+///
+/// [`verify_primary_codes`] 会在落盘前复查"产物里的码 = 这里的首选读音"，
+/// 于是这类覆盖即使再被加回来，也过不了自检。
+#[must_use]
+pub fn primary_readings(table: &PinyinTable) -> BTreeMap<char, String> {
+    table
+        .readings
+        .iter()
+        .filter_map(|(ch, list)| list.first().map(|r| (*ch, r.clone())))
+        .collect()
 }
 
-/// 每个字用哪个读音。
-#[must_use]
-pub fn choose_readings(
+/// 一致性自检最多报告几条（产物有几十万条，全打印没有意义）。
+const MAX_REPORTED_CODE_MISMATCHES: usize = 10;
+
+/// **码与读音一致性自检**：每条词条的编码必须**逐字等于该字的首选读音**。
+///
+/// 这与"能不能被解析"是两件事：`家 → jie` 那份产物能解析、能装载、能打字，
+/// 只是打出来的字不对。所以落盘前除了让真装载器解析一遍（`parse_dict`），
+/// 还要在这里拿 `pinyin.txt` 的**首选读音**重算编码，逐字对照。
+///
+/// 检查是**独立重算**的：期望值来自 `table`，待检值来自生成流程真正要写盘的
+/// `lines`。因此"单字读音在中途被别的策略改写"这类错误会被点出来，
+/// 而不是被同一段逻辑顺带判成正确。
+///
+/// # Errors
+///
+/// 返回一份说明，逐条列出（最多 [`MAX_REPORTED_CODE_MISMATCHES`] 条）不一致处
+/// 以及不一致的总数。
+pub fn verify_primary_codes(
     table: &PinyinTable,
-    words: &[Word],
-    policy: ReadingPolicy,
-) -> BTreeMap<char, String> {
-    // `words` 目前**不参与**判定（理由见下面的长注释：词表里没有词级拼音）。
-    // 参数保留是因为它是这条策略的"输入契约"——将来接上带拼音的词库时，
-    // 它就在手边，不必改所有调用点。
-    let _ = words;
-    let mut chosen: BTreeMap<char, String> = BTreeMap::new();
-    for (ch, list) in &table.readings {
-        chosen.insert(*ch, list[0].clone());
-    }
-    if policy == ReadingPolicy::First {
-        return chosen;
-    }
-
-    // 多音字的取舍。**先说清我们手里有什么、没有什么**：
-    //
-    // · THUOCL 只给（词，词频），**不给拼音**——于是"银行 读 yín háng"
-    //   这条信息不在数据里。
-    // · 只用"音节频率"投票也**不行**：同一个字的每个候选读音在同一条词里
-    //   都被记上一次，计数必然相同，等于没有信息。
-    //
-    // 所以这里用一个**只依赖单字表**、结果可复核的启发式：
-    //
-    //   1. 主读音 = `pinyin.txt` 里的第一个（字典习惯，与 `First` 一致）；
-    //   2. **只在"与主读音同声母"的候选里**看证据——因为多音字的分歧
-    //      绝大多数在韵母/声调那一侧（xíng/háng 不同声母，属于另一类分歧，
-    //      这里**有意不猜**）；同声母的候选里，挑在"只有单一读音的字"
-    //      中出现次数最多的那个。
-    //
-    // **代价必须说清**：像「银行」这样声母也变了的词，我们会读成 xíng。
-    // 想要更准，需要的是**带拼音的词库**（例如 RIME 生态的 `pinyin.txt`
-    // 之外的词级读音表），那是另一份数据源，不在当前许可清单里。
-    // 这比"猜一个看起来更聪明的算法"诚实——后者会让排名无据可依。
-    //
-    // 统计口径：只数**单一读音**的字。多音字自己的每个读音都被记一次，
-    // 计入就会把噪声放大到与证据同量级。
-    let mut unigram: BTreeMap<String, u64> = BTreeMap::new();
-    for list in table.readings.values() {
-        if list.len() == 1 {
-            *unigram.entry(list[0].clone()).or_insert(0) += 1;
+    lines: &[(String, String, u64)],
+) -> Result<(), String> {
+    let mut bad: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    let mut note = |msg: String, bad: &mut Vec<String>| {
+        total += 1;
+        if bad.len() < MAX_REPORTED_CODE_MISMATCHES {
+            bad.push(msg);
         }
-    }
-
-    for (ch, list) in &table.readings {
-        if list.len() < 2 {
+    };
+    for (text, code, _) in lines {
+        let units: Vec<&str> = code.split(' ').filter(|s| !s.is_empty()).collect();
+        let chars: Vec<char> = text.chars().collect();
+        if units.len() != chars.len() {
+            note(
+                format!(
+                    "「{text}」有 {} 个字，编码却有 {} 个音节（`{code}`）",
+                    chars.len(),
+                    units.len()
+                ),
+                &mut bad,
+            );
             continue;
         }
-        let primary = &list[0];
-        let initial = initial_of(primary);
-        let mut best: Option<(&String, u64)> = None;
-        // **按列表顺序遍历**：只有严格更多才替换，于是平票保留列表靠前者
-        // （= `First` 的结果）。顺序确定 ⇒ 结果确定。
-        for r in list {
-            if initial_of(r) != initial {
-                continue;
+        for (ch, unit) in chars.iter().zip(&units) {
+            match table.readings.get(ch).and_then(|l| l.first()) {
+                None => note(
+                    format!("「{text}」里的 `{ch}` 在 `pinyin.txt` 里查不到读音"),
+                    &mut bad,
+                ),
+                Some(primary) if primary != unit => note(
+                    format!("「{text}」里的 `{ch}` 编成了 `{unit}`，首选读音是 `{primary}`"),
+                    &mut bad,
+                ),
+                Some(_) => {}
             }
-            let c = unigram.get(r).copied().unwrap_or(0);
-            if best.is_none_or(|(_, bc)| c > bc) {
-                best = Some((r, c));
-            }
-        }
-        if let Some((r, _)) = best {
-            chosen.insert(*ch, r.clone());
         }
     }
-    chosen
-}
-
-/// 一个无调音节的**声母**（拼音的初始辅音）。
-///
-/// `zh` / `ch` / `sh` 是双字母声母；`zhuang` 的声母是 `zh` 而不是 `z`——
-/// 这一点弄错会让"同声母"这个判据悄悄失效，所以它是单独一个函数，
-/// 有自己的测试。
-///
-/// 零声母（`a` / `e` / `o` / `an` / `yi` / `wu` / `yu` …）统一记作
-/// `""`：它们的对立面不是某个辅音，而是"有没有辅音"。
-#[must_use]
-pub fn initial_of(syllable: &str) -> &str {
-    // 双字母声母优先。`get(..2)` 而不是 `&syllable[..2]`：后者在字节边界
-    // 切错时会 panic，而这里的输入来自外部文件。
-    if let Some(two) = syllable.get(..2) {
-        if matches!(two, "zh" | "ch" | "sh") {
-            return two;
-        }
+    if total == 0 {
+        return Ok(());
     }
-    // 其余声母是单个辅音字母。元音开头（`an` / `er`）与半元音
-    // `y` / `w`（`yi` / `wu` / `yu`）都算零声母——它们不是辅音声母。
-    match syllable.chars().next() {
-        Some(c) if c.is_ascii_alphabetic() && !"aeiouyw".contains(c) => &syllable[..1],
-        _ => "",
-    }
+    Err(format!(
+        "码与读音一致性自检失败：{total} 处编码不是该字的首选读音。\n  {}\n\
+         （这是生成器的 bug：产物能解析、能打字，但打出来的字不对。\
+         修生成器，不要用人工覆盖表掩盖它——见 `tools/README.md`「多音字」。）",
+        bad.join("\n  ")
+    ))
 }
 
 /// 把一个词转成音节序列；**任何一个字查不到就返回 `None`**。
@@ -566,13 +594,7 @@ pub fn rewrite_alphabet(schema: &str, syllables: &[String]) -> Result<String, St
 /// 「同一层里混用了「键: 值」与「- 列表项」」——
 /// **一个只在真正装载产物时才会暴露的错误**。
 /// 这里改成显式拼 `\n`，缩进写多少就是多少。
-fn dict_header(policy: ReadingPolicy, entries: usize, sources: &[String]) -> String {
-    let policy_text = match policy {
-        ReadingPolicy::First => "取 `pinyin.txt` 里的首个读音（字典习惯）",
-        ReadingPolicy::CorpusFrequent => {
-            "主读音取 `pinyin.txt` 首个；只在**同声母**候选里按单字表证据微调（平票取靠前者）"
-        }
-    };
+fn dict_header(entries: usize, sources: &[String]) -> String {
     let mut out = String::new();
     out.push_str("# 青简・拼音 —— 默认词库（**生成产物，不要手改**）\n");
     out.push_str("#\n");
@@ -585,12 +607,18 @@ fn dict_header(policy: ReadingPolicy, entries: usize, sources: &[String]) -> Str
     out.push_str("# `tools/sources.lock`、`licenses/`；为什么源数据不随仓库分发见 PLAN.md §10。\n");
     out.push_str("#\n");
     let _ = writeln!(out, "# 词条数：{entries}");
-    let _ = writeln!(out, "# 多音字策略：{policy_text}");
+    out.push_str("# 多音字策略：单字读音取 `pinyin.txt` 的**首选读音**（每行列表的首个，\n");
+    out.push_str("#   例如 `U+5BB6: jiā,jia,jià,jie,gū  # 家` → `jia`）。\n");
+    out.push_str("#   **没有**按音节语料频率的覆盖——那条旧启发式把「家」编成了 `jie`，\n");
+    out.push_str("#   成因与回归见 `tools/README.md`「多音字」。\n");
+    out.push_str("#   落盘前会做一次「码 = 首选读音」的自检（失败即中止，不写文件）。\n");
     out.push_str("#\n");
     out.push_str("# 重新生成：\n");
     out.push_str("#   bash tools/fetch-sources.sh\n");
     out.push_str("#   cargo run --manifest-path tools/wordlist-gen/Cargo.toml -- \\\n");
-    out.push_str("#       --sources schemes/qingjian-default/build --out schemes/qingjian-default\n");
+    out.push_str(
+        "#       --sources schemes/qingjian-default/build --out schemes/qingjian-default\n",
+    );
     out.push('\n');
     out.push_str("---\n");
     // **词表名与文件名要一致**：主词典用 `import_tables: [cn_dicts/generated]`
@@ -745,7 +773,10 @@ fn run() -> Result<(), String> {
     }
 
     // ── 定读音 ──
-    let chosen = choose_readings(&table, &words, ReadingPolicy::CorpusFrequent);
+    // **只取 `pinyin.txt` 的首选读音**。这里曾经有一条"同声母、按音节语料
+    // 频率微调"的启发式，它把「家」编成了 `jie`（见 `primary_readings` 的
+    // 文档）。单字表里没有词级读音信息，所以这里不猜。
+    let chosen = primary_readings(&table);
 
     // ── 生成 ──
     let mut syllables: BTreeSet<String> = BTreeSet::new();
@@ -814,6 +845,17 @@ fn run() -> Result<(), String> {
     );
     eprintln!("· 音节表：{} 个编码单元", syllables.len());
 
+    // **码与读音一致性自检**（审计 §2.I / 验收 §5.1）：产物里每个字的编码
+    // 必须等于该字的首选读音。故意放在 `--dry-run` 之前——它不写文件，
+    // 于是"先干跑看看"这条最常用的路径也能跑到这个检查。
+    // 这一步与下面"能不能被装载器解析"是两件事：`家 → jie` 那份产物
+    // 完全能被解析、能装载、能打字，只是打出来的字不对。
+    verify_primary_codes(&table, &lines)?;
+    eprintln!(
+        "· 自检：{} 条词条的编码与 `pinyin.txt` 的首选读音逐字一致",
+        lines.len()
+    );
+
     if args.dry_run {
         eprintln!("（--dry-run：不写文件）");
         return Ok(());
@@ -832,7 +874,7 @@ fn run() -> Result<(), String> {
             warnings.len()
         ));
     }
-    let mut out = dict_header(ReadingPolicy::CorpusFrequent, lines.len(), &sources_note);
+    let mut out = dict_header(lines.len(), &sources_note);
     for (text, code, weight) in &lines {
         let _ = writeln!(out, "{text}\t{code}\t{weight}");
     }
@@ -966,49 +1008,61 @@ mod tests {
     }
 
     #[test]
-    fn initial_of_handles_digraphs_and_zero_initials() {
-        assert_eq!(initial_of("zhuang"), "zh");
-        assert_eq!(initial_of("chang"), "ch");
-        assert_eq!(initial_of("shui"), "sh");
-        assert_eq!(initial_of("zang"), "z");
-        assert_eq!(initial_of("cai"), "c");
-        assert_eq!(initial_of("sui"), "s");
-        assert_eq!(initial_of("ni"), "n");
-        assert_eq!(initial_of("hao"), "h");
-        // 零声母（含 a/e/o 开头的与 y/w 开头的）。
-        assert_eq!(initial_of("an"), "");
-        assert_eq!(initial_of("er"), "");
-        assert_eq!(initial_of("yi"), "");
-        assert_eq!(initial_of("wu"), "");
+    fn a_more_common_syllable_does_not_hijack_a_characters_primary_reading() {
+        // **这是「家 → jie」事故的最小复现**（验收 §5.1 的回归点）。
+        //
+        // 旧版有一条"同声母微调"：在声母相同的候选里挑"该音节在单字表里
+        // 出现得更多"的那个。下面这份表里 `jie` 的单音字有 3 个、`jia` 只有
+        // 1 个——旧版因此把「家」编成 `jie`。**音节有多常见，不是「家」读
+        // 什么的证据**，所以这条规则已经去掉。
+        let p = parse_pinyin(
+            "U+5BB6: jiā,jia,jià,jie,gū\n\
+             U+8857: jiē\nU+7ED3: jié\nU+59D0: jiě\nU+52A0: jiā\n",
+        )
+        .unwrap();
+        let chosen = primary_readings(&p);
+        assert_eq!(chosen[&'家'], "jia", "首选读音不能被更常见的音节顶掉");
+        // 声母不同的候选（`gū` 是「家」的一个古读）同样不该被选中。
+        assert_ne!(chosen[&'家'], "gu");
+
+        // 真实 `pinyin.txt` 那一行的读音列表与去重结果也钉住：
+        // `jiā` / `jià` 去声调后都是 `jia`，只留一个；顺序就是字典顺序。
+        let real = parse_pinyin("U+5BB6: jiā,jia,jià,jie,gū  # 家\n").unwrap();
+        assert_eq!(real.readings[&'家'], ["jia", "jie", "gu"]);
+        assert_eq!(primary_readings(&real)[&'家'], "jia");
     }
 
     #[test]
-    fn polyphone_reading_follows_only_same_initial_evidence() {
-        // 「血」的候选：xuè（主）/ xiě —— **同声母 x**，因此允许微调。
-        // 「行」的候选：xíng（主）/ háng —— **声母不同**，因此不动。
-        //
-        // 单字表里 `xie` 出现在很多单音字上（些/写/谢…），`xue` 只在「血」上，
-        // 于是「血」取 xiě。这正是这条启发式能做的事，也是它的边界：
-        // 它**不会**把「银行」读成 yín háng。
-        let p = parse_pinyin(
-            "U+8840: xuè,xiě\nU+4E9B: xiē\nU+5199: xiě\nU+8C22: xiè\n\
-             U+884C: xíng,háng\nU+94F6: yín\n",
-        )
-        .unwrap();
-        let chosen = choose_readings(&p, &[], ReadingPolicy::CorpusFrequent);
-        assert_eq!(chosen[&'血'], "xie", "同声母的候选应当按单字表证据胜出");
-        assert_eq!(chosen[&'行'], "xing", "声母不同的候选不在调整范围内");
+    fn the_consistency_check_catches_a_code_that_is_not_the_primary_reading() {
+        // 自检必须是**独立重算**：期望值来自 `pinyin.txt`，待检值来自
+        // 生成流程真正要写的行。这里用最小输入把"能抓 / 不误伤"都钉住。
+        let p = parse_pinyin("U+5BB6: jiā,jie\nU+4EBA: rén\n").unwrap();
+        let good = vec![
+            ("家".to_owned(), "jia".to_owned(), 5_000u64),
+            ("家人".to_owned(), "jia ren".to_owned(), 1u64),
+        ];
+        assert!(verify_primary_codes(&p, &good).is_ok());
 
-        // `First` 策略一律取列表首个。
-        let first = choose_readings(&p, &[], ReadingPolicy::First);
-        assert_eq!(first[&'血'], "xue");
-        assert_eq!(first[&'行'], "xing");
+        let bad = vec![("家".to_owned(), "jie".to_owned(), 5_000u64)];
+        let e = verify_primary_codes(&p, &bad).unwrap_err();
+        assert!(e.contains("家"), "{e}");
+        assert!(e.contains("jia"), "{e}");
+        assert!(e.contains("jie"), "{e}");
+
+        // 词条里**任何一个字**错都要点出来，而不是只看第一个字。
+        let bad_word = vec![("家人".to_owned(), "jie ren".to_owned(), 1u64)];
+        assert!(verify_primary_codes(&p, &bad_word).is_err());
+
+        // 字数与音节数对不上（会把整条错位）也要抓到。
+        let misaligned = vec![("家人".to_owned(), "jia".to_owned(), 1u64)];
+        let e = verify_primary_codes(&p, &misaligned).unwrap_err();
+        assert!(e.contains("家人"), "{e}");
     }
 
     #[test]
     fn unknown_characters_drop_the_whole_word() {
         let p = parse_pinyin("U+4E00: yī\n").unwrap();
-        let chosen = choose_readings(&p, &[], ReadingPolicy::First);
+        let chosen = primary_readings(&p);
         assert!(to_code("一", &chosen).is_some());
         // 「丁」不在表里 → 整条丢弃，而不是把汉字当拼音。
         assert!(to_code("一丁", &chosen).is_none());
@@ -1036,7 +1090,7 @@ mod tests {
     fn generated_header_is_parseable_by_the_real_loader() {
         // 这条测试是"缩进被续行吃掉"那个 bug 的守卫：它拿**真正的装载器**
         // 去解析生成的头部，而不是拿眼睛看。
-        let header = dict_header(ReadingPolicy::First, 1, &["测试来源".to_owned()]);
+        let header = dict_header(1, &["测试来源".to_owned()]);
         let text = format!("{header}甲\tyi\t1\n");
         let parsed = qingjian_dict::parse_dict(&text, "t.dict.yaml").unwrap();
         assert_eq!(parsed.header.name, "generated");
@@ -1046,13 +1100,13 @@ mod tests {
 
     #[test]
     fn dict_header_names_every_source() {
-        let h = dict_header(
-            ReadingPolicy::CorpusFrequent,
-            3,
-            &["pinyin.txt（pinyin-data，MIT）".to_owned()],
-        );
+        let h = dict_header(3, &["pinyin.txt（pinyin-data，MIT）".to_owned()]);
         assert!(h.contains("pinyin-data"));
         assert!(h.contains("词条数：3"));
         assert!(h.contains("name: generated"));
+        // 头部必须如实说明读音策略**以及它不做覆盖**——产物头部是使用者
+        // 唯一能看到的"这份词库是怎么读出来的"。
+        assert!(h.contains("首选读音"), "{h}");
+        assert!(h.contains("没有"), "{h}");
     }
 }

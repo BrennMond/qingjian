@@ -66,17 +66,48 @@ sha256 与说明。旧版用的是浮动 `main` / `master`，且 sha256 只记�
 
 ---
 
-## 多音字：这里有一条**假设**，写在这里而不是藏在代码里
+## 多音字：**只取首选读音**，以及一次真实的编错事故
 
 词级拼音不在任何一份可分发数据里（`pinyin.txt` 只有**单字**读音）。
-生成器的策略是：
+生成器现在的策略只有一条：**取 `pinyin.txt` 每行列表的首个**，即字典口径的
+首选读音（`U+5BB6: jiā,jia,jià,jie,gū  # 家` → `jia`）。
 
-1. 主读音取 `pinyin.txt` 里的**第一个**（字典习惯）；
-2. 再在**同声母**的候选里，按"该读音在单字表里出现的次数"微调。
+### 曾经不是这样，代价是 838 个多音字
 
-**它不会把「银行」读成 `yín háng`**——那需要一份带拼音的词库。
-想改策略，见 `wordlist-gen` 里的 `ReadingPolicy`；产物头部会如实写明
-本次用的是哪一种。
+旧版在第 1 条之后还有第 2 条："在**同声母**的候选里，按该读音在单字表里
+出现的次数微调"。它的动机是「血」xue/xiě 这类字，但用的统计量讲的是
+**音节**有多常见，不是**这个字**读哪个音。实测代价：
+
+```text
+$ grep -m1 '^家' schemes/qingjian-default/cn_dicts/generated.dict.yaml
+家	jie	41023      ← 「家」读 jia。jie 在单音字里出现 238 次，jia 只有 136 次
+```
+
+后果是连锁的：`jie` 的首选变成「家」，`nihaoshijie` 被动态规划拼成
+「你好**是家**」。整份词表里有 **838 个多音字**被这条规则改离了首选读音。
+这条启发式已经**删除**，不是调参：单字表里没有"这个字在词里读什么"的
+信息，任何只靠单字表的"更聪明"算法都还是在猜。
+
+### 守住它的两道门
+
+1. **生成器的单测**（`tools/wordlist-gen/src/main.rs`）：
+   `a_more_common_syllable_does_not_hijack_a_characters_primary_reading`
+   用「家」的最小复现把"音节频率不能覆盖首选读音"钉住；
+2. **落盘前的自检**：`verify_primary_codes` 拿 `pinyin.txt` 的首选读音
+   **独立重算**每条词条的编码并逐字对照，不一致就中止、不写文件
+   （产物头部也写明这件事）。`家 → jie` 那份产物能解析、能装载、能打字
+   ——只是打出来的字不对，所以"能被解析"挡不住它。
+
+集成验收在 `crates/qingjian-schemes/tests/word_pinyin_quality.rs`
+（含原先 `#[ignore]` 的那条，现已转正）。
+
+### 剩下的缺口还是那句话
+
+**词级**读音我们仍然没有：「银行」`yinhang` 这类词要靠人工覆盖表
+`schemes/qingjian-default/cn_dicts/word_pinyin.override.dict.yaml` 兜，
+表外的多音字词仍然只能按单字首选读音拼。要整体修掉，需要一份
+**可分发、许可清楚**的词级拼音数据源（审计 §2.I 第 2 条）——
+它不在当前的许可清单里。
 
 ---
 
@@ -86,3 +117,26 @@ sha256 与说明。旧版用的是浮动 `main` / `master`，且 sha256 只记�
 解析一遍。这条检查抓到的第一个错是：YAML 头部的 `import_tables` 列表项
 被续行吃掉了缩进，于是装载器报「同一层里混用了「键: 值」与「- 列表项」」。
 **旁路从来不坏，也从来不证明什么**——用真解析器是这里唯一有意义的选择。
+
+### 两条落盘前自检，分别抓不同的错
+
+| 自检 | 抓什么 | 抓不到什么 |
+| --- | --- | --- |
+| `qingjian_dict::parse_dict` | 产物**读不回来**（YAML 结构错、重复词条、编码单元不在字母表里） | 读得回来但**字不对** |
+| `verify_primary_codes` | 每个字的编码 ≠ `pinyin.txt` 的首选读音 | YAML 结构错（它只看 `lines`） |
+
+`家 → jie` 那份产物**能过第一条**——它能解析、能装载、能打字；
+第二条才会指出"「家」的首选读音是 `jia`"。所以"能被解析"不能当作
+"生成对了"。
+
+### 本目录的两个 workspace 门禁
+
+`tools/wordlist-gen` 是**独立的 workspace**（不在根 `Cargo.toml` 的 members 里），
+所以根目录的 `cargo fmt --all --check` / `cargo clippy --workspace` 覆盖不到它。
+本轮顺手把它也做干净了，改动生成器后请自己跑一遍：
+
+```bash
+cargo fmt   --manifest-path tools/wordlist-gen/Cargo.toml -- --check
+cargo clippy --manifest-path tools/wordlist-gen/Cargo.toml --all-targets -- -D warnings
+cargo test  --manifest-path tools/wordlist-gen/Cargo.toml
+```

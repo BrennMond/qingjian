@@ -274,9 +274,9 @@ fn the_wrong_reading_does_not_have_to_disappear() {
     );
 }
 
-/// **已知缺陷（生成器，不是覆盖表）**：单字编码错误会连锁污染词级结果。
+/// **回归（验收 §5.1）**：生成器的单字编码错误会连锁污染词级结果。
 ///
-/// 本轮实测发现的第一个实例：
+/// 实测发现的第一个实例：
 ///
 /// ```text
 /// $ grep -m1 "^家" schemes/qingjian-default/cn_dicts/generated.dict.yaml
@@ -289,38 +289,58 @@ fn the_wrong_reading_does_not_have_to_disappear() {
 /// 2. `nihaoshijie` 被动态规划拼成「你好**是家**」而不是「你好**世界**」
 ///    ——因为「家」的权重（41023）把两词组合顶掉了。
 ///
-/// 覆盖表已经补上 `家 jia`（于是 `jia` 能正确召回「家」），
-/// 但**错误的那条仍在生成词库里**，因此这两条断言现在还红。
+/// 根因**不在覆盖表**，在 `tools/wordlist-gen`：旧版有一条"同声母、按音节
+/// 语料频率微调"的启发式，它把**音节**的常见程度当成了**这个字**的读音
+/// 证据（`jie` 在单音字里出现 238 次，`jia` 只有 136 次，而「家」读
+/// `jiā`）。生成器现在只取 `pinyin.txt` 的首选读音，并在落盘前自检
+/// 「码 = 首选读音」；最小单测在 `tools/wordlist-gen/src/main.rs`。
 ///
-/// 根本修法在 `tools/wordlist-gen`：单字读音要按 pinyin-data 的
-/// **首选读音**取，并在生成后做一次"码与读音一致性"自检。
-/// 这条测试是那个修法的验收点——它绿了，就说明生成器修好了。
+/// 这条测试是那个修法的**集成验收点**：它绿了，才说明重新生成过的
+/// 默认词库真的没有这个错误。覆盖表里原先那条 `家 jia` 兜底条目
+/// 已随修复删除，所以②也在守"不许靠覆盖表掩盖生成器"。
 #[test]
-#[ignore = "已知缺陷：生成器把「家」编成 jie；修法在 tools/wordlist-gen，不在覆盖表"]
 fn the_wrong_reading_of_a_generator_entry_does_not_hijack_a_correct_one() {
     let engine = real_engine();
 
-    // ① `jie` 的首选不该是「家」——「家」没有 jie 这个读音。
+    // ① `jie` 的首选不该是「家」——「家」没有 jie 这个（常用）读音。
     let mut s = engine.create_session();
     for c in "jie".chars() {
         s.process_key(Key::ch(c));
     }
+    let got: Vec<&str> = s.candidates().iter().map(|c| c.text.as_str()).collect();
     assert_ne!(
-        s.candidates().first().map(|c| c.text.as_str()),
+        got.first().copied(),
         Some("家"),
-        "「家」被编成了 `jie`：单字读音取错了"
+        "「家」又被编成了 `jie`：生成器的单字读音取错了。前 5 = {:?}",
+        &got[..got.len().min(5)]
     );
 
-    // ② 连锁后果：`nihaoshijie` 不该被拼成「你好是家」。
+    // ② 修正后 `jia` 仍要能召回「家」（覆盖表里那条兜底条目已删除，
+    //    所以这一条现在测的是**生成词库自己**）。
+    let mut s = engine.create_session();
+    for c in "jia".chars() {
+        s.process_key(Key::ch(c));
+    }
+    let got: Vec<&str> = s.candidates().iter().map(|c| c.text.as_str()).collect();
+    assert!(
+        got.contains(&"家"),
+        "`jia` 必须能召回「家」。前 5 = {:?}",
+        &got[..got.len().min(5)]
+    );
+
+    // ③ 连锁后果：`nihaoshijie` 应当被动态规划拼成「你好世界」。
+    //    这条断言**盯着首选**而不是"不等于某个错答案"——弱化成后者，
+    //    就等于允许「你好是家」以别的形式回来。
     let mut s = engine.create_session();
     for c in "nihaoshijie".chars() {
         s.process_key(Key::ch(c));
     }
-    let top = s.candidates().first().map(|c| c.text.clone());
-    assert_ne!(
-        top.as_deref(),
-        Some("你好是家"),
-        "错误读音把动态规划带偏了（应当能拼出「你好世界」）"
+    let got: Vec<&str> = s.candidates().iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(
+        got.first().copied(),
+        Some("你好世界"),
+        "错误读音把动态规划带偏了。前 5 = {:?}",
+        &got[..got.len().min(5)]
     );
 }
 
