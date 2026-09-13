@@ -40,8 +40,9 @@ pub mod translator;
 pub use engine::{EngineImpl, SessionImpl};
 pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
 pub use inline::{
-    AutoCapFilter, CivilTime, DateTranslator, LongWordFilter, UnicodeTranslator, UuidTranslator,
-    VFilter, civil_from_days, civil_from_unix, month_day_zh, strip_punct, year_zh,
+    AutoCapFilter, CivilTime, DateTranslator, LongWordFilter, PinCandFilter, PinTable,
+    ReduceEnglishFilter, UnicodeTranslator, UuidTranslator, VFilter, civil_from_days,
+    civil_from_unix, derived_keys, is_english_word, month_day_zh, strip_punct, year_zh,
 };
 pub use keyspec::{KeyChord, key_code_name, key_for_char, parse_key_name};
 pub use lexicon::{Entry, InMemoryLexicon, LexiconError, TextIndex};

@@ -618,6 +618,448 @@ impl Filter for VFilter {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// reduce_english_filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **降低英文候选的位置**：敲某个编码时，把候选里的英文单词往后放。
+///
+/// # 它解决的具体问题
+///
+/// rime-ice 给英文翻译器设了 `initial_quality: 1.1`（比拼音大），于是
+/// 敲 `rug` 得到「1. rug  2. 如果 …」——**用户更可能想要「如果」**。
+/// 这个滤镜把英文单词降到第 `idx` 位。
+///
+/// # 三种模式（`mode`）
+///
+/// | 模式 | 用哪些编码触发 |
+/// | --- | --- |
+/// | `all`（默认） | 内置表 **＋** 配置里的 `words` |
+/// | `custom` | **只有**配置里的 `words` |
+/// | `none` | 都不降（等于没启用） |
+///
+/// # 一张内置表，以及它为什么在这里而不在仓库里
+///
+/// rime-ice 那边内置了约 500 个"拼音形状的英文单词"（`aid`、`and`、`bat`…）
+/// ——它们的共同点是**恰好长得像某个拼音**，所以会跟中文抢位置。
+///
+/// 我们把这张表**做成数据而不是代码**（[`ReduceEnglishSpec::words`]），
+/// 因为它是一份**词表**：它的来源与改动理由都属于方案作者，不属于引擎。
+/// 内置表本身在 rime-ice 里是 GPL 项目的一部分，而我们不复制它——
+/// 想用的人把它写进方案的 `words` 即可，格式完全一样。
+pub struct ReduceEnglishFilter {
+    mode: crate::spec::ReduceMode,
+    idx: usize,
+    /// 触发降权的编码集合（`custom` 模式只有它，`all` 模式是它）。
+    words: std::collections::BTreeSet<String>,
+    /// 内置表（`all` 模式才用）。
+    builtin: std::collections::BTreeSet<String>,
+}
+
+impl ReduceEnglishFilter {
+    /// 由配置构造，用我们的[内置表](Self::BUILTIN)。
+    #[must_use]
+    pub fn new(spec: &crate::spec::ReduceEnglishSpec) -> Self {
+        Self {
+            mode: spec.mode,
+            idx: spec.idx.max(1),
+            words: spec.words.iter().map(|w| w.to_lowercase()).collect(),
+            builtin: Self::BUILTIN.iter().map(|w| (*w).to_owned()).collect(),
+        }
+    }
+
+    /// 我们的内置表：**常见的"拼音形状"英文短词**。
+    ///
+    /// # 它从哪来、为什么在这里、为什么这么小
+    ///
+    /// rime-ice 有一张约 500 条的同类表（在它的 Lua 里）。我们**没有复制
+    /// 它**——那是 GPL 项目的内容，而 Stele 是宽松许可。
+    ///
+    /// 这里是我们自己收的一小批，判据只有一条：
+    /// **这个词恰好是一个合法拼音，且是常用英文单词**。
+    /// 也就是"会跟中文抢位置"的那些：
+    ///
+    /// - `rug` 是 `ru`+`g` 的合法简拼，同时是英文单词；
+    /// - `and` / `bad` / `can` 是完整拼音或简拼；
+    /// - `Mac` / `cd` / `ps` 是缩写形状的编码。
+    ///
+    /// **刻意做得小**：这张表越长，误伤越多（把用户真想打的英文压下去）。
+    /// 想加的人往方案的 `words:` 里写，格式一样、效果一样，且**不必改代码**。
+    ///
+    /// 一千个人眼里的"常用英文词"不一样，因此这张表的目标不是"全"，
+    /// 而是"**默认值不惹事**"。
+    pub const BUILTIN: &'static [&'static str] = &[
+        "aid", "aim", "air", "and", "ant", "any", "bad", "bag", "ban", "band", "bang", "bank",
+        "bar", "bat", "bay", "bed", "ben", "bend", "bent", "bet", "bib", "bid", "big", "bin",
+        "bit", "bob", "bog", "bop", "bow", "box", "boy", "bud", "bug", "bus", "but", "buy",
+        "cab", "cad", "cam", "can", "cap", "car", "cat", "ceo", "chi", "cod", "cop", "cry",
+        "cum", "cup", "cur", "cut", "dam", "day", "den", "dew", "did", "dig", "dim", "din",
+        "dip", "dog", "dot", "dry", "dub", "dun", "duo", "ear", "eat", "egg", "end", "era",
+        "err", "eye", "fad", "fan", "far", "fat", "fax", "fee", "few", "fig", "fin", "fit",
+        "fix", "flu", "fly", "fog", "for", "fox", "fry", "fun", "fur", "gag", "gap", "gas",
+        "gay", "gel", "gem", "get", "gin", "god", "got", "gum", "gun", "gut", "guy", "gym",
+        "had", "ham", "has", "hat", "hay", "hen", "her", "hey", "hid", "him", "hip", "his",
+        "hit", "hop", "hot", "how", "hub", "hug", "hum", "hut", "ice", "ill", "ink", "ion",
+        "jar", "jaw", "jazz", "jet", "jog", "joy", "jug", "key", "kid", "kin", "kit", "lab",
+        "lad", "lag", "lap", "law", "lay", "led", "leg", "let", "lid", "lie", "lip", "lit",
+        "log", "lot", "low", "mad", "man", "map", "mat", "max", "may", "men", "met", "mix",
+        "mob", "mom", "mop", "mud", "mug", "nap", "net", "new", "nil", "nip", "nod", "nor",
+        "not", "now", "nun", "nut", "oak", "odd", "off", "oil", "old", "one", "our", "out",
+        "owe", "owl", "own", "pad", "pal", "pan", "par", "pat", "paw", "pay", "pea", "peg",
+        "pen", "per", "pet", "pie", "pig", "pin", "pit", "pod", "pop", "pot", "pro", "pub",
+        "pup", "put", "ram", "ran", "rap", "rat", "raw", "ray", "red", "rib", "rid", "rig",
+        "rim", "rip", "rob", "rod", "rot", "row", "rub", "rug", "rum", "run", "rut", "sad",
+        "sag", "sail", "sam", "sap", "sat", "saw", "say", "sea", "see", "set", "sew", "she",
+        "shy", "sin", "sip", "sir", "sis", "sit", "six", "ski", "sky", "sly", "sob", "sod",
+        "son", "sow", "soy", "spa", "spy", "sub", "sue", "sum", "sun", "sup", "tab", "tag",
+        "tan", "tap", "tar", "tax", "tea", "ten", "the", "tie", "tin", "tip", "toe", "ton",
+        "too", "top", "toy", "try", "tub", "tug", "two", "ugh", "van", "vat", "vet", "via",
+        "vow", "wag", "war", "was", "wax", "way", "web", "wed", "wet", "who", "why", "wig",
+        "win", "wit", "woe", "wok", "won", "wow", "yak", "yam", "yap", "yes", "yet", "you",
+        "zap", "zen", "zip", "zoo",
+        // 缩写形状的编码（rime-ice 的表里也有一批）。
+        "cd", "cn", "hk", "js", "ml", "mt", "ps", "pk", "as", "ak", "dj",
+    ];
+
+    /// 这个编码要不要触发降权。
+    #[must_use]
+    pub fn triggers(&self, code: &str) -> bool {
+        match self.mode {
+            crate::spec::ReduceMode::None => false,
+            crate::spec::ReduceMode::Custom => self.words.contains(code),
+            crate::spec::ReduceMode::All => {
+                self.words.contains(code) || self.builtin.contains(code)
+            }
+        }
+    }
+}
+
+impl Filter for ReduceEnglishFilter {
+    fn apply(&self, q: &Query<'_>, _span: Span, cands: &mut Vec<Candidate>) {
+        if !self.triggers(q.input) {
+            return;
+        }
+        // 只看**前 `idx` 位**：`idx` 之外的不动（那边是用户已经翻页、
+        // 或者本来就不竞争的位置）。
+        let head_len = self.idx.min(cands.len());
+        let mut demoted: Vec<Candidate> = Vec::new();
+        let mut head: Vec<Candidate> = Vec::with_capacity(head_len);
+        for c in cands.iter().take(head_len) {
+            // 用户词库的词**不降权**——用户自己打过并确认过的，
+            // 他的偏好比我们的启发式更可信。
+            if is_english_word(&c.text) && c.kind != CandidateKind::UserTable {
+                demoted.push(c.clone());
+            } else {
+                head.push(c.clone());
+            }
+        }
+        // 顺序：非英文（原序）→ 被降权的英文（原序）→ 其余候选。
+        let mut out = head;
+        out.extend(demoted);
+        out.extend_from_slice(&cands[head_len..]);
+        *cands = out;
+    }
+}
+
+/// 这个候选是不是"一个英文单词"。
+///
+/// 判据（照 rime-ice 的实现）：**含 ASCII 字母**、**不含空格**、
+/// **不含非 ASCII**。第二条排除「New York」这类短语，第三条排除中文词。
+#[must_use]
+pub fn is_english_word(text: &str) -> bool {
+    if text.is_empty() || text.contains(' ') {
+        return false;
+    }
+    if !text.is_ascii() {
+        return false;
+    }
+    text.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pin_cand_filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **置顶候选**：在某个编码下把指定的词提到最前。
+///
+/// # 它为什么是最有用的一个滤镜
+///
+/// rime-ice 的默认方案里，`d` → 「的」、`m` → 「吗 嘛」、`hm` → 「后面」
+/// 都是它做的。这类"单键出最常用字"是**品牌输入法上手快的主要原因**，
+/// 而通用引擎给不了——它是**用户自己的偏好**，不是语言模型能推出来的。
+///
+/// # 两件必须说清的行为
+///
+/// ## 一、配置里的编码是**音节拼写**，不是候选自己的编码
+///
+/// `'ni hao` + 制表符 + `你好'` 生成两个键：`nihao`（原样去掉空格）与 `nih`
+/// （最后一个音节的首字母）。于是敲 `nih` 时「你好」也会在首位。
+///
+/// 若最后一个音节以 `zh`/`ch`/`sh` 开头，还会**再生成一个两字母简码**：
+/// `'zhi chi` + 制表符 + `支持'` → `zhichi`、`zhic`、`zhich`。这一条是为了让
+/// "超级简拼"也能命中（用户敲 `zhich` 而不是 `zhic`）。
+///
+/// ## 二、**明确写出来的简码优先于自动派生的**
+///
+/// `'da zhuan` + 制表符 + `大专'` 会派生 `daz`；而 `'da z` + 制表符 + `打字'`
+/// 显式定义了 `daz`。
+/// 两者共存时 `daz` 归「打字」（先到先得，见 [`PinTable::build`] 的顺序），
+/// 而 `dazh` 仍归「大专」。rime-ice 的文档专门举了这个例子。
+///
+/// # 与 `custom_phrase` 的分工（rime-ice 的注释强调过）
+///
+/// 这个滤镜**只提升已经在候选里的词**，**不能凭空造词**。想造词要写进
+/// `custom_phrase.txt`。写一个词库里没有的词在这里，它**永远不会出现**——
+/// 而且是静默的，因此装载期要报出来（见 `scheme.rs` 的检查）。
+pub struct PinCandFilter {
+    /// 编码 → 要置顶的词（按顺序）。
+    table: PinTable,
+}
+
+impl PinCandFilter {
+    /// 由配置构造。
+    #[must_use]
+    pub fn new(spec: &crate::spec::PinCandSpec) -> Self {
+        Self {
+            table: PinTable::build(&spec.entries),
+        }
+    }
+
+    /// 底层表（供装载期检查与 `--dump-config`）。
+    #[must_use]
+    pub fn table(&self) -> &PinTable {
+        &self.table
+    }
+}
+
+/// 置顶表的索引。
+///
+/// **构造顺序即语义**：先写的先插入，而插入不覆盖已有的键
+/// （`Entry::or_insert`）。于是"自动派生的简码"与"显式写出的简码"
+/// 相遇时，**谁先被处理谁赢**——而 rime-ice 的行为是显式的赢，
+/// 因此装载器**必须按"显式先、派生后"的顺序喂进来**（见 `build`）。
+#[derive(Debug, Default)]
+pub struct PinTable {
+    keys: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl PinTable {
+    /// 由条目构造。
+    ///
+    /// # 两条规则，而它们**不对称**（这是它的全部复杂度所在）
+    ///
+    /// | 情形 | 结果 |
+    /// | --- | --- |
+    /// | 某个键被**显式写出** | 它归那一条，**自动派生不会覆盖它** |
+    /// | 某个派生键被**多条**派生出来 | 它们**按声明顺序合并** |
+    ///
+    /// 第二条是要点。rime-ice 文档举的例子：
+    ///
+    /// ```yaml
+    /// - da zhuan    大专
+    /// - da zhong    大众
+    /// ```
+    ///
+    /// 两个词都派生 `dazh`，于是敲 `dazh` 时**「大专、大众」都要在**，
+    /// 且先写的在前。我第一版实现成"先到先得"，测试当场指出丢了「大众」。
+    ///
+    /// 而显式写法打破合并：
+    ///
+    /// ```yaml
+    /// - da z        打字     # 显式声明 daz
+    /// ```
+    ///
+    /// 于是 `daz` 归「打字」，而 `dazh` 仍是「大专、大众」。
+    #[must_use]
+    pub fn build(entries: &[crate::spec::PinEntry]) -> Self {
+        // ① 显式键：**最后写的赢**（与 rime-ice 的 `env.pin_cands[k] = ...`
+        //    一致——它是直接赋值，不是 `or_insert`）。
+        let mut explicit: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for e in entries {
+            let key = strip_non_letters(&e.preedit);
+            let texts = split_texts(&e.texts);
+            if key.is_empty() || texts.is_empty() {
+                continue;
+            }
+            explicit.insert(key, texts);
+        }
+
+        // ② 派生键：按声明顺序**合并**（同一键被多条派生时累加）。
+        let mut derived: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for e in entries {
+            let texts = split_texts(&e.texts);
+            if texts.is_empty() {
+                continue;
+            }
+            for k in derived_keys(&e.preedit) {
+                if k.is_empty() {
+                    continue;
+                }
+                let slot = derived.entry(k).or_default();
+                for t in &texts {
+                    if !slot.contains(t) {
+                        slot.push(t.clone());
+                    }
+                }
+            }
+        }
+
+        // ③ 显式优先：派生键只在"没人显式写过"时生效。
+        let mut keys = explicit;
+        for (k, v) in derived {
+            keys.entry(k).or_insert(v);
+        }
+        Self { keys }
+    }
+
+    /// 精确查一个键。
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&[String]> {
+        self.keys.get(key).map(Vec::as_slice)
+    }
+
+    /// 查询：**先试精确，再逐字节回退前缀**。
+    ///
+    /// 回退是为了 `dian` 这种情形：用户敲 `dian` 时 preedit 会随候选
+    /// 变成 `di`，而配置里写的是 `dian`。不回退就找不到。
+    #[must_use]
+    pub fn lookup(&self, key: &str) -> Option<&[String]> {
+        if let Some(v) = self.keys.get(key) {
+            return Some(v.as_slice());
+        }
+        for (i, _) in key.char_indices().rev() {
+            if i == 0 {
+                break;
+            }
+            if let Some(v) = self.keys.get(&key[..i]) {
+                return Some(v.as_slice());
+            }
+        }
+        None
+    }
+
+    /// 表里有多少个键。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// 表是不是空的。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// 去掉配置里编码的标点与空格（`ni hao` → `nihao`）。
+///
+/// **只留 ASCII 字母**：配置里写的是编码（拼音/双拼），不是中文。
+/// 取不出字母时返回**空串**（由调用方判断"这一条没有可用的编码"）——
+/// 这里不返回 `Option`，因为"没有字母"与"没有这一条"是两件事，
+/// 而前者用一个空串表达得更直接。
+fn strip_non_letters(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// 把一条配置里的词按 `" > "` 或空格分开。
+fn split_texts(texts: &[String]) -> Vec<String> {
+    texts
+        .iter()
+        .flat_map(|t| t.split(" > ").flat_map(str::split_whitespace))
+        .map(str::to_owned)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// 一条配置**派生**出的简码（不含完整编码本身）。
+///
+/// 规则来自 rime-ice 的注释与实现：
+///
+/// | 配置 | 派生 |
+/// | --- | --- |
+/// | `ni hao` | `nih` |
+/// | `zhi chi` | `zhic`、`zhich` |
+/// | `bu hao chi` | `buhaoc`、`buhaoch` |
+///
+/// **只对最后一个音节做简写**——前面的音节必须完整写出来。
+/// 这一条是刻意的：`nih` 比 `nh` 更难误触发，而 `nh` 已经有了
+/// 拼写代数的超级简拼去管。
+#[must_use]
+pub fn derived_keys(preedit: &str) -> Vec<String> {
+    let parts: Vec<&str> = preedit.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    let (last, preceding) = match parts.split_last() {
+        Some((last, rest)) => (*last, rest.join("")),
+        None => return Vec::new(),
+    };
+    let preceding = strip_non_letters(&preceding);
+    let last = strip_non_letters(last);
+    if preceding.is_empty() || last.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![format!("{preceding}{}", &last[..1])];
+    if last.starts_with("zh") || last.starts_with("ch") || last.starts_with("sh") {
+        out.push(format!("{preceding}{}", &last[..2]));
+    }
+    out
+}
+
+impl Filter for PinCandFilter {
+    fn apply(&self, q: &Query<'_>, _span: Span, cands: &mut Vec<Candidate>) {
+        let letters = strip_non_letters(q.input);
+        if letters.is_empty() || self.table.is_empty() {
+            return;
+        }
+        let Some(texts) = self.table.lookup(&letters) else {
+            return;
+        };
+
+        // 按配置里的**词序**收，而不是按候选顺序——"先写的排前面"
+        // 是配置的语义（`da zhuan` 在 `da zhong` 之前，所以「大专」在前）。
+        let mut pinned: Vec<Option<Candidate>> = vec![None; texts.len()];
+        let mut others: Vec<Candidate> = Vec::new();
+        let mut rest: Vec<Candidate> = Vec::new();
+        let mut done = 0usize;
+        let mut finished = false;
+
+        for c in cands.drain(..) {
+            if finished {
+                rest.push(c);
+                continue;
+            }
+            if let Some(i) = texts.iter().position(|t| *t == c.text) {
+                if pinned[i].is_none() {
+                    pinned[i] = Some(c);
+                    done += 1;
+                }
+                if done == texts.len() || others.len() > 100 {
+                    finished = true;
+                }
+            } else {
+                others.push(c);
+            }
+        }
+
+        let mut out: Vec<Candidate> = Vec::with_capacity(cands_capacity(&pinned, &others));
+        out.extend(pinned.into_iter().flatten());
+        out.extend(others);
+        out.extend(rest);
+        *cands = out;
+    }
+}
+
+/// 预算容量，避免每次重排都重新分配。
+fn cands_capacity(pinned: &[Option<Candidate>], others: &[Candidate]) -> usize {
+    pinned.len() + others.len()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // long_word_filter
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1155,6 +1597,219 @@ mod tests {
         let mut v2 = vec![cand("van"), cand("ā")];
         f.apply(&q("ha", &opts, &ctx), Span::new(0, 2), &mut v2);
         assert_eq!(v2[0].text, "van", "不以 v 开头就不动");
+    }
+
+    // ── pin_cand_filter ──
+
+    fn pin_entry(preedit: &str, texts: &[&str]) -> crate::spec::PinEntry {
+        crate::spec::PinEntry {
+            preedit: preedit.to_owned(),
+            texts: texts.iter().map(|s| (*s).to_owned()).collect(),
+            at: crate::spec::At::default(),
+        }
+    }
+
+    fn pin_filter(entries: Vec<crate::spec::PinEntry>) -> PinCandFilter {
+        PinCandFilter::new(&crate::spec::PinCandSpec {
+            entries,
+            at: crate::spec::At::default(),
+        })
+    }
+
+    #[test]
+    fn pin_table_derives_the_shorthand_keys() {
+        let f = pin_filter(vec![
+            pin_entry("ni hao", &["你好"]),
+            pin_entry("zhi chi", &["支持"]),
+        ]);
+        let t = f.table();
+        // 原样去空格。
+        assert_eq!(t.get("nihao"), Some(&["你好".to_owned()][..]));
+        // 最后一个音节的首字母。
+        assert_eq!(t.get("nih"), Some(&["你好".to_owned()][..]));
+        // zh/ch/sh 再加一个两字母简码。
+        assert_eq!(t.get("zhichi"), Some(&["支持".to_owned()][..]));
+        assert_eq!(t.get("zhic"), Some(&["支持".to_owned()][..]));
+        assert_eq!(t.get("zhich"), Some(&["支持".to_owned()][..]));
+    }
+
+    #[test]
+    fn an_explicit_shorthand_beats_a_derived_one() {
+        // rime-ice 文档专门举的例子：`da z` 显式声明了 `daz`，
+        // 于是 `daz` 归「打字」，而 `dazh` 仍归「大专」。
+        let f = pin_filter(vec![
+            pin_entry("da zhuan", &["大专"]),
+            pin_entry("da zhong", &["大众"]),
+            pin_entry("da z", &["打字"]),
+        ]);
+        let t = f.table();
+        assert_eq!(t.get("daz"), Some(&["打字".to_owned()][..]), "显式的赢");
+        assert_eq!(
+            t.get("dazh"),
+            Some(&["大专".to_owned(), "大众".to_owned()][..]),
+            "没显式声明的按声明顺序合并"
+        );
+        assert_eq!(t.get("dazhuan"), Some(&["大专".to_owned()][..]));
+    }
+
+    #[test]
+    fn pin_reorders_to_the_configured_order() {
+        let f = pin_filter(vec![pin_entry("hao", &["号", "好"])]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("好"), cand("毫"), cand("号"), cand("哈")];
+        f.apply(&q("hao", &opts, &ctx), Span::new(0, 3), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        // 「号」在配置里排在「好」之前，所以它先出现。
+        assert_eq!(texts, ["号", "好", "毫", "哈"]);
+    }
+
+    #[test]
+    fn pin_falls_back_to_a_shorter_prefix_of_the_input() {
+        // 用户敲 `dian`，而配置写的是 `dian`；但候选的「编码」可能是 `di`。
+        // 回退让 `dian` 的规则在 `di` 这一步就命中。
+        let f = pin_filter(vec![pin_entry("dian", &["点"])]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("地"), cand("点"), cand("第")];
+        f.apply(&q("dian", &opts, &ctx), Span::new(0, 4), &mut v);
+        assert_eq!(v[0].text, "点");
+    }
+
+    #[test]
+    fn pin_does_nothing_when_the_code_has_no_rule() {
+        let f = pin_filter(vec![pin_entry("hao", &["号"])]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("好"), cand("毫")];
+        f.apply(&q("zzz", &opts, &ctx), Span::new(0, 3), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["好", "毫"], "没有规则就原样通过");
+    }
+
+    #[test]
+    fn pin_keeps_candidates_it_could_not_find() {
+        // 配置里要置顶的词**不在候选里**时，其余候选不能丢。
+        // 这条守着一个很容易写错的地方：`pined` 里的空位必须被跳过。
+        let f = pin_filter(vec![pin_entry("hao", &["库里没有的词", "好"])]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("毫"), cand("好"), cand("哈")];
+        f.apply(&q("hao", &opts, &ctx), Span::new(0, 3), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["好", "毫", "哈"]);
+    }
+
+    #[test]
+    fn pin_supports_the_angle_bracket_separator() {
+        // `'l 了 > 啦'` —— 词本身含空格时用 ` > ` 分隔。
+        let f = pin_filter(vec![pin_entry("l", &["了 > 啦"])]);
+        assert_eq!(
+            f.table().get("l"),
+            Some(&["了".to_owned(), "啦".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn derived_keys_need_at_least_two_units() {
+        assert!(derived_keys("hao").is_empty(), "单个编码单元没有简码可派生");
+        assert_eq!(derived_keys("ni hao"), ["nih"]);
+        assert_eq!(derived_keys("bu hao chi"), ["buhaoc", "buhaoch"]);
+    }
+
+    // ── reduce_english_filter ──
+
+    fn reduce_filter(
+        mode: crate::spec::ReduceMode,
+        idx: usize,
+        words: &[&str],
+    ) -> ReduceEnglishFilter {
+        ReduceEnglishFilter::new(&crate::spec::ReduceEnglishSpec {
+            mode,
+            idx,
+            words: words.iter().map(|s| (*s).to_owned()).collect(),
+            at: crate::spec::At::default(),
+        })
+    }
+
+    #[test]
+    fn reduce_english_pushes_english_words_down() {
+        let f = reduce_filter(crate::spec::ReduceMode::All, 2, &[]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        // 敲 `rug`：英文 rug 在首位，中文「如果」在第二位。
+        let mut v = vec![cand("rug"), cand("如果"), cand("如")];
+        f.apply(&q("rug", &opts, &ctx), Span::new(0, 3), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["如果", "rug", "如"], "英文降到第 2 位");
+    }
+
+    #[test]
+    fn reduce_english_only_fires_on_listed_codes() {
+        let f = reduce_filter(crate::spec::ReduceMode::Custom, 2, &["rug"]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        // `abc` 不在表里 → 不动。
+        let mut v = vec![cand("abc"), cand("啊")];
+        f.apply(&q("abc", &opts, &ctx), Span::new(0, 3), &mut v);
+        assert_eq!(v[0].text, "abc");
+        // `rug` 在表里 → 降。
+        let mut v2 = vec![cand("rug"), cand("如果")];
+        f.apply(&q("rug", &opts, &ctx), Span::new(0, 3), &mut v2);
+        assert_eq!(v2[0].text, "如果");
+    }
+
+    #[test]
+    fn reduce_english_mode_none_never_fires() {
+        let f = reduce_filter(crate::spec::ReduceMode::None, 2, &["rug"]);
+        assert!(!f.triggers("rug"));
+    }
+
+    #[test]
+    fn reduce_english_mode_all_merges_builtin_and_custom() {
+        let f = reduce_filter(crate::spec::ReduceMode::All, 2, &["zzzz"]);
+        assert!(f.triggers("rug"), "内置表里的");
+        assert!(f.triggers("zzzz"), "自定义的");
+        assert!(!f.triggers("qqqq"), "都不在");
+    }
+
+    #[test]
+    fn reduce_english_never_demotes_user_words() {
+        // 用户自己打过并确认过的词不该被启发式压下去。
+        let f = reduce_filter(crate::spec::ReduceMode::All, 2, &[]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![
+            Candidate {
+                kind: CandidateKind::UserTable,
+                ..cand("rug")
+            },
+            cand("如果"),
+        ];
+        f.apply(&q("rug", &opts, &ctx), Span::new(0, 3), &mut v);
+        assert_eq!(v[0].text, "rug", "用户词不动");
+    }
+
+    #[test]
+    fn reduce_english_keeps_phrases_and_chinese_in_place() {
+        let f = reduce_filter(crate::spec::ReduceMode::All, 3, &[]);
+        let opts = Options::new();
+        let ctx = Context::default();
+        // 含空格、含非 ASCII、纯数字的非英文候选都不降。
+        let mut v = vec![cand("New York"), cand("你"), cand("123"), cand("rug")];
+        f.apply(&q("rug", &opts, &ctx), Span::new(0, 3), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["New York", "你", "123", "rug"]);
+    }
+
+    #[test]
+    fn is_english_word_draws_the_line_the_same_way_rime_ice_does() {
+        assert!(is_english_word("rug"));
+        assert!(is_english_word("Mac"));
+        assert!(!is_english_word("New York"), "含空格");
+        assert!(!is_english_word("你"), "非 ASCII");
+        assert!(!is_english_word("123"), "没有字母");
+        assert!(!is_english_word(""), "空串");
     }
 
     #[test]

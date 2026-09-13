@@ -226,6 +226,18 @@ const ENTRIES: &[Entry] = &[
         note: "触发词 → UUID",
     },
     Entry {
+        name: "reduce_english_filter",
+        slot: Slot::Filter,
+        availability: Availability::Implemented,
+        note: "降低英文候选位置（all / custom / none 三种模式）",
+    },
+    Entry {
+        name: "pin_cand_filter",
+        slot: Slot::Filter,
+        availability: Availability::Implemented,
+        note: "置顶候选（含最后一个音节的简码派生）",
+    },
+    Entry {
         name: "v_filter",
         slot: Slot::Filter,
         availability: Availability::Implemented,
