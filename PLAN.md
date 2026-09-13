@@ -392,24 +392,13 @@ qingjian/
 | --- | --- |
 | 系统 | WSL2，内核 `6.18.33.2-microsoft-standard-WSL2`，x86_64 |
 | 仓库路径 | `/home/brennmond/projects/qingjian`（ext4 ✅，**不要**放 `/mnt/c/...`） |
-| git | 2.53.0 已装，**尚未 `git init`** |
+| git | 2.53.0 已装，**已 `git init`**，且有完整提交历史（首发 `3ff32a6`） |
 | Rust | rustc / cargo **1.98.1，来自 Homebrew**（`/home/linuxbrew`）；**rustup 已装**（`~/.cargo/bin/rustup`，toolchain `1.98` 已装），但 PATH 上 `cargo` 仍先命中 Homebrew（`~/.cargo/bin` 在其后）——`rust-toolchain.toml` 只对 rustup 的 shim 生效 |
-| 磁盘占用 | 项目本体约 100 KB |
+| 磁盘占用 | 已跟踪内容 **14 M**（含 41 万条生成词库）；`.git` 约 82 M，`target/` 可再生、不计 |
 
-**待办（P0）**
+**待办（P0）**：无——三项均已落地（rustup 已装、`rust-toolchain.toml` 已写、`git init` 已有提交历史），实建记录见 §8「P0 已完成（实建记录）」。
 
-~~~bash
-# 1. 安装 rustup（当前只有 Homebrew 的 Rust，缺 toolchain 固定与交叉编译目标）
-curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh
-. "$HOME/.cargo/env"
-rustc --version && cargo --version
-
-# 2. 写 rust-toolchain.toml 固定版本
-
-# 3. git init + 首次提交（附 MIT OR Apache-2.0 许可证文件）
-~~~
-
-**为什么必须装 rustup**：没有 rustup 就没有 `rust-toolchain.toml` 的版本固定，也无法 `rustup target add`。P6/P7 需要 `x86_64-pc-windows-msvc` 与 Android NDK 目标，届时会卡住。
+> **背景（P6/P7 仍需）**：`rust-toolchain.toml` 的版本固定与 `rustup target add` 都依赖 rustup。P6/P7 需要 `x86_64-pc-windows-msvc` 与 Android NDK 目标，届时会卡住。
 
 **后续（P6/P7 再备）**：Windows 侧 VS2022 + ATL/MFC + Windows SDK；Android 侧 Android Studio + NDK + CMake（Trime / fcitx5-android 均未使用 `cargo-ndk`，我们可行但缺少先例）。
 
