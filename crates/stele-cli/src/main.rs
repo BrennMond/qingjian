@@ -388,7 +388,8 @@ fn dump_config(
 /// 并把"你缺数据"与"我们缺代码"分成两类。
 fn list_components() -> ExitCode {
     use stele_engine::registry::{
-        implemented_names, missing_names, needs_data_names, not_applicable_names,
+        implemented_names, missing_names, needs_data_names, needs_resource_names,
+        not_applicable_names,
     };
     println!("# 零件注册表（RIME 的方案按名字引用它们）");
     println!();
@@ -406,6 +407,15 @@ fn list_components() -> ExitCode {
     println!();
     println!("尚未实现 {} 个（这是本项目的缺口）：", missing_names().len());
     for n in missing_names() {
+        let (_, slot, note) = stele_engine::registry::lookup(n);
+        println!("  {n:<28} {slot:?}   {note}");
+    }
+    println!();
+    println!(
+        "需要外部资源或新语义 {} 个（**不是简单的缺代码**）：",
+        needs_resource_names().len()
+    );
+    for n in needs_resource_names() {
         let (_, slot, note) = stele_engine::registry::lookup(n);
         println!("  {n:<28} {slot:?}   {note}");
     }

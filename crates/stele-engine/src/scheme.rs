@@ -359,9 +359,12 @@ impl SchemeDef {
                          或它指向的文件）"
                     ),
                 ),
-                // 在这个架构里不适用：方案里留着它无害，行为上与"没有它"
-                // 一样（`force_gc` 就是唯一一例，见 `Availability` 的说明）。
-                Availability::Implemented | Availability::NotApplicable => continue,
+                // "不适用"与"需外部资源"都不拦装载：
+                // 前者在方案里留着无害（`force_gc`），后者是使用者那边的
+                // 事（给数据或换零件）。注册表已经把情况记清楚了。
+                Availability::Implemented
+                | Availability::NotApplicable
+                | Availability::NeedsResource => continue,
             };
             out.push(
                 stele_core::Diagnostic::new(&path, msg)

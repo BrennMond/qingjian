@@ -68,6 +68,28 @@ pub enum Availability {
     /// 而 Rust 的候选生命周期由作用域决定。**把它实现成空操作才是最糟的
     /// 选择**——注册表会报"已实现"，而它永远不会有效果。
     NotApplicable,
+    /// **机制与代码都齐，缺的是一个外部资源**（数据文件、或一整套
+    /// 运行时的语义）。
+    ///
+    /// # 它和 `NeedsData` 有什么区别
+    ///
+    /// [`Availability::NeedsData`] 是"要一张表，格式已经定好"
+    /// （例如 `OpenCC` 的 `emoji.json`）——**装载器给一张表就能跑**。
+    ///
+    /// `NeedsResource` 是"**不但要东西，而且那东西不是一张表**"：
+    ///
+    /// | 零件 | 缺什么 |
+    /// | --- | --- |
+    /// | `corrector` | 一张容错表——在**上游的词库**里，属于数据资产 |
+    /// | `lunar` | 一份 1900–2100 的农历二进制表（上游单独发布） |
+    /// | `calc_translator` | **一整套表达式语言**（上游直接调 Lua 的 `load()`） |
+    /// | `select_character` | "候选能被当输入用"这条**会话语义**（接口改动） |
+    /// | `search` | 同上，另外还有一个反查索引 |
+    ///
+    /// 把它们混进 `NotYet` 会让"我们缺代码"这句判断失真，
+    /// 也会让使用者以为"等着就会好"。分开之后每一档都能给出
+    /// **具体该做什么**。
+    NeedsResource,
     /// 名字不认识。
     Unknown,
 }
@@ -81,6 +103,7 @@ impl Availability {
             Self::NeedsData => "机制已实现，但需要外部数据",
             Self::NotYet => "尚未实现",
             Self::NotApplicable => "在我们这个架构里不适用（不是缺口）",
+            Self::NeedsResource => "机制已实现，缺的是外部资源或新语义（不是简单的「缺代码」）",
             Self::Unknown => "不认识这个名字",
         }
     }
@@ -267,6 +290,25 @@ const ENTRIES: &[Entry] = &[
         availability: Availability::NotApplicable,
         note: "Lua 的手动 GC 在 Rust 里不存在（见 NotApplicable 的说明）",
     },
+    // ── 需要外部资源或新语义的（阶段 A 之外的四个 + 拆字辅码）──
+    Entry {
+        name: "corrector",
+        slot: Slot::Filter,
+        availability: Availability::NeedsResource,
+        note: "错音错字提示（容错表在上游的词库里，属于数据资产）",
+    },
+    Entry {
+        name: "lunar",
+        slot: Slot::Translator,
+        availability: Availability::NeedsResource,
+        note: "农历（需 1900–2100 的二进制表，上游单独发布）",
+    },
+    Entry {
+        name: "calc_translator",
+        slot: Slot::Translator,
+        availability: Availability::NeedsResource,
+        note: "计算器（上游调 Lua 的 load()，等于一整套表达式语言）",
+    },
     // ── 翻译器 ──
     Entry {
         name: "script_translator",
@@ -370,7 +412,13 @@ pub fn unmet_requirements(
             // "不适用"与"已实现"在这里的处理一样（都不是缺口）：
             // 那个零件在我们这个架构里没有意义，方案声明了它也不会有效果，
             // 但这不是错误——真实方案的零件清单是从 RIME 那边抄来的。
-            Availability::NotApplicable | Availability::Implemented => {}
+            // 这三档都不算"我们拦下这份方案"的理由：
+            // 已实现的没问题，"不适用"没有效果，"需外部资源"是**使用者
+            // 那边的事**（给一张表、或换一个零件）。它们都记在
+            // `CoverageReport` 里供查阅，但不该让装载失败。
+            Availability::NotApplicable
+            | Availability::Implemented
+            | Availability::NeedsResource => {}
             Availability::NotYet | Availability::Unknown => {
                 out.push((n.clone(), availability, note));
             }
@@ -452,6 +500,22 @@ pub fn not_applicable_names() -> Vec<&'static str> {
     v
 }
 
+/// 需要外部资源或新语义的零件名（有序、去重）。
+///
+/// 与 [`needs_data_names`] 分开：那一档是"给一张表就能跑"，
+/// 这一档是"要的可能是**一整套语言或一条新语义**"。
+#[must_use]
+pub fn needs_resource_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = ENTRIES
+        .iter()
+        .filter(|e| e.availability == Availability::NeedsResource)
+        .map(|e| e.name)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// 需要外部数据的零件名（有序、去重）。
 #[must_use]
 pub fn needs_data_names() -> Vec<&'static str> {
@@ -478,6 +542,8 @@ pub struct CoverageReport {
     pub not_yet: Vec<String>,
     /// **在我们这个架构里不适用**的（不是缺口）。
     pub not_applicable: Vec<String>,
+    /// **需要外部资源或新语义**的（不是简单的"缺代码"）。
+    pub needs_resource: Vec<String>,
     /// 不认识的。
     pub unknown: Vec<String>,
 }
@@ -497,6 +563,7 @@ impl CoverageReport {
                 Availability::NeedsData => r.needs_data.push(n),
                 Availability::NotYet => r.not_yet.push(n),
                 Availability::NotApplicable => r.not_applicable.push(n),
+                Availability::NeedsResource => r.needs_resource.push(n),
                 Availability::Unknown => r.unknown.push(n),
             }
         }
@@ -514,14 +581,47 @@ impl CoverageReport {
         self.needs_data.is_empty() && self.not_yet.is_empty() && self.unknown.is_empty()
     }
 
+    /// 缺什么、以及**缺在谁那边**。
+    ///
+    /// 这一句话是给人看的：`is_complete()` 说"还不行"，
+    /// 而这里说"不行在哪一步、下一步该谁动手"。
+    #[must_use]
+    pub fn blocking_reason(&self) -> Option<String> {
+        if self.unknown.is_empty()
+            && self.needs_data.is_empty()
+            && self.not_yet.is_empty()
+            && self.needs_resource.is_empty()
+        {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !self.not_yet.is_empty() {
+            parts.push(format!("我们缺代码：{}", self.not_yet.join("、")));
+        }
+        if !self.needs_data.is_empty() {
+            parts.push(format!("你缺数据：{}", self.needs_data.join("、")));
+        }
+        if !self.needs_resource.is_empty() {
+            parts.push(format!(
+                "要外部资源或新语义：{}",
+                self.needs_resource.join("、")
+            ));
+        }
+        if !self.unknown.is_empty() {
+            parts.push(format!("不认识：{}", self.unknown.join("、")));
+        }
+        Some(parts.join("；"))
+    }
+
     /// 一行摘要。
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "需要 {} 个零件：已实现 {}，需外部数据 {}，尚未实现 {}，不适用 {}，不认识 {}",
+            "需要 {} 个零件：已实现 {}，需外部数据 {}，需外部资源 {}，尚未实现 {}，不适用 {}，不认识 {}",
             self.required.len(),
             self.implemented.len(),
             self.needs_data.len(),
+            self.needs_resource.len(),
             self.not_yet.len(),
             self.not_applicable.len(),
             self.unknown.len()
@@ -647,6 +747,23 @@ mod tests {
             assert!(r.implemented.contains(&n.to_owned()), "{n} 机制已实现");
         }
         assert!(r.summary().contains("24"), "{}", r.summary());
+    }
+
+    #[test]
+    fn entries_never_carry_an_alias_suffix() {
+        // 注册表按**零件名**索引（`table_translator`），实例名只出现在
+        // 方案数据里。条目里混进 `name@alias` 会让同一个零件出现两次，
+        // 而两份信息的优先级取决于数组顺序——那是最难查的一类不一致。
+        //
+        // 我写 NeedsResource 那一档时就这么干过一次（`table_translator@radical_lookup`），
+        // 输出里同一个零件出现了两行。这条测试把它钉住。
+        for e in ENTRIES {
+            assert!(
+                !e.name.contains('@'),
+                "条目 `{}` 带了 @alias —— 注册表只登记零件名",
+                e.name
+            );
+        }
     }
 
     #[test]
