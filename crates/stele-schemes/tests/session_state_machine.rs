@@ -261,25 +261,143 @@ fn the_ascii_mode_switch_is_visible_and_reversible() {
 // ⑥ 重新选择已确认段（**重开**）——已知缺口
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// **审计 §2.F 明确要求、但本阶段没有实现的能力。**
+/// **重开已确认段**（审计 §2.F 明确要求）——现在**已实现**。
 ///
-/// RIME 允许把已上屏的一段"重新打开"放回预编辑串继续编辑。
-/// Stele 没有这条通路：`finish_commit` 一旦把文本交给前端，
-/// 内核就不再持有它——重开必须由前端把文本递回来，而接口上**没有这个入口**。
+/// # 语义（与上游一致的那部分）
 ///
-/// 这条被 `#[ignore]` 的测试是**缺口清单**，同时是将来实现的验收点。
-/// 它不是在"证明已经支持"。
+/// 上屏之后把刚上屏的那一段**放回预编辑串**，候选重新出现、可以再选一次。
+/// 实现依据是 `Commit` 自带的 `input`（原始拼写）——只有引擎知道
+/// "刚才那条是从哪串拼写来的"。
+///
+/// # 这条测试断言的是**可观察行为**
+///
+/// 1. 重开之后输入串回来了；
+/// 2. 候选列表里又出现了刚才那个词；
+/// 3. 没有可重开的内容时返回 `false`（不是 panic、也不是静默成功）。
 #[test]
-#[ignore = "已知缺口（审计 §2.F）：重开已确认段需要新的接口，内核目前不持有已上屏的文本"]
-fn reopening_a_confirmed_segment_is_not_implemented() {
+fn reopening_restores_the_last_committed_spelling() {
     let mut s = session();
-    type_text(&mut s, "niha");
-    let _ = select_text(&mut s, "你好");
-    // 期望：能请求"把刚才上屏的段放回来继续编辑"。
-    // 现状：`Session` 上没有这个入口（编译期就不存在），因此这条测试
-    // 只能断言"输入串里没有它"——也就是缺口本身。
+    type_text(&mut s, "nihao");
+    let (text, _) = select_text(&mut s, "你好").expect("应当上屏");
+    assert_eq!(text, "你好");
+    assert!(s.composition().input.is_empty(), "上屏之后输入串应当清空");
+
+    let reopened = s.reopen();
+    assert!(reopened, "上屏之后应当能重开");
+    assert_eq!(
+        s.composition().input,
+        "nihao",
+        "重开必须把**原始拼写**放回预编辑串"
+    );
     assert!(
-        !s.composition().input.contains("你好"),
-        "现在**没有**重开通路；这条断言记录的就是缺口"
+        texts(&s).iter().any(|t| t == "你好"),
+        "重开之后候选列表里必须又有那个词：{:?}",
+        texts(&s)
+    );
+    // 而且能再上屏一次（"改一下再打"是重开的用途）。
+    assert_eq!(
+        select_text(&mut s, "你好")
+            .as_ref()
+            .map(|(t, _)| t.as_str()),
+        Some("你好"),
+        "重开出来的候选必须能再次上屏"
+    );
+}
+
+#[test]
+fn reopening_without_a_previous_commit_reports_false() {
+    // 边界：没有可重开的内容时必须**明确地说没有**，而不是假装成功。
+    let mut s = session();
+    assert!(!s.reopen(), "刚启动时没有可重开的内容");
+
+    // 正在拼写时也不重开——那会把用户当前打的串冲掉。
+    type_text(&mut s, "ni");
+    assert!(
+        !s.reopen(),
+        "正在拼写时不该重开：重开是「回到刚才」，不是「丢弃现在」"
+    );
+    assert_eq!(s.composition().input, "ni", "当前输入必须原样保留");
+}
+
+#[test]
+fn resetting_discards_the_reopen_target() {
+    // `reset()` 是显式的"我不要了" API ⇒ 之后不该还能重开。
+    let mut s = session();
+    type_text(&mut s, "nihao");
+    let _ = select_text(&mut s, "你好");
+    assert!(s.reopen(), "前提：上屏之后确实可以重开");
+    // 再上屏一次，然后显式 reset。
+    let _ = select_text(&mut s, "你好");
+    s.reset();
+    assert!(!s.reopen(), "reset 之后不该还能重开");
+}
+
+#[test]
+fn cancelling_an_active_composition_discards_the_reopen_target() {
+    // **取消**的判据是通用的：按键之前有输入、按键之后没有、且没有上屏。
+    //
+    // Esc 就是在**拼写过程中**取消——那种情况下"刚才那个词"已经不算
+    // "刚才"了，重开必须失效。
+    let mut s = session();
+    type_text(&mut s, "nihao");
+    let _ = select_text(&mut s, "你好");
+    type_text(&mut s, "ni");
+    assert!(s.composition().is_active());
+    press(&mut s, NamedKey::Escape);
+    assert!(s.composition().input.is_empty(), "Esc 应当取消输入");
+    assert!(
+        !s.reopen(),
+        "取消之后不该还能重开——`reopen` 是「回到刚才上屏的词」，\
+         不是「把刚取消的串复活」"
+    );
+}
+
+/// **一个明确的语义边界**：上屏之后（输入串已空）再按 Esc **不是取消**
+/// ——没有东西可取消。此时 `reopen` 仍然有效，因为"刚才那个词"确实还在。
+///
+/// 这条测试把边界钉住，免得将来有人把"Esc 一律清空重开目标"当成修复。
+#[test]
+fn escape_with_no_active_composition_does_not_discard_the_reopen_target() {
+    let mut s = session();
+    type_text(&mut s, "nihao");
+    let _ = select_text(&mut s, "你好");
+    assert!(!s.composition().is_active(), "上屏之后没有正在拼写的内容");
+    press(&mut s, NamedKey::Escape);
+    assert!(s.reopen(), "没有东西可取消时，Esc 不该清掉「刚才那个词」");
+}
+
+#[test]
+fn a_direct_literal_commit_has_nothing_to_reopen() {
+    // **真正的"直出"**（`Commit::input` 为空）没有拼写可恢复。
+    //
+    // 标点走的是**候选**那条路（它是输入串 `，` 的一条原样候选，
+    // `input` 非空），所以它可以重开——那是正确行为，不是缺口。
+    // 这条测试用 `reset()` 之后的空状态来验证"没有可重开的东西"。
+    let mut s = session();
+    assert!(!s.reopen(), "没有任何上屏记录时重开必须返回 false");
+}
+
+/// **已知边界**（写在 `Session::reopen` 的文档里，这里只做记录）：
+///
+/// - 只支持**最近一次**上屏，没有提交历史栈；
+/// - 重开出来的段**没有被标记为"已确认"**，预编辑串里分不出"放回来的"
+///   与"新敲的"；
+/// - 重开之后再上屏会**再学习一次**（同一条被记两次）。
+///
+/// 这三条都是**结构**上的缺口（需要提交历史与"确认段"这两个类型），
+/// 不是这次的实现能顺手补掉的。它们在这里以测试名出现，是为了让
+/// "重开已实现"这句话不被读成"重开与 RIME 完全一致"。
+#[test]
+#[ignore = "已知边界：重开没有提交历史栈、没有确认段标记、重复上屏会重复学习"]
+fn reopen_is_not_a_full_commit_history() {
+    let mut s = session();
+    type_text(&mut s, "nihao");
+    let _ = select_text(&mut s, "你好");
+    assert!(s.reopen());
+    // 期望：能连续重开更早的那些段（需要历史栈）。
+    // 现状：只有一条记录，重开一次就用掉了。
+    assert!(
+        !s.reopen(),
+        "现在只有一条重开记录；这条断言记录的就是「没有历史栈」这个边界"
     );
 }

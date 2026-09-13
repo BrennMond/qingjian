@@ -179,6 +179,12 @@ pub struct SessionImpl {
     state: SessionState,
     candidates: Vec<Candidate>,
     events: Vec<Event>,
+    /// **最近一次上屏**——`reopen()` 的唯一依据。
+    ///
+    /// 只留一条：RIME 有完整的提交历史与"重开上一条/上一条选中"之分，
+    /// 我们只做最常见的那一种。留一条的另一个好处是它**有界**
+    /// （不随输入增长），不会变成一处无人回收的日志。
+    last_commit: Option<Commit>,
 }
 
 impl SessionImpl {
@@ -193,6 +199,7 @@ impl SessionImpl {
             state: SessionState::new(stele_core::Composition::default(), options, context),
             candidates: Vec::new(),
             events: Vec::new(),
+            last_commit: None,
         }
     }
 
@@ -384,6 +391,8 @@ impl SessionImpl {
         // 服务时它是一次提前返回（连候选列表都不动）。
         self.recompose();
 
+        // **记住这一次**，供 `reopen()` 用（见 `Session::reopen` 的说明）。
+        self.last_commit = Some(commit.clone());
         commit
     }
 }
@@ -391,9 +400,11 @@ impl SessionImpl {
 impl Session for SessionImpl {
     fn process_key(&mut self, key: stele_core::Key) -> Outcome {
         self.state.pending_commit = None;
+        // 记住"按键之前是不是在拼写"：用来识别**取消**。
+        let was_active = self.state.composition.is_active();
         let result = self.pipeline.process_key(&mut self.state, &key);
 
-        match result {
+        let outcome = match result {
             // 两种情况**对外结果相同**（都把按键还给系统），但语义不同：
             // `Rejected` 是"明确拒绝"，`Noop` 是"无人认领"。
             // P1 里没有"提交历史"之类的后处理，所以两者合并；
@@ -430,7 +441,24 @@ impl Session for SessionImpl {
                     None => Outcome::Consumed,
                 }
             }
+        };
+
+        // ── 识别"取消" ──
+        //
+        // 处理器可以**直接清空** composition（`Esc` 就是这么做的，
+        // 见 `processor.rs` 的 `A::Cancel` 分支），而引擎看不到那次调用。
+        // 判据是通用的：**按键之前有输入、按键之后没有、且这次没有上屏**
+        // ⇒ 用户取消了这次输入。
+        //
+        // 取消之后不该还能"重开"——`Session::reopen` 的语义是"回到刚才
+        // 上屏的那个词"，不是"把刚取消的串复活"。
+        if was_active
+            && !self.state.composition.is_active()
+            && !matches!(outcome, Outcome::Committed(_))
+        {
+            self.last_commit = None;
         }
+        outcome
     }
 
     fn composition(&self) -> &stele_core::Composition {
@@ -459,6 +487,33 @@ impl Session for SessionImpl {
         self.state.composition.reset();
         self.state.pending_commit = None;
         self.candidates.clear();
+        // 取消之后没有"可重开的内容"——`reset` 的语义就是"我不要了"。
+        self.last_commit = None;
+    }
+
+    /// 重新打开最近一次上屏（见 [`Session::reopen`] 的语义与已知边界）。
+    fn reopen(&mut self) -> bool {
+        let Some(last) = self.last_commit.clone() else {
+            return false;
+        };
+        // 输入串是空的（原样上屏、标点、预测候选）时没有"拼写"可恢复——
+        // 那些上屏不是"由某串输入打出来的"，放回去也无从分析。
+        if last.input.is_empty() {
+            return false;
+        }
+        // 已经在拼写中就不重开：那会把用户当前正在打的串**冲掉**，
+        // 而"重开"是"回到刚才"，不是"丢弃现在"。
+        if self.state.composition.is_active() {
+            return false;
+        }
+        self.state.composition.reset();
+        self.state.composition.caret = last.input.len();
+        self.state.composition.input.clone_from(&last.input);
+        self.state.pending_commit = None;
+        // 消费掉这条记录：重开一次就够，否则连按两次会反复回到同一个词。
+        self.last_commit = None;
+        self.recompose();
+        true
     }
 
     fn option(&self, name: &str) -> bool {
