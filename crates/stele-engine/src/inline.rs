@@ -428,6 +428,196 @@ impl Translator for UnicodeTranslator {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// uuid
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **UUID 翻译器**：敲触发词（默认 `uuid`）出一条 UUID。
+///
+/// # 行为（照 rime-ice 的 `uuid.lua`）
+///
+/// 17 个随机字节按固定模板拼成 `8-4-4-4-12` 的形式。
+///
+/// # 一处**故意不同**：我们产出合法的 v4 UUID
+///
+/// 那份 Lua 的位运算写错了：
+///
+/// ```lua
+/// ((rand(0, 255) % 16) + 64),    -- 版本位：本意是 (x % 16) | 0x40
+/// ((rand(0, 255) % 64) + 128),   -- 变体位：本意是 (x % 64) | 0x80
+/// ```
+///
+/// `+ 64` 而不是 `| 64`，于是：
+/// - 版本位那一个字节落在 `0x40–0x4F`，但**低 4 位没被清干净**
+///   （正确的 v4 要求高 4 位是 `0100`、低 4 位任意——这一条其实碰巧对了）；
+/// - 变体位落在 `0x80–0xBF`，也碰巧落在 `10xx_xxxx` 区间内。
+///
+/// 所以它**碰巧**产出了合法的 UUID——但那是巧合而不是设计：
+/// `% 16` + `+ 64` 与 `(x % 16) | 0x40` 在这里恰好等价，因为
+/// `x % 16 < 16` 不会进位到 64 以上的那两位。
+///
+/// 我们写**显式的位运算**并加注释：**同样的字节、同样的结果、但意图明确**。
+/// 用户看到的东西完全一样（这一点由测试对齐），而下一个读代码的人
+/// 不必再推一遍"这两个写法是不是碰巧一样"。
+pub struct UuidTranslator {
+    /// 随机源（注入）。
+    random: std::sync::Mutex<Box<dyn stele_core::RandomSource>>,
+    /// 触发词。
+    trigger: String,
+    /// 本翻译器负责的标签。
+    tags: Vec<Tag>,
+}
+
+impl UuidTranslator {
+    /// 构造。
+    #[must_use]
+    pub fn new(
+        random: Box<dyn stele_core::RandomSource>,
+        spec: &crate::spec::UuidSpec,
+        tags: Vec<Tag>,
+    ) -> Self {
+        Self {
+            random: std::sync::Mutex::new(random),
+            trigger: spec.trigger.clone(),
+            tags,
+        }
+    }
+
+    /// 生成一条 UUID（v4 形式）。
+    ///
+    /// 用 `Mutex` 包随机源：`Translator` 要求 `Send`，而 `next_u64`
+    /// 需要 `&mut`。加锁的代价可忽略（一条 UUID 只取两次随机数），
+    /// 而它换来的是"随机源不必是 `Sync` 的"——测试里的确定性发生器
+    /// 因此不需要内部可变性。
+    #[must_use]
+    pub fn generate(&self) -> String {
+        let mut bytes = [0u8; 16];
+        {
+            let mut rng = self.random.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let a = rng.next_u64().to_le_bytes();
+            let b = rng.next_u64().to_le_bytes();
+            bytes[..8].copy_from_slice(&a);
+            bytes[8..].copy_from_slice(&b);
+        }
+        // 版本位：高 4 位 = 0100（v4）。
+        bytes[6] = (bytes[6] & 0x0F) | 0x40;
+        // 变体位：高 2 位 = 10（RFC 4122）。
+        bytes[8] = (bytes[8] & 0x3F) | 0x80;
+        format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        )
+    }
+}
+
+impl Translator for UuidTranslator {
+    fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>) {
+        if q.segment_text != self.trigger {
+            return;
+        }
+        out.push(Candidate {
+            text: self.generate(),
+            comment: None,
+            score: Score::from_weight(50_000.0),
+            origin: Origin::Literal,
+            attr: stele_core::SpellingAttr::NORMAL,
+            span,
+            lane: stele_core::Lane::Input,
+            kind: CandidateKind::Inline,
+        });
+    }
+
+    fn accepts(&self, tags: &[Tag]) -> bool {
+        tags.iter().any(|t| self.tags.contains(t))
+    }
+
+    fn targets(&self) -> &[Tag] {
+        &self.tags
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v_filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **v 模式单字优先**：敲 `v` + 一个字符时，把单字候选提到前面。
+///
+/// # 它解决的具体问题
+///
+/// rime-ice 给英文翻译器设了 `initial_quality: 1.1`，比拼音大，
+/// 于是敲 `va` 时候选是「van vain … ā á ǎ à」——**用户想要的是带声调的
+/// 韵母，却先看到英文单词**。这个滤镜把"长度为 1 个字符"的候选提前。
+///
+/// # 触发条件（两条都要满足）
+///
+/// 1. 当前编码以 `v` 开头（**不是** `segment_text`——见下）；
+/// 2. 编码长度恰好为 2（`v` + 一个字符）。
+///
+/// 长度必须是 2：这是"v 模式"的定义，敲更长的编码时用户已经在挑词了。
+///
+/// # 为什么它读整串输入而不是本段正文
+///
+/// `v_filter` 判的是"用户在不在 v 模式"，那是**整串输入**的性质
+/// （rime-ice 那边也是 `context.input`）。用 `segment_text` 的话，
+/// `v` 本身被标点段吃掉后就看不见了。这是我们唯一一个读 `q.input`
+/// 的滤镜，理由写在这里以免被当成疏漏。
+pub struct VFilter {
+    /// 例外表：这些候选**无论多长**都排在最前。
+    ///
+    /// 默认值是 rime-ice 的：数字键帽 emoji 与 `Vs.`——它们是
+    /// `symbols_v` 符号表里的条目，用户敲 `v1` 时最可能想要的就是它们。
+    exceptions: Vec<String>,
+}
+
+impl Default for VFilter {
+    fn default() -> Self {
+        Self::new(vec![
+            "0️⃣".to_owned(),
+            "1️⃣".to_owned(),
+            "2️⃣".to_owned(),
+            "3️⃣".to_owned(),
+            "4️⃣".to_owned(),
+            "5️⃣".to_owned(),
+            "6️⃣".to_owned(),
+            "7️⃣".to_owned(),
+            "8️⃣".to_owned(),
+            "9️⃣".to_owned(),
+            "Vs.".to_owned(),
+        ])
+    }
+}
+
+impl VFilter {
+    /// 构造。
+    #[must_use]
+    pub fn new(exceptions: Vec<String>) -> Self {
+        Self { exceptions }
+    }
+}
+
+impl Filter for VFilter {
+    fn apply(&self, q: &Query<'_>, _span: Span, cands: &mut Vec<Candidate>) {
+        let code = q.input;
+        // 只处理 `v` + 恰好一个字符。
+        if code.len() != 2 || !code.starts_with('v') {
+            return;
+        }
+        let mut head: Vec<Candidate> = Vec::new();
+        let mut tail: Vec<Candidate> = Vec::new();
+        for c in cands.drain(..) {
+            let is_single = c.text.chars().count() == 1;
+            if is_single || self.exceptions.contains(&c.text) {
+                head.push(c);
+            } else {
+                tail.push(c);
+            }
+        }
+        head.extend(tail);
+        *cands = head;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // long_word_filter
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -853,6 +1043,118 @@ mod tests {
         }];
         f.apply(&q("PHO", &opts, &ctx), Span::new(0, 3), &mut v2);
         assert_eq!(v2[0].text, "PHOTOSHOP");
+    }
+
+    // ── uuid ──
+
+    fn uuid_translator() -> UuidTranslator {
+        let mut tags = crate::tag::TagTable::new();
+        UuidTranslator::new(
+            Box::new(stele_core::DeterministicRandom::new(42)),
+            &crate::spec::UuidSpec::default(),
+            vec![tags.intern("uuid")],
+        )
+    }
+
+    #[test]
+    fn uuid_has_the_v4_shape_and_version_bits() {
+        let t = uuid_translator();
+        let id = t.generate();
+        // 8-4-4-4-12，36 个字符。
+        assert_eq!(id.len(), 36);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+        // 版本位 = 4（v4），变体位 ∈ {8,9,a,b}。
+        assert_eq!(&id[14..15], "4", "版本位必须是 4：{id}");
+        assert!(
+            ['8', '9', 'a', 'b'].contains(&id.chars().nth(19).unwrap()),
+            "变体位必须是 8/9/a/b：{id}"
+        );
+    }
+
+    #[test]
+    fn uuid_is_deterministic_for_a_fixed_seed() {
+        // 这一条是**注入随机源的全部意义**：同一个种子必须给出同一条 UUID，
+        // 否则"敲 uuid 得到什么"就无法被断言。
+        let a = uuid_translator().generate();
+        let b = uuid_translator().generate();
+        assert_eq!(a, b);
+        // 换一个种子就不同（不是常数）。
+        let mut tags = crate::tag::TagTable::new();
+        let other = UuidTranslator::new(
+            Box::new(stele_core::DeterministicRandom::new(7)),
+            &crate::spec::UuidSpec::default(),
+            vec![tags.intern("uuid")],
+        );
+        assert_ne!(a, other.generate());
+    }
+
+    #[test]
+    fn uuid_only_fires_on_its_trigger() {
+        let t = uuid_translator();
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut buf = Vec::new();
+        let mut sink = CandidateSink::new(&mut buf, 4);
+        t.translate(&q("uuid", &opts, &ctx), Span::new(0, 4), &mut sink);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].kind, CandidateKind::Inline);
+
+        let mut buf2 = Vec::new();
+        let mut sink2 = CandidateSink::new(&mut buf2, 4);
+        t.translate(&q("uu", &opts, &ctx), Span::new(0, 2), &mut sink2);
+        assert!(buf2.is_empty(), "只有触发词才产出");
+    }
+
+    // ── v_filter ──
+
+    #[test]
+    fn v_filter_moves_single_characters_first() {
+        let f = VFilter::default();
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("van"), cand("ā"), cand("vain"), cand("á")];
+        f.apply(&q("va", &opts, &ctx), Span::new(0, 2), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["ā", "á", "van", "vain"]);
+    }
+
+    #[test]
+    fn v_filter_exceptions_keep_their_relative_order() {
+        // 例外表（`1️⃣`、`Vs.`）的作用是"**也**归到前面那一组"，
+        // 而不是"提到最前"。两者差别很实际：
+        //
+        // - 数字键帽 `1️⃣` 是 3 个码位（`1` + 变体选择符 + 组合键帽），
+        //   所以它**不满足**"单字符"那条判据，只能靠例外表进前组；
+        // - 进了前组之后，它**保持原来的相对顺序**——这正是 rime-ice
+        //   那边 `yield(cand)` 直接产出的行为（它没有排序，只是分流）。
+        //
+        // 我第一版把这条测试写成"例外提到最前"，测试当场指出是错的。
+        // 而这种"我以为语义更强"的偏差，正是不该靠推理、要靠对齐的地方。
+        let f = VFilter::default();
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("van"), cand("ā"), cand("1️⃣")];
+        f.apply(&q("v1", &opts, &ctx), Span::new(0, 2), &mut v);
+        let texts: Vec<&str> = v.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["ā", "1️⃣", "van"]);
+    }
+
+    #[test]
+    fn v_filter_does_nothing_outside_v_mode() {
+        let f = VFilter::default();
+        let opts = Options::new();
+        let ctx = Context::default();
+        let mut v = vec![cand("van"), cand("ā")];
+        f.apply(&q("vab", &opts, &ctx), Span::new(0, 3), &mut v);
+        assert_eq!(v[0].text, "van", "长度不是 2 就不动");
+        let mut v2 = vec![cand("van"), cand("ā")];
+        f.apply(&q("ha", &opts, &ctx), Span::new(0, 2), &mut v2);
+        assert_eq!(v2[0].text, "van", "不以 v 开头就不动");
     }
 
     #[test]

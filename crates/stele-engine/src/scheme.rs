@@ -359,7 +359,9 @@ impl SchemeDef {
                          或它指向的文件）"
                     ),
                 ),
-                Availability::Implemented => continue,
+                // 在这个架构里不适用：方案里留着它无害，行为上与"没有它"
+                // 一样（`force_gc` 就是唯一一例，见 `Availability` 的说明）。
+                Availability::Implemented | Availability::NotApplicable => continue,
             };
             out.push(
                 stele_core::Diagnostic::new(&path, msg)

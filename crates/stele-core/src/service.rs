@@ -258,6 +258,58 @@ pub trait Clock: Send + Sync {
     }
 }
 
+/// 随机数源。
+///
+/// # 为什么它要注入（而不是直接调 `rand`）
+///
+/// 两条理由，各自独立成立：
+///
+/// 1. **零依赖**：`stele-core` / `stele-engine` 不许有第三方依赖
+///    （`verify-zero-deps.sh` 强制），`rand` 进不来。
+/// 2. **可复现**：RIME 的 UUID 插件用 `math.random`，而"候选列表是
+///    (输入, 状态) 的纯函数"是我们的铁律——**随机候选天然破坏它**。
+///    注入之后，测试能给一个确定性的发生器，于是"敲 uuid 得到什么"
+///    可以被断言；生产环境注入真随机的那个。
+///
+/// 这是本项目的第 N 次同一个模式：**外部不确定性一律注入**。
+/// 时钟（[`Clock`]）、内存（[`MemoryStore`]）、随机数，三者一视同仁。
+pub trait RandomSource: Send + Sync {
+    /// 产生一个 64 位随机数。
+    ///
+    /// **只给这一个方法**：`next_u64` 足够派生出任何需要的东西
+    /// （UUID 的 16 字节、洗牌、抽样），而接口越小，实现越容易正确。
+    fn next_u64(&mut self) -> u64;
+}
+
+/// 一个**确定性**的随机源（测试与 `--dump-config` 用）。
+///
+/// 它是 splitmix64——一个短小、无依赖、分布够好的发生器。
+/// **它的输出可预测，因此绝不该用于生产**：名字里的 `Deterministic`
+/// 就是给使用者看的警告。
+#[derive(Debug, Clone, Copy)]
+pub struct DeterministicRandom {
+    state: u64,
+}
+
+impl DeterministicRandom {
+    /// 由种子构造。**同一个种子永远给出同一串数**。
+    #[must_use]
+    pub const fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+}
+
+impl RandomSource for DeterministicRandom {
+    fn next_u64(&mut self) -> u64 {
+        // splitmix64：作者是 Sebastiano Vigna，公共领域。
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
 /// 一条已学记录。`(输入, 词)` 是主键。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryEntry {

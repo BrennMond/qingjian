@@ -66,9 +66,10 @@ pub use score::Score;
 pub use segment::{Composition, Segment, SegmentStatus, Segmentation, Tag};
 pub use segmentor::{Claim, InputScanView};
 pub use service::{
-    Clock, CodeAlphabet, CodeUnitId, EmptyLexicon, Expansion, ExpansionSink, FrozenClock, Lexicon,
+    Clock, CodeAlphabet, CodeUnitId, DeterministicRandom, EmptyLexicon, Expansion, ExpansionSink,
+    FrozenClock, Lexicon,
     LiteralSpelling, MemoryEntry, MemoryStore, NoMemory, Prediction, PredictionOrigin, QueryView,
-    Ranker, Spelling,
+    RandomSource, Ranker, Spelling,
 };
 pub use session::{
     Engine, LoadedSchema, Pipeline, SchemaCatalog, SchemaInfo, Session, SessionState,

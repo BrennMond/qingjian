@@ -57,6 +57,17 @@ pub enum Availability {
     NeedsData,
     /// 还没实现。
     NotYet,
+    /// **在我们的架构里不适用**——这是"我们考虑过并决定不做"。
+    ///
+    /// 与 [`Availability::NotYet`] 的区别很实际：
+    ///
+    /// - `NotYet` = "我们缺代码，以后可能做"（用户应当等或自己写）
+    /// - `NotApplicable` = "**这件事在 Rust 里不存在**"（用户不必等）
+    ///
+    /// 典型例子是 `force_gc`：Lua 插件需要手动推 GC（解释器堆），
+    /// 而 Rust 的候选生命周期由作用域决定。**把它实现成空操作才是最糟的
+    /// 选择**——注册表会报"已实现"，而它永远不会有效果。
+    NotApplicable,
     /// 名字不认识。
     Unknown,
 }
@@ -69,6 +80,7 @@ impl Availability {
             Self::Implemented => "已实现",
             Self::NeedsData => "机制已实现，但需要外部数据",
             Self::NotYet => "尚未实现",
+            Self::NotApplicable => "在我们这个架构里不适用（不是缺口）",
             Self::Unknown => "不认识这个名字",
         }
     }
@@ -191,6 +203,52 @@ const ENTRIES: &[Entry] = &[
         availability: Availability::Implemented,
         note: "兜底，保证输入总能上屏",
     },
+    // ── 内联零件（引擎直接生成候选的那些）──
+    //
+    // RIME 里这一族全部住在 Lua 插件里；我们按**行为**重做成原生零件。
+    // 见 `crates/stele-engine/src/inline.rs` 的模块文档。
+    Entry {
+        name: "date_translator",
+        slot: Slot::Translator,
+        availability: Availability::Implemented,
+        note: "日期/时间/星期/时间戳/中英日期",
+    },
+    Entry {
+        name: "unicode_translator",
+        slot: Slot::Translator,
+        availability: Availability::Implemented,
+        note: "U<hex> → Unicode 字符（含同区后续码位）",
+    },
+    Entry {
+        name: "uuid_translator",
+        slot: Slot::Translator,
+        availability: Availability::Implemented,
+        note: "触发词 → UUID",
+    },
+    Entry {
+        name: "v_filter",
+        slot: Slot::Filter,
+        availability: Availability::Implemented,
+        note: "v 模式单字优先（敲 v+一个字符时）",
+    },
+    Entry {
+        name: "long_word_filter",
+        slot: Slot::Filter,
+        availability: Availability::Implemented,
+        note: "长词优先（从第 idx 位提升 count 个更长的词）",
+    },
+    Entry {
+        name: "autocap_filter",
+        slot: Slot::Filter,
+        availability: Availability::Implemented,
+        note: "英文自动大写（输入码首字母/前两位大写）",
+    },
+    Entry {
+        name: "force_gc",
+        slot: Slot::Filter,
+        availability: Availability::NotApplicable,
+        note: "Lua 的手动 GC 在 Rust 里不存在（见 NotApplicable 的说明）",
+    },
     // ── 翻译器 ──
     Entry {
         name: "script_translator",
@@ -291,7 +349,10 @@ pub fn unmet_requirements(
     for n in names {
         let (availability, _slot, note) = lookup(n);
         match availability {
-            Availability::Implemented => {}
+            // "不适用"与"已实现"在这里的处理一样（都不是缺口）：
+            // 那个零件在我们这个架构里没有意义，方案声明了它也不会有效果，
+            // 但这不是错误——真实方案的零件清单是从 RIME 那边抄来的。
+            Availability::NotApplicable | Availability::Implemented => {}
             Availability::NotYet | Availability::Unknown => {
                 out.push((n.clone(), availability, note));
             }
@@ -357,6 +418,22 @@ pub fn missing_names() -> Vec<&'static str> {
     v
 }
 
+/// 在我们这个架构里不适用的零件名（有序、去重）。
+///
+/// 它与 `missing_names()` 分开，因为使用者该做的事完全不同：
+/// 缺代码要等，而不适用**不必等**。
+#[must_use]
+pub fn not_applicable_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = ENTRIES
+        .iter()
+        .filter(|e| e.availability == Availability::NotApplicable)
+        .map(|e| e.name)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// 需要外部数据的零件名（有序、去重）。
 #[must_use]
 pub fn needs_data_names() -> Vec<&'static str> {
@@ -381,6 +458,8 @@ pub struct CoverageReport {
     pub needs_data: Vec<String>,
     /// 尚未实现的。
     pub not_yet: Vec<String>,
+    /// **在我们这个架构里不适用**的（不是缺口）。
+    pub not_applicable: Vec<String>,
     /// 不认识的。
     pub unknown: Vec<String>,
 }
@@ -399,13 +478,19 @@ impl CoverageReport {
                 Availability::Implemented => r.implemented.push(n),
                 Availability::NeedsData => r.needs_data.push(n),
                 Availability::NotYet => r.not_yet.push(n),
+                Availability::NotApplicable => r.not_applicable.push(n),
                 Availability::Unknown => r.unknown.push(n),
             }
         }
         r
     }
 
-    /// 能否**完整**跑通（缺一个都不算）。
+    /// 这份方案能不能**完整**跑通。
+    ///
+    /// 三条都要空。注意 `not_applicable` **不算缺口**——那些零件在我们
+    /// 这个架构里没有意义（`force_gc`），方案里留着它行为上与"没有它"一致。
+    /// 把它算成缺口会让**每一份从 RIME 抄来的方案都报"缺零件"**，
+    /// 而那正是"含糊其辞让使用者白费力气"。
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.needs_data.is_empty() && self.not_yet.is_empty() && self.unknown.is_empty()
@@ -415,11 +500,12 @@ impl CoverageReport {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "需要 {} 个零件：已实现 {}，需外部数据 {}，尚未实现 {}，不认识 {}",
+            "需要 {} 个零件：已实现 {}，需外部数据 {}，尚未实现 {}，不适用 {}，不认识 {}",
             self.required.len(),
             self.implemented.len(),
             self.needs_data.len(),
             self.not_yet.len(),
+            self.not_applicable.len(),
             self.unknown.len()
         )
     }
