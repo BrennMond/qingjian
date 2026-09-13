@@ -55,36 +55,9 @@ impl At {
 
 /// 一个按键组合：**已经解析过**（不是字符串）。
 ///
-/// RIME 写的是 `Control+BackSpace`，我们把它拆成"键"与"修饰键"两部分——
-/// 于是匹配是**比较**，不是每次按键都去解析字符串。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct KeyChord {
-    /// 键本身。
-    pub code: stele_core::KeyCode,
-    /// 修饰键。
-    pub mods: stele_core::Modifiers,
-}
-
-impl KeyChord {
-    /// 构造。
-    #[must_use]
-    pub fn new(code: stele_core::KeyCode, mods: stele_core::Modifiers) -> Self {
-        Self { code, mods }
-    }
-
-    /// 这个按键是否命中本组合。
-    ///
-    /// **只比较被声明的修饰键**：方案写 `Return` 时不该要求用户
-    /// 恰好没按 Shift——RIME 的行为也是"声明的修饰键都要在，
-    /// 没声明的不管"。这条差异会直接体现在"回车上屏"能不能用上。
-    #[must_use]
-    pub fn matches(&self, key: &stele_core::Key) -> bool {
-        if key.release {
-            return false;
-        }
-        self.code == key.code && key.mods.contains(self.mods)
-    }
-}
+/// 定义在 [`crate::keyspec`]——解析按键名是引擎的语义，因此那一份实现
+/// 由引擎与装载器**共用**（见那个模块的说明）。
+pub use crate::keyspec::KeyChord;
 
 /// `editor` 的动作（RIME 的 `editor/bindings` 右侧那一列）。
 ///
@@ -272,8 +245,15 @@ pub struct KeyBinding {
     pub when: WhenPredicate,
     /// 接受哪些按键。
     pub accept: Vec<KeyChord>,
-    /// 上屏这段文本（`send` 的文本形态）。
-    pub send_text: Option<String>,
+    /// **换成哪些按键**（`send` / `send_sequence`）。
+    ///
+    /// 存的是**按键名的原文**，不是解析结果：派发时要把它变回按键，
+    /// 而"名字 → 按键"的解析在 [`crate::keyspec`]（引擎侧）。
+    /// 这样数据形状与 RIME 一致，装载器也不需要认识按键语义。
+    ///
+    /// 一个元素的 `send` 与多个元素的 `send_sequence` 在这里是同一种东西——
+    /// librime 的 `binding.target` 就是一个 `KeySequence`。
+    pub send_keys: Option<Vec<String>>,
     /// 切换这个开关（`toggle`）。
     pub toggle: Option<String>,
     /// 来源行号。

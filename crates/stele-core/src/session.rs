@@ -292,6 +292,10 @@ impl SessionState {
     }
 
     /// 构造一个只读查询视图。
+    ///
+    /// **它借用 `self`，不克隆任何东西**——这条性质是有代价换来的：
+    /// `Query` 早先带一个 `composition` 字段，于是每个组件都要
+    /// 一份独立的克隆（见 `Query` 的说明，那一次是 5 倍延迟）。
     #[must_use]
     pub fn query(&self) -> Query<'_> {
         Query {
@@ -299,7 +303,6 @@ impl SessionState {
             caret: self.composition.caret,
             options: &self.options,
             context: &self.context,
-            composition: &self.composition,
             segment_text: &self.composition.input,
         }
     }

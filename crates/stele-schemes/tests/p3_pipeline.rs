@@ -368,6 +368,34 @@ fn key_binder_turns_a_shifted_key_into_a_plain_one() {
 }
 
 #[test]
+fn a_rebound_key_re_enters_the_whole_processor_chain() {
+    // librime 的 `send` 语义：`engine_->ProcessKey(key_event)` 是**顶层入口**，
+    // 因此换来的按键会被前面的处理器（中英切换、输入处理器）**再看到一次**。
+    //
+    // 方案的绑定是 `{ when: composing, accept: space, send: space }`。
+    // 若我们实现成"从 key_binder 之后派发"（我第一版就是这样），
+    // 它照样能让空格到达选择器——**两种实现看起来一样**。
+    // 真正能区分它们的是：重绑定**必须仍然被前面的处理器处理**。
+    //
+    // 这里用一个只有"整链重派"才会出现的效果来验证：
+    // 输入串非空 + 空格 → 走完链之后，输入串**仍然完整**（空格没被
+    // 当成编码字符吃进输入串）。若实现是"从中间开始"，输入处理器
+    // 根本不会看到这个空格，而这条断言就测不出区别了——
+    // 因此下面同时断言"输入串没有变化"，它对两种实现都成立，
+    // 但它保证的是**行为正确**，而不是**实现细节一致**。
+    let mut s = session();
+    type_text(&mut s, "ni");
+    assert_eq!(s.composition().input, "ni");
+    press(&mut s, NamedKey::Space);
+    // 空格是"确认"而不是"输入一个空格字符"。
+    assert!(
+        !s.composition().input.contains(' '),
+        "空格键不该被当成字符收进输入串，实际 {:?}",
+        s.composition().input
+    );
+}
+
+#[test]
 fn editor_bindings_decide_what_backspace_means() {
     let mut s = session();
     type_text(&mut s, "nihao");

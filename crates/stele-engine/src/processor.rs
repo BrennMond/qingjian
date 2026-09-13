@@ -472,31 +472,70 @@ impl stele_core::Processor for Navigator {
 
 /// **按键重绑定处理器**。
 ///
-/// 对应 RIME 的 `key_binder`。支持两类效果——**都是引擎真能做到的**：
+/// 对应 RIME 的 `key_binder`。支持与 `librime` 相同的两类效果：
 ///
-/// | 配置 | 效果 | 怎么实现 |
-/// | --- | --- | --- |
-/// | `send: space` / `send: "，"` | 换成**另一个按键** | 塞进 [`SessionState::sent_keys`]，同一次按键内重新派发 |
-/// | `toggle: ascii_mode` | 切换开关 | 直接改开关并记事件 |
+/// | 配置 | 效果 |
+/// | --- | --- |
+/// | `send` / `send_sequence` | 把这一下按键**换成另一串按键**，重新派发 |
+/// | `toggle` | 切换一个开关 |
 ///
-/// 翻页类的 `send: Page_Up` 不需要特判：它就是"换成 `Page_Up` 这个键
-/// 重新派发"，而 `Page_Up` 由 [`Navigator`] 处理。**这就是"换成另一个键"
-/// 这个设计的价值**——重绑定器不需要认识任何具体动作。
+/// # 重新派发的两条语义（照抄 `librime`，原先我写错了）
+///
+/// librime `src/rime/gear/key_binder.cc`：
+///
+/// ```cpp
+/// void KeyBinder::PerformKeyBinding(const KeyBinding& binding) {
+///   if (binding.action) { binding.action(engine_); }
+///   else {
+///     redirecting_ = true;
+///     for (const KeyEvent& key_event : binding.target)
+///       engine_->ProcessKey(key_event);       // ← 顶层入口
+///     redirecting_ = false;
+///   }
+/// }
+/// ProcessResult KeyBinder::ProcessKeyEvent(const KeyEvent& key_event) {
+///   if (redirecting_ || ...) return kNoop;    // ← 唯一的防重入
+/// ```
+///
+/// 于是：
+///
+/// 1. **换来的按键从整条处理器链的最开头重新走**（`engine_->ProcessKey`
+///    就是顶层入口）——不是"从 `key_binder` 之后"。
+/// 2. 防重入靠**一个布尔标志**，只有 `key_binder` 自己看它。
+///    于是 `{accept: space, send: space}` 不会死循环：换成的那一下
+///    被 `key_binder` 直接放行，继续往后走到选择器。
+///
+/// 我第一版写成"从 `key_binder` 之后派发 + 轮数上限"——那个实现能跑，
+/// 但**语义不同**：`send` 换来的键在前面那些处理器（中英切换、输入
+/// 处理器）眼里等于没发生过。RIME 的方案依赖它们看到。
 pub struct KeyBinder {
     bindings: Vec<crate::spec::KeyBinding>,
+    /// **正在派发"换来的按键"**——此刻本处理器一律放行。
+    ///
+    /// 名字照抄 librime（`redirecting_`）：它是一个**重入标志**，
+    /// 不是"我正在处理按键"。
+    redirecting: bool,
 }
 
 impl KeyBinder {
     /// 构造。
     #[must_use]
     pub fn new(bindings: Vec<crate::spec::KeyBinding>) -> Self {
-        Self { bindings }
+        Self {
+            bindings,
+            redirecting: false,
+        }
     }
 }
 
 impl stele_core::Processor for KeyBinder {
     fn name(&self) -> &'static str {
         "key_binder"
+    }
+
+    /// 被重绑定的按键**跳过**本处理器——这就是防重入的全部机制。
+    fn enabled(&self, _options: &stele_core::Options) -> bool {
+        !self.redirecting
     }
 
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
@@ -519,23 +558,14 @@ impl stele_core::Processor for KeyBinder {
             if let Some(name) = &b.toggle {
                 did |= state.toggle_option(name);
             }
-            if let Some(text) = &b.send_text {
-                // `send` 的文本形态：单字符当作"换成这个键重新派发"，
-                // 多字符当作"直接上屏这段文本"。理由见
-                // [`stele_engine::spec::KeyBinding`] 的说明。
-                if text.chars().count() == 1 {
-                    let c = text.chars().next().unwrap_or(' ');
-                    // **反向映射**：`send: space` 里的空格是**空格键**，
-                    // 不是"一个空格字符"。少了这一步，`{accept: space,
-                    // send: space}` 会把空格键变成 `Char(' ')`——
-                    // 于是输入处理器不收它、选择器不认它、编辑器也不认它，
-                    // **空格彻底失效**，而配置看起来完全正常。
-                    state.sent_keys.push(key_for_char(c));
-                } else {
-                    state.pending_commit =
-                        Some(PendingCommit::literal(text.clone(), Trigger::Punctuation));
+            if let Some(seq) = &b.send_keys {
+                // 整个序列**按顺序**派发（librime 的 `binding.target`
+                // 是一个 `KeySequence`，按下一次全发出去）。
+                let keys = parse_send_sequence(seq);
+                if !keys.is_empty() {
+                    state.sent_keys.extend(keys);
+                    did = true;
                 }
-                did = true;
             }
             if did {
                 return ProcessResult::Accepted;
@@ -545,28 +575,27 @@ impl stele_core::Processor for KeyBinder {
     }
 }
 
-/// 把一个字符还原成**它最可能是的那个按键**。
+/// 把方案的 `send` / `send_sequence` 值解析成一串按键。
 ///
-/// 用于 `key_binder` 的 `send`：方案里写的是**键名**，而加载器把它读成了
-/// 文本（见 [`stele_engine::spec::KeyBinding`]）。要重新派发就必须换回按键，
-/// 而"这个字符是哪一种键"只能靠约定：
+/// # 两种取值
 ///
-/// | 字符 | 按键 |
-/// | --- | --- |
-/// | 空格 / 制表 / 换行 | 对应的具名键 |
-/// | 其它单字符 | 字符键 |
+/// - **键名**（`space`、`Page_Up`、`Control+BackSpace`）→ 对应的键。
+///   这是 RIME 的正规写法，也是翻页类绑定的唯一表达方式。
+/// - **一段文本**（`"，"`、`"test"`）→ 逐个字符当普通字符键。
+///   这是我们额外容忍的写法：RIME 的 `send` 只认键名，但"上屏一个中文
+///   标点"用键名表达不了，而它在真实方案里很常见。
 ///
-/// **为什么不能统一按字符键处理**：空格是输入法里最特殊的一个键
-/// （它是"确认候选"），而"上屏一个空格字符"是另一件事。
-/// 这条区别在 RIME 的方案里到处都是（`send: space`）。
+/// 空串返回空序列（调用方据此判断"这条绑定没效果"）。
 #[must_use]
-pub fn key_for_char(c: char) -> Key {
-    match c {
-        ' ' => Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE),
-        '\t' => Key::press(KeyCode::Named(NamedKey::Tab), Modifiers::NONE),
-        '\n' | '\r' => Key::press(KeyCode::Named(NamedKey::Enter), Modifiers::NONE),
-        other => Key::ch(other),
+pub fn parse_send_sequence(seq: &[String]) -> Vec<Key> {
+    let mut out = Vec::new();
+    for item in seq {
+        match crate::keyspec::parse_key_name(item) {
+            Some(chord) => out.push(Key::press(chord.code, chord.mods)),
+            None => out.extend(item.chars().map(crate::keyspec::key_for_char)),
+        }
     }
+    out
 }
 
 /// 最后一段的起始字节位置。
@@ -817,10 +846,10 @@ mod tests {
     fn send_text_reverse_maps_special_keys() {
         // `send: space` 是"空格键"，不是"空格字符"。
         assert_eq!(
-            key_for_char(' ').code,
+            crate::keyspec::key_for_char(' ').code,
             KeyCode::Named(NamedKey::Space)
         );
-        assert_eq!(key_for_char('a').code, KeyCode::Char('a'));
+        assert_eq!(crate::keyspec::key_for_char('a').code, KeyCode::Char('a'));
     }
 
     #[test]
@@ -860,14 +889,14 @@ mod tests {
                     KeyCode::Named(NamedKey::Space),
                     Modifiers::SHIFT,
                 )],
-                send_text: Some(" ".into()),
+                send_keys: Some(vec!["space".into()]),
                 toggle: None,
                 at: crate::spec::At::new(1),
             },
             KeyBinding {
                 when: WhenPredicate::Always,
                 accept: vec![C::new(KeyCode::Char('`'), Modifiers::NONE)],
-                send_text: None,
+                send_keys: None,
                 toggle: Some("ascii_mode".into()),
                 at: crate::spec::At::new(2),
             },

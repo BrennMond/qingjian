@@ -271,6 +271,16 @@ impl PipelineImpl {
     }
 
     /// 跑一遍切分：扫描 → 各切分器按顺序上场 → 兜底。
+    ///
+    /// # 它为什么**看不到开关与上下文**
+    ///
+    /// 切分器回答的是"这段输入是什么类型"，而那**不该**随用户开关变化——
+    /// 一个标点段在中文模式与英文模式下都是标点段。看不到它们，
+    /// 切分结果就与开关无关，而"切分随开关漂移"是一类很难查的 bug
+    /// （预编辑串的分隔线会莫名错位）。
+    ///
+    /// 需要开关的零件在**翻译器**那一层（例如 `punct_translator` 看全角开关），
+    /// 那里能拿到真实的会话状态。
     fn segment(&mut self, input: &str) -> Segmentation {
         let mut segs = Segmentation::default();
         if input.is_empty() {
@@ -284,19 +294,19 @@ impl PipelineImpl {
             return segs;
         }
         // 每个切分器按顺序有机会"接着当前进度往下切"，直到没人接。
+        // 切分不看开关与上下文（见方法文档），因此这里用一份**常量**
+        // 视图——它每次 `compose` 只构造一次，不在循环里。
+        let opts = stele_core::Options::new();
+        let ctx = stele_core::Context::default();
+        let q = Query {
+            input,
+            caret: input.len(),
+            options: &opts,
+            context: &ctx,
+            segment_text: input,
+        };
         while segs.segments.last().map_or(0, |s| s.span.end) < input.len() {
             let before = segs.segments.len();
-            let opts = stele_core::Options::new();
-            let ctx = stele_core::Context::default();
-            let comp = stele_core::Composition::default();
-            let q = Query {
-                input,
-                caret: input.len(),
-                options: &opts,
-                context: &ctx,
-                composition: &comp,
-                segment_text: input,
-            };
             for s in &self.segmentors {
                 if s.proceed(&q, &mut segs) {
                     break;
@@ -317,16 +327,6 @@ impl PipelineImpl {
         segs
     }
 
-    /// 把"要交给翻译器的那段正文"写进 `self.segment_text`。
-    ///
-    /// `offset` 是正文在输入串里的字节起点：`affix_segmentor` 之外的分段
-    /// 是 0（整串都是正文），带词缀的是前缀长度之后。
-    fn set_body(&mut self, input: &str, offset: usize) {
-        self.segment_text.clear();
-        if offset < input.len() {
-            self.segment_text.push_str(&input[offset..]);
-        }
-    }
 }
 
 impl Pipeline for PipelineImpl {
@@ -398,21 +398,32 @@ impl Pipeline for PipelineImpl {
             .filter_map(|s| s.body_start())
             .collect();
 
-        let opts = state.options.clone();
-        let ctx = state.context.clone();
-        let comp = state.composition.clone();
+        // **这里不克隆任何会话状态。**
+        //
+        // 早先这一段克隆了 Options / Context / Composition 三份（借用检查
+        // 不允许同时可变借 `SessionState` 与它的字段），实测代价是
+        // 按键 P50 从 301 ns 涨到 1.55 µs —— 而其中两份是**没人读的**。
+        // 见 `stele_core::Query` 的"为什么这里没有 composition"。
+        let caret = state.composition.caret;
+
+        // 正文缓冲区**取出来复用**，用完放回。
+        //
+        // 为什么不是每次 `set_body` 新建一个 `String`：`Query` 借用了它，
+        // 而借用期间 `&mut self` 不可用——于是"复用同一个缓冲区"要靠
+        // `mem::take` 把它移出 `self`。`String::clear()` 保留下容量，
+        // 因此这个缓冲区只分配一次（第一次），之后每次按键零分配。
+        let mut body_buf = std::mem::take(&mut self.segment_text);
 
         // 先跑"不绑定标签"的翻译器（兜底、老方案的主翻译器）。
-        self.set_body(&input, 0);
         {
-            let body = std::mem::take(&mut self.segment_text);
+            body_buf.clear();
+            body_buf.push_str(&input);
             let q = Query {
                 input: &input,
-                caret: state.composition.caret,
-                options: &opts,
-                context: &ctx,
-                composition: &comp,
-                segment_text: &body,
+                caret,
+                options: &state.options,
+                context: &state.context,
+                segment_text: &body_buf,
             };
             let mut sink = CandidateSink::new(out, self.cap);
             for t in &self.translators {
@@ -420,7 +431,6 @@ impl Pipeline for PipelineImpl {
                     t.translate(&q, span, &mut sink);
                 }
             }
-            self.segment_text = body;
         }
 
         // 再按标签跑绑定了标签的翻译器，各自看到自己那一段的正文。
@@ -429,15 +439,16 @@ impl Pipeline for PipelineImpl {
                 .iter()
                 .find(|(t, _)| t == tag)
                 .map_or(0, |(_, off)| *off);
-            self.set_body(&input, offset);
-            let body = std::mem::take(&mut self.segment_text);
+            body_buf.clear();
+            if offset < input.len() {
+                body_buf.push_str(&input[offset..]);
+            }
             let q = Query {
                 input: &input,
-                caret: state.composition.caret,
-                options: &opts,
-                context: &ctx,
-                composition: &comp,
-                segment_text: &body,
+                caret,
+                options: &state.options,
+                context: &state.context,
+                segment_text: &body_buf,
             };
             let mut sink = CandidateSink::new(out, self.cap);
             for t in &self.translators {
@@ -446,20 +457,16 @@ impl Pipeline for PipelineImpl {
                     t.translate(&q, span, &mut sink);
                 }
             }
-            self.segment_text = body;
         }
+        self.segment_text = body_buf;
 
         // ── ④ 滤镜与重排 ──
         {
-            let opts = state.options.clone();
-            let ctx = state.context.clone();
-            let comp = state.composition.clone();
             let q = Query {
                 input: &input,
-                caret: state.composition.caret,
-                options: &opts,
-                context: &ctx,
-                composition: &comp,
+                caret,
+                options: &state.options,
+                context: &state.context,
                 segment_text: &input,
             };
 
@@ -478,7 +485,7 @@ impl Pipeline for PipelineImpl {
                 let before: Vec<Candidate> = out.clone();
                 let view = QueryView {
                     input: &input,
-                    context: &ctx,
+                    context: &state.context,
                     lane: Lane::Input,
                 };
                 for r in &self.rankers {

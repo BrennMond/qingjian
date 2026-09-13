@@ -301,13 +301,11 @@ mod tests {
     fn run(cands: &mut Vec<Candidate>) {
         let opts = Options::new();
         let ctx = Context::default();
-        let comp = stele_core::Composition::default();
         let q = Query {
             input: "x",
             caret: 1,
             options: &opts,
             context: &ctx,
-            composition: &comp,
             segment_text: "x",
         };
         Uniquifier.apply(&q, Span::new(0, 1), cands);

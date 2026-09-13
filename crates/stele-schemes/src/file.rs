@@ -22,6 +22,7 @@
 //! 所以本模块**先收集全部诊断再返回**，而不是遇到第一个就 `return`。
 
 use crate::components;
+use stele_engine::keyspec::parse_key_name;
 use stele_config::{Node, Value};
 use stele_core::Score;
 use stele_core::{CodeAlphabet, Diagnostic, SchemaError, SchemaInfo, Switch};
@@ -474,10 +475,18 @@ fn load_from_root(
         .map(|n| components::read_recognizer(n, &mut diags, path))
         .unwrap_or_default();
 
-    let punctuator = root
-        .get("punctuator")
-        .map(components::read_punctuator)
-        .unwrap_or_default();
+    // `punctuator` 段没有时，仍然给一份"中文输入法本来该有的标点"——
+    // 否则 `,` 只会出一个半角逗号（或者什么都没有）。
+    // 这份默认来自**引擎自带的预设**（见 `stele_engine::presets`），
+    // 而不是某个具体输入法的数据。
+    let punctuator = if let Some(n) = root.get("punctuator") { components::read_punctuator(n, &mut diags, path) } else {
+        let p = stele_engine::presets::stele();
+        stele_engine::spec::PunctuatorSpec {
+            half_shape: p.half_shape.into_iter().collect(),
+            full_shape: p.full_shape.into_iter().collect(),
+            ..Default::default()
+        }
+    };
 
     let editor_bindings = root
         .get("editor")
@@ -490,9 +499,15 @@ fn load_from_root(
         .unwrap_or_default();
 
     let navigator = root
-        .get("navigator")
-        .map(components::read_navigator)
-        .unwrap_or_default();
+        .get("navigator").map_or_else(|| {
+            // 没写 `navigator` 段时用预设的翻页键（RIME 的默认）。
+            let p = stele_engine::presets::stele();
+            stele_engine::spec::NavigatorSpec {
+                page_up: p.page_up.iter().filter_map(|s| parse_key_name(s)).collect(),
+                page_down: p.page_down.iter().filter_map(|s| parse_key_name(s)).collect(),
+                ..Default::default()
+            }
+        }, |n| components::read_navigator(n, &mut diags, path));
 
     // 带词缀的切分器 / 反查滤镜 / 转换滤镜：**按 `engine:` 里出现的别名**
     // 去找对应的顶层段。找不到就是"声明了却没人配"——`compile` 会报。

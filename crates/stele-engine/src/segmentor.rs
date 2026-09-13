@@ -465,53 +465,37 @@ impl AffixSegmentor {
     }
 }
 
-/// 把 RIME 的 `prefix` 写法展开成"接受的前缀列表"。
+/// `prefix` 读成**一个字面前缀**——RIME 就是字面比较。
 ///
-/// # 一条**读错过一次**的约定
+/// # 这条注释记着一次"我自己发明了约定"
 ///
-/// RIME 的 `prefix` 是一个**字符串**，而同一个写法在真实方案里有两种用法：
+/// 我第一版把 `uU` 读成"`u` 或 `U` 两种单字符写法"（以为那是 RIME 的
+/// 大小写约定），于是 `uUni` 的前缀只被吃掉 `u`、正文变成 `Uni`——
+/// 反查一个候选都不出。当时我把这个猜测**写进了文档注释**，
+/// 而它是错的。
 ///
-/// ```yaml
-/// prefix: "`"    # 反引号前缀：敲 ` 再敲编码
-/// prefix: "uU"   # 我要用的那种：字面的两个字符 `uU` 一起出现
+/// librime 的源码是字面的（`src/rime/gear/affix_segmentor.cc`）：
+///
+/// ```cpp
+/// if (prefix_.empty() || !boost::starts_with(active_input, prefix_))
+///   return true;
+/// active_input.erase(0, prefix_.length());
 /// ```
 ///
-/// 我第一版按"`uU` 表示 `u` 或 `U` 两种单字符写法"实现（RIME 的大小写
-/// 约定），于是 `uUni` 的前缀只被吃掉 `u`，正文变成 `Uni`——
-/// **反查一个候选都不出，而预编辑串、切分、标签全都正常**。
-/// 端到端测试抓到了它。
+/// `prefix_` 是一个整体字符串，`starts_with` 是字面前缀比较，
+/// 剥离时 `erase(0, prefix_.length())` 剥掉**整个前缀**。
+/// rime-ice 自己的注释也印证这一点：
+/// 「反查前缀（反查时前缀会消失影响打英文所以设定为两个字母…）」——
+/// 两个字母就是两个字母。
 ///
-/// 现在的规则是**字面优先、大小写变体为补充**：
-///
-/// | 写法 | 展开成 |
-/// | --- | --- |
-/// | `"uU"` | `["uU", "u", "U"]`（长的先试：字面的 `uU` 优先） |
-/// | `"zz"` | 同上（`["zz", "z"]`） |
-/// | ``"`"`` | `["`"]` |
-/// | `"abc"` | `["abc"]` |
-///
-/// 长的先试这一条是关键：`uUni` 会先匹配 `uU`（成功），
-/// 而单独敲 `u` 时匹配 `u`（也成功）——两种输入都能用，
-/// 不需要在任何一边做取舍。`AffixSegmentor::body_start` 因此取
-/// **当前输入实际匹配到的那个前缀的长度**，而不是最短的那个。
+/// **教训**：不确定的约定不要写成文档里的"RIME 约定"。
+/// 这一条现在有源码引用，也有端到端测试（`uUni` → 正文 `ni`）。
 #[must_use]
 pub fn expand_prefix(raw: Option<&str>) -> Vec<String> {
-    let Some(s) = raw else {
-        return Vec::new();
-    };
-    if s.is_empty() {
-        return Vec::new();
+    match raw {
+        Some(s) if !s.is_empty() => vec![s.to_owned()],
+        _ => Vec::new(),
     }
-    let mut out = vec![s.to_owned()];
-    // 大小写变体：`uU` 也可能被用来表示"敲 u 或 U 都行"。
-    let mut cs = s.chars();
-    if let (Some(a), Some(b), None) = (cs.next(), cs.next(), cs.next()) {
-        if a != b {
-            out.push(a.to_string());
-            out.push(b.to_string());
-        }
-    }
-    out
 }
 
 impl Segmentor for AffixSegmentor {
@@ -520,11 +504,8 @@ impl Segmentor for AffixSegmentor {
     }
 
     fn body_start(&self) -> Option<(Tag, usize)> {
-        // **取最长的前缀**：`proceed` 在多个候选前缀里也取最长的那个
-        // （`uU` 优先于 `u`）。两处必须用同一条规则——否则
-        // "切分时的前缀"与"剥掉的长度"会不一致，而症状是正文错位
-        // （例如反查把 `ni` 读成 `Uni`），候选一个都不出。
-        let len = self.prefixes.iter().map(String::len).max().unwrap_or(0);
+        // 前缀是**字面串**（见 `expand_prefix`），因此长度是唯一的。
+        let len = self.prefixes.first().map_or(0, String::len);
         Some((self.tag, len))
     }
 
@@ -853,15 +834,14 @@ mod tests {
     }
 
     #[test]
-    fn prefix_expansion_puts_the_literal_form_first() {
-        // 长的先试：字面写法优先，大小写变体是补充。
-        assert_eq!(expand_prefix(Some("uU")), vec!["uU", "u", "U"]);
-        // 同一个字母重复时**没有大小写变体**可言，所以只有字面那一项。
-        assert_eq!(expand_prefix(Some("zz")), vec!["zz"]);
+    fn prefix_is_a_literal_string_exactly_like_librime() {
+        // **字面**，没有大小写变体。librime 的 `boost::starts_with(prefix_)`
+        // 与 `erase(0, prefix_.length())` 就是这么做的。
+        assert_eq!(expand_prefix(Some("uU")), vec!["uU"]);
         assert_eq!(expand_prefix(Some("v")), vec!["v"]);
         assert!(expand_prefix(None).is_empty());
+        assert!(expand_prefix(Some("")).is_empty());
 
-        // 而且**最长匹配优先**这条规则真的生效：`uUni` 吃掉两字符前缀。
         let spec = AffixSpec {
             tag: Some("chaizi"),
             prefix: Some("uU".into()),
@@ -870,6 +850,7 @@ mod tests {
         let mut tags = TagTable::new();
         let seg = AffixSegmentor::new(&spec, &mut tags, "abc");
         assert_eq!(seg.body_start(), Some(("chaizi", 2)));
+        assert_eq!(seg.prefixes(), ["uU".to_owned()]);
     }
 
     #[test]
@@ -885,13 +866,11 @@ mod tests {
         let abc = CodingSegmentor::new(seg_tag, scan.clone());
         let opts = stele_core::Options::new();
         let ctx = stele_core::Context::default();
-        let comp = stele_core::Composition::default();
         let q = Query {
             input: "uUni",
             caret: 4,
             options: &opts,
             context: &ctx,
-            composition: &comp,
             segment_text: "uUni",
         };
         let mut seg = stele_core::Segmentation::default();
@@ -909,7 +888,6 @@ mod tests {
             caret: 11,
             options: &opts,
             context: &ctx,
-            composition: &comp,
             segment_text: "ni hao uUni",
         };
         let scan2 = {

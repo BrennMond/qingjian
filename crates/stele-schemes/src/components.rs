@@ -13,11 +13,12 @@
 //! "行为诡异"而不是"第 42 行写错了"（PLAN D17）。
 
 use stele_config::Node;
-use stele_core::{Diagnostic, KeyCode, Modifiers, NamedKey};
+use stele_core::Diagnostic;
 use stele_engine::spec::{
-    AffixSpec, At, EditorAction, EngineSpec, KeyBinding, KeyChord, NavigatorSpec, PunctuatorSpec,
+    AffixSpec, At, EditorAction, EngineSpec, KeyBinding, NavigatorSpec, PunctuatorSpec,
     RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TranslatorSpec, WhenPredicate,
 };
+use stele_engine::keyspec::{KeyChord, parse_key_name};
 use stele_engine::tag::TagTable;
 use stele_core::Tag;
 
@@ -146,7 +147,11 @@ fn trailing_literal(regex: &str) -> Option<String> {
 }
 
 /// `punctuator:` 段。
-pub fn read_punctuator(node: &Node) -> PunctuatorSpec {
+pub fn read_punctuator(
+    node: &Node,
+    diags: &mut Vec<Diagnostic>,
+    path: &str,
+) -> PunctuatorSpec {
     let table = |key: &str| -> Vec<(String, String)> {
         node.get(key)
             .and_then(Node::as_map)
@@ -157,34 +162,68 @@ pub fn read_punctuator(node: &Node) -> PunctuatorSpec {
             })
             .unwrap_or_default()
     };
+    let mut half_shape = table("half_shape");
+    let mut full_shape = table("full_shape");
+    // `import_preset`：**把预设叠在我写的东西底下**（RIME 的语义）。
+    // 方案写了的键以方案为准，没写的由预设补上——于是方案只需要写
+    // 自己**特有**的那几条。
+    if let Some(name) = node.get("import_preset").and_then(stele_config::Node::as_str) {
+        match stele_engine::presets::get(&name) {
+            Some(p) => {
+                for (k, v) in &p.half_shape {
+                    if !half_shape.iter().any(|(hk, _)| hk == k) {
+                        half_shape.push((k.clone(), v.clone()));
+                    }
+                }
+                for (k, v) in &p.full_shape {
+                    if !full_shape.iter().any(|(fk, _)| fk == k) {
+                        full_shape.push((k.clone(), v.clone()));
+                    }
+                }
+                half_shape.sort();
+                full_shape.sort();
+            }
+            None => diags.push(
+                Diagnostic::new(
+                    path,
+                    format!("不认识的预设名 `{name}`（`punctuator.import_preset`）"),
+                )
+                .with_field("punctuator.import_preset")
+                .with_entry(format!(
+                    "我们提供的预设：{}。RIME 的 `default` / `symbols_v` 是它自己的\
+                     资产，我们没有搬过来——请把需要的表直接写在这里",
+                    stele_engine::presets::names().join("、")
+                )),
+            ),
+        }
+    }
+
     let symbols = table("symbols");
-    // 符号表的前缀：RIME 的写法是 `symbols_prefix`；**没写时没有前缀**。
-    //
-    // # 为什么不能"从第一个键猜前缀"
-    //
-    // RIME 的符号表有两种约定，而它们**在数据上无法区分**：
+    // 符号表的前缀有两种约定，而它们用 `symbols_prefix` 区分：
     //
     // | 写法 | 含义 | 前缀 |
     // | --- | --- | --- |
-    // | `"/hx": "㊕"` | 敲 `/hx` 出 ㊕ | `/`（键**自带**前缀） |
-    // | `symbols_prefix: "v"` + `"1": "①"` | 敲 `v1` 出 ① | `v`（键**不带**前缀） |
+    // | `symbols_prefix: "v"` + `"1": "①"` | 敲 `v1` 出 ① | `v`（键**不含**前缀） |
+    // | `"/hx": "㊕"`（不写 `symbols_prefix`） | 敲 `/hx` 出 ㊕ | `/`（键**自带**前缀） |
     //
-    // 我第一版试图"猜"（拿第一个键的首字符当前缀），于是第二种写法下
-    // 前缀被猜成 `1`，`v1` 永远查不到——**符号表整个不工作，且没有报错**。
-    // 端到端测试（`the_symbol_table_expands_under_its_prefix`）抓到了它。
-    //
-    // 现在的规则是**显式且无歧义**的：写了 `symbols_prefix` 就用它，
-    // 没写就当"键自带前缀"——从第一个键的首字符取，并在**存储时剥掉**它
-    // （见 [`stele_engine::punctuator::PunctTranslator`]）。
-    // 两条路都只有一种解读，不需要猜。
-    let explicit = node
+    // 第二行的判据是"**所有的键都以同一个字符开头**"——那是键自带前缀的
+    // 形式特征。**不能只看第一个键**：`"1": "①"` 的第一个键以 `1` 开头，
+    // 只看它就会把前缀猜成 `1`，于是 `v1` 永远查不到，
+    // **符号表整个不工作且没有报错**（这个 bug 真发生过）。
+    let symbol_prefix = node
         .get("symbols_prefix")
         .and_then(Node::as_str)
-        .and_then(|s| s.chars().next());
-    let symbol_prefix = explicit.or_else(|| symbols.first().and_then(|(k, _)| k.chars().next()));
+        .and_then(|s| s.chars().next())
+        .or_else(|| {
+            let first = symbols.first().and_then(|(k, _)| k.chars().next())?;
+            let all_share_it = symbols
+                .iter()
+                .all(|(k, _)| k.starts_with(first) && k.chars().count() > 1);
+            all_share_it.then_some(first)
+        });
     PunctuatorSpec {
-        full_shape: table("full_shape"),
-        half_shape: table("half_shape"),
+        full_shape,
+        half_shape,
         symbols,
         symbol_prefix,
         at: At::new(node.line as usize),
@@ -288,25 +327,48 @@ pub fn read_key_bindings(
             }
         }
         // `send` / `send_sequence` / `toggle`
-        let mut send_text = item
-            .get("send")
-            .and_then(stele_config::Node::as_str)
-            .map(|s| key_name_to_literal(&s));
-        let toggle = item.get("toggle").and_then(stele_config::Node::as_str);
+        //
+        // **存键名原文，不解析成键**：`send` 换成的是"另一串按键"，
+        // 而按键的语义（`space` = 空格键 = 确认候选）是**引擎**的事。
+        // 装载器只搬运名字，`key_binder` 自己解析——一份解析，
+        // 两个使用者（见 `stele_engine::keyspec`）。
+        //
+        // 一个元素的 `send` 与多个元素的 `send_sequence` 在这里是同一种
+        // 东西：librime 的 `binding.target` 就是一个 `KeySequence`。
+        let mut send_keys: Option<Vec<String>> = None;
+        if let Some(send_node) = item.get("send") {
+            match send_node.as_str() {
+                Some(v) => send_keys = Some(vec![v]),
+                None => diags.push(
+                    Diagnostic::new(path, "`send` 的值必须是按键名或一段文本")
+                        .with_field(field("send"))
+                        .with_entry(format!("第 {} 行", send_node.line)),
+                ),
+            }
+        }
         if let Some(seq_node) = item.get("send_sequence") {
-            match seq_node.as_seq().and_then(|s| s.first()) {
-                Some(first) => {
-                    diags.push(
-                        Diagnostic::new(
-                            path,
-                            "`send_sequence`（一次发送多个按键）尚未支持，\
-                             只发送了它的第一个键",
-                        )
-                        .with_field(field("send_sequence"))
-                        .with_entry(format!("第 {} 行", seq_node.line)),
-                    );
-                    if send_text.is_none() {
-                        send_text = first.as_str().map(|s| key_name_to_literal(&s));
+            match seq_node.as_seq() {
+                Some(items) => {
+                    let names: Vec<String> = items.iter().filter_map(stele_config::Node::as_str).collect();
+                    if names.is_empty() {
+                        diags.push(
+                            Diagnostic::new(path, "`send_sequence` 是空的，它什么都不会做")
+                                .with_field(field("send_sequence"))
+                                .with_entry(format!("第 {} 行", seq_node.line)),
+                        );
+                    } else {
+                        if send_keys.is_some() {
+                            diags.push(
+                                Diagnostic::new(
+                                    path,
+                                    "同一条绑定同时写了 `send` 与 `send_sequence`，\
+                                     只有 `send_sequence` 会生效",
+                                )
+                                .with_field(format!("key_binder.bindings[{i}]"))
+                                .with_entry(format!("第 {} 行", item.line)),
+                            );
+                        }
+                        send_keys = Some(names);
                     }
                 }
                 None => diags.push(
@@ -316,7 +378,8 @@ pub fn read_key_bindings(
                 ),
             }
         }
-        if send_text.is_none() && toggle.is_none() {
+        let toggle = item.get("toggle").and_then(stele_config::Node::as_str);
+        if send_keys.is_none() && toggle.is_none() {
             diags.push(
                 Diagnostic::new(
                     path,
@@ -330,7 +393,7 @@ pub fn read_key_bindings(
         out.push(KeyBinding {
             when,
             accept,
-            send_text,
+            send_keys,
             toggle,
             at: At::new(item.line as usize),
         });
@@ -340,7 +403,7 @@ pub fn read_key_bindings(
 
 /// `navigator:` 段。
 #[must_use]
-pub fn read_navigator(node: &Node) -> NavigatorSpec {
+pub fn read_navigator(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> NavigatorSpec {
     let keys = |key: &str| -> Vec<KeyChord> {
         node.get(key)
             .and_then(Node::as_seq)
@@ -352,9 +415,38 @@ pub fn read_navigator(node: &Node) -> NavigatorSpec {
             })
             .unwrap_or_default()
     };
+    let mut page_up = keys("page_up");
+    let mut page_down = keys("page_down");
+    if let Some(name) = node.get("import_preset").and_then(stele_config::Node::as_str) {
+        match stele_engine::presets::get(&name) {
+            Some(p) => {
+                if page_up.is_empty() {
+                    page_up = p.page_up.iter().filter_map(|s| parse_key_name(s)).collect();
+                }
+                if page_down.is_empty() {
+                    page_down = p
+                        .page_down
+                        .iter()
+                        .filter_map(|s| parse_key_name(s))
+                        .collect();
+                }
+            }
+            None => diags.push(
+                Diagnostic::new(
+                    path,
+                    format!("不认识的预设名 `{name}`（`navigator.import_preset`）"),
+                )
+                .with_field("navigator.import_preset")
+                .with_entry(format!(
+                    "我们提供的预设：{}",
+                    stele_engine::presets::names().join("、")
+                )),
+            ),
+        }
+    }
     NavigatorSpec {
-        page_up: keys("page_up"),
-        page_down: keys("page_down"),
+        page_up,
+        page_down,
         up: keys("up"),
         down: keys("down"),
         at: At::new(node.line as usize),
@@ -539,124 +631,17 @@ pub fn read_translator(
 // 按键名
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 解析 RIME 的按键名。
-///
-/// # 支持的写法
-///
-/// | 写法 | 结果 |
-/// | --- | --- |
-/// | `space` / `Return` / `BackSpace` | 具名键（大小写不敏感） |
-/// | `Control+BackSpace` / `Shift+Tab` | 具名键 + 修饰键 |
-/// | `minus` / `equal` / `bracketleft` | X11 名字 → 对应的**字符** |
-/// | `a` / `,` | 单字符 |
-///
-/// **不认识的返回 `None`**，由调用方报错并列出可用的写法——
-/// RIME 在这里是宽松的（认不出就当没写），而那会让"快捷键没反应"
-/// 变成一个查不出来的问题。
-#[must_use]
-pub fn parse_key_name(name: &str) -> Option<KeyChord> {
-    let mut mods = Modifiers::NONE;
-    let mut rest = name;
-    // 修饰键前缀，可能叠加（`Control+Shift+Return`）。
-    loop {
-        let lower = rest.to_ascii_lowercase();
-        let stripped = ["control+", "ctrl+", "shift+", "alt+", "super+"]
-            .iter()
-            .find_map(|p| lower.strip_prefix(p).map(|_| p.len()));
-        let Some(n) = stripped else { break };
-        let prefix = &lower[..n];
-        mods = mods
-            | match prefix {
-                "control+" | "ctrl+" => Modifiers::CTRL,
-                "shift+" => Modifiers::SHIFT,
-                "alt+" => Modifiers::ALT,
-                _ => Modifiers::SUPER,
-            };
-        rest = &rest[n..];
-    }
-    let key = rest.to_ascii_lowercase();
-    let code = match key.as_str() {
-        "space" => KeyCode::Named(NamedKey::Space),
-        "return" | "enter" => KeyCode::Named(NamedKey::Enter),
-        "backspace" => KeyCode::Named(NamedKey::Backspace),
-        "delete" | "delete_forward" => KeyCode::Named(NamedKey::Delete),
-        "escape" | "esc" => KeyCode::Named(NamedKey::Escape),
-        "tab" => KeyCode::Named(NamedKey::Tab),
-        "left" => KeyCode::Named(NamedKey::Left),
-        "right" => KeyCode::Named(NamedKey::Right),
-        "up" => KeyCode::Named(NamedKey::Up),
-        "down" => KeyCode::Named(NamedKey::Down),
-        "home" => KeyCode::Named(NamedKey::Home),
-        "end" => KeyCode::Named(NamedKey::End),
-        "prior" | "page_up" => KeyCode::Named(NamedKey::PageUp),
-        "next" | "page_down" => KeyCode::Named(NamedKey::PageDown),
-        "minus" => KeyCode::Char('-'),
-        "equal" => KeyCode::Char('='),
-        "comma" => KeyCode::Char(','),
-        "period" => KeyCode::Char('.'),
-        "slash" => KeyCode::Char('/'),
-        "semicolon" => KeyCode::Char(';'),
-        "apostrophe" => KeyCode::Char('\''),
-        "grave" => KeyCode::Char('`'),
-        "bracketleft" => KeyCode::Char('['),
-        "bracketright" => KeyCode::Char(']'),
-        "backslash" => KeyCode::Char('\\'),
-        _ => {
-            // 单字符（含 `,` `.` 这类直接写出来的标点）。
-            let mut cs = rest.chars();
-            match (cs.next(), cs.next()) {
-                (Some(c), None) => KeyCode::Char(c),
-                _ => return None,
-            }
-        }
-    };
-    Some(KeyChord::new(code, mods))
-}
-
-/// `send:` 的值 → 一段**要上屏的文本**。
-///
-/// # 这里有一处必须解释的换算
-///
-/// RIME 的 `send: space` 意思是"再发一个空格键"。而空格键在引擎里的
-/// 效果是**确认当前候选**（选择器的职责），不是"上屏一个空格字符"。
-///
-/// 因此这里把 `send` 的名字换算成**该键真正会产生的文本**：
-///
-/// - `send: space` → `" "`（我们要的是"确认候选"，而确认由上屏表达）
-/// - `send: comma` → `","`
-/// - `send: "，"` → `"，"`（直接写中文标点也支持）
-///
-/// 翻页类（`Page_Up`）对应的是**按键**而不是文本，由调用方另行处理
-/// （见 [`stele_engine::processor::KeyBinder`]）。
-#[must_use]
-pub fn key_name_to_literal(name: &str) -> String {
-    match name.to_ascii_lowercase().as_str() {
-        "space" => " ".to_owned(),
-        "minus" => "-".to_owned(),
-        "equal" => "=".to_owned(),
-        "comma" => ",".to_owned(),
-        "period" => ".".to_owned(),
-        "slash" => "/".to_owned(),
-        "semicolon" => ";".to_owned(),
-        "apostrophe" => "'".to_owned(),
-        "grave" => "`".to_owned(),
-        "bracketleft" => "[".to_owned(),
-        "bracketright" => "]".to_owned(),
-        "backslash" => "\\".to_owned(),
-        _ => name.to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stele_core::{KeyCode, Modifiers, NamedKey};
 
     #[test]
     fn key_names_round_trip_through_the_parser() {
         assert_eq!(
             parse_key_name("Control+BackSpace"),
             Some(KeyChord::new(
-                KeyCode::Named(NamedKey::Backspace),
+                stele_core::KeyCode::Named(stele_core::NamedKey::Backspace),
                 Modifiers::CTRL
             ))
         );
@@ -669,10 +654,27 @@ mod tests {
     }
 
     #[test]
-    fn send_names_become_the_text_the_key_would_produce() {
-        assert_eq!(key_name_to_literal("space"), " ");
-        assert_eq!(key_name_to_literal("comma"), ",");
-        // 直接写中文标点也照样工作。
-        assert_eq!(key_name_to_literal("，"), "，");
+    fn send_names_stay_verbatim_for_the_engine_to_parse() {
+        // 装载器**不解释**按键名：它只搬运。`space` 是键名，
+        // 由引擎解析成空格键（而不是"一个空格字符"）。
+        assert_eq!(
+            parse_key_name("space"),
+            Some(KeyChord::new(
+                stele_core::KeyCode::Named(stele_core::NamedKey::Space),
+                stele_core::Modifiers::NONE
+            ))
+        );
+        // 单个字符**总是**被当成字符键——包括中文标点。
+        // （`send: "，"` 在 RIME 里并不是合法写法，但我们接受它：
+        // "上屏一个中文标点"用键名表达不了，而它在真实方案里很常见。）
+        assert_eq!(
+            parse_key_name("，"),
+            Some(KeyChord::new(
+                stele_core::KeyCode::Char('，'),
+                stele_core::Modifiers::NONE
+            ))
+        );
+        // 多字符且不是键名 → `None`，由 `key_binder` 当作"一段文本"逐字派发。
+        assert_eq!(parse_key_name("dian"), None);
     }
 }

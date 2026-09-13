@@ -357,24 +357,18 @@ mod tests {
     use super::*;
     use crate::lexicon::InMemoryLexicon;
     use crate::spelling::{Rule, SpellingTable};
-    use stele_core::{Composition, Context, Options};
+    use stele_core::{Context, Options};
 
     fn alphabet(units: &[&str]) -> CodeAlphabet {
         CodeAlphabet::new(units.iter().map(|s| (*s).to_owned()).collect())
     }
 
-    fn query<'a>(
-        input: &'a str,
-        options: &'a Options,
-        context: &'a Context,
-        composition: &'a Composition,
-    ) -> Query<'a> {
+    fn query<'a>(input: &'a str, options: &'a Options, context: &'a Context) -> Query<'a> {
         Query {
             input,
             caret: input.len(),
             options,
             context,
-            composition,
             segment_text: input,
         }
     }
@@ -392,10 +386,9 @@ mod tests {
 
         let opts = Options::new();
         let ctx = Context::default();
-        let comp = Composition::default();
-        let mut buf = Vec::new();
+                let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
-        t.translate(&query("ab", &opts, &ctx, &comp), Span::new(0, 2), &mut sink);
+        t.translate(&query("ab", &opts, &ctx), Span::new(0, 2), &mut sink);
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].text, "十");
         assert_eq!(buf[0].span, Span::new(0, 2));
@@ -415,13 +408,12 @@ mod tests {
 
         let opts = Options::new();
         let ctx = Context::default();
-        let comp = Composition::default();
-
+        
         // 规范拼写：属性为 NORMAL，分数就是词条分数。
         let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
         t.translate(
-            &query("nihao", &opts, &ctx, &comp),
+            &query("nihao", &opts, &ctx),
             Span::new(0, 5),
             &mut sink,
         );
@@ -433,7 +425,7 @@ mod tests {
         let mut buf2 = Vec::new();
         let mut sink2 = CandidateSink::new(&mut buf2, 16);
         t.translate(
-            &query("nh", &opts, &ctx, &comp),
+            &query("nh", &opts, &ctx),
             Span::new(0, 2),
             &mut sink2,
         );
@@ -450,12 +442,11 @@ mod tests {
         let t = EchoTranslator::new();
         let opts = Options::new();
         let ctx = Context::default();
-        let comp = Composition::default();
-
+        
         let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
         t.translate(
-            &query("zzz", &opts, &ctx, &comp),
+            &query("zzz", &opts, &ctx),
             Span::new(0, 3),
             &mut sink,
         );
@@ -470,7 +461,7 @@ mod tests {
         // 空输入不产出候选。
         let mut buf2 = Vec::new();
         let mut sink2 = CandidateSink::new(&mut buf2, 16);
-        t.translate(&query("", &opts, &ctx, &comp), Span::new(0, 0), &mut sink2);
+        t.translate(&query("", &opts, &ctx), Span::new(0, 0), &mut sink2);
         assert!(buf2.is_empty());
     }
 

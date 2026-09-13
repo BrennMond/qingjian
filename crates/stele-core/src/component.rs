@@ -25,7 +25,7 @@ use crate::context::Context;
 use crate::key::Key;
 use crate::option::Options;
 use crate::score::Score;
-use crate::segment::{Composition, Segmentation, Tag};
+use crate::segment::{Segmentation, Tag};
 use crate::service::{Lexicon, Spelling};
 use crate::session::SessionState;
 
@@ -33,6 +33,20 @@ use crate::session::SessionState;
 ///
 /// **只放"每次查询都不同"的数据，不放服务。**
 /// 词库、拼写层、记忆、时钟等服务在**组件构造时注入**（见下）。
+///
+/// # 为什么这里**没有** `composition`
+///
+/// 早先它有一个 `composition: &Composition` 字段，而流水线为了构造它
+/// **每次按键都克隆一遍 Options / Context / Composition**（借用检查器
+/// 不允许同时可变借用 `SessionState` 与它的字段）。
+///
+/// 实测代价：按键路径 P50 从 **301 ns 涨到 1.55 µs**——
+/// 五次克隆换来的却是**零个使用者**（全项目没有任何组件读它）。
+/// 删掉之后三个克隆全部消失。
+///
+/// 组件若确实需要更多会话状态，正确的做法是**显式加一个字段**
+/// （像 `segment_text` 那样），而不是把整个 `Composition` 搬过来——
+/// 后者会让"谁读了什么"变成不可回答的问题。
 pub struct Query<'a> {
     /// 当前输入串。
     pub input: &'a str,
@@ -42,8 +56,6 @@ pub struct Query<'a> {
     pub options: &'a Options,
     /// 最近已上屏的词（最新的在末尾）。下一词预测完全依赖它。
     pub context: &'a Context,
-    /// 当前会话的完整只读状态。
-    pub composition: &'a Composition,
     /// **本次翻译该看的那一段文本**。
     ///
     /// 绝大多数时候它就是 [`Query::input`] 本身。但**带词缀的分段**

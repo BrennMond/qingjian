@@ -151,7 +151,19 @@ fn main() {
     let engine = stele_engine::EngineImpl::new(&defs).expect("默认方案应当能编译");
     let load_us = u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
 
+    // 方案可选：不同方案的零件数差别很大（拼音有切分器与标点，
+    // 字形码没有），因此**延迟数字必须注明测的是哪个方案**。
+    let schema: Option<String> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--schema="))
+        .map(str::to_owned);
     let mut session = engine.create_session();
+    if let Some(id) = &schema {
+        if let Err(e) = session.switch_schema(id) {
+            eprintln!("切换方案 {id} 失败：{e}");
+            std::process::exit(2);
+        }
+    }
     let cycle: Vec<char> = "nihao".chars().collect();
     let mut i: usize = 0;
     let pipeline = measure(iterations.min(50_000), || {
@@ -180,10 +192,11 @@ fn main() {
         let mut out = String::new();
         let _ = write!(
             out,
-            "{{\"idle\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
+            "{{\"schema\":\"{}\",\"idle\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
              \"sort200\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
              \"keypath\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
              \"rss_kib\":{},\"engine_load_us\":{},\"process_us\":{},\"probe_commit\":\"{}\"}}",
+            session.schema_id(),
             idle.samples,
             idle.p50_ns,
             idle.p95_ns,
@@ -210,6 +223,10 @@ fn main() {
 
     println!("Stele-IME 称重台");
     println!("========================================");
+    println!(
+        "被测方案：{}",
+        session.schema_id()
+    );
     println!("自检：敲 nihao 后上屏 「{committed}」");
     println!();
     println!(

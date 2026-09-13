@@ -416,13 +416,11 @@ mod tests {
         let t = PunctTranslator::new(&spec(), None);
         let opts = Options::new();
         let ctx = stele_core::Context::default();
-        let comp = stele_core::Composition::default();
         let q = Query {
             input: "，",
             caret: 3,
             options: &opts,
             context: &ctx,
-            composition: &comp,
             segment_text: "，",
         };
         let mut buf = Vec::new();
@@ -442,13 +440,11 @@ mod tests {
         let t = PunctTranslator::new(&spec(), None);
         let opts = Options::new();
         let ctx = stele_core::Context::default();
-        let comp = stele_core::Composition::default();
         let q = Query {
             input: "v1",
             caret: 2,
             options: &opts,
             context: &ctx,
-            composition: &comp,
             segment_text: "v1",
         };
         let mut buf = Vec::new();

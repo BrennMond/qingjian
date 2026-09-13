@@ -20,17 +20,46 @@ switches:
   - name: ascii_punct
     states: [¥, $]
     reset: 0
+  # 全角/半角标点。**必须声明**：`punctuator` 要读它，而未声明的开关
+  # 不会被静默创建（见 `Options::set` 的说明）——载入期会直接报错。
+  - name: full_shape
+    states: [半角, 全角]
+    reset: 0
   # 繁体转换：能力保留，数据自备（D32）。
   - name: traditionalization
     states: [简, 繁]
     reset: 0
 
+# 零件清单。**写成 RIME 的形状**（名字列表）而不是"短写法 + 默认装配"，
+# 理由有两条：
+#   1. 标点、翻页、中英切换**必须被声明**才会生效——一个只装了输入处理器
+#      的引擎打不出标点。这一点是**与 librime 的对照实验发现的**
+#      （`tools/compare-librime.py` 的 `,` 用例：librime 出「，」，我们什么都不出）。
+#   2. 这样一份方案就是"用户手上的 RIME 方案长什么样"的活样本——
+#      P3 的验收线（跑通 `no_lua_schema`）靠的就是同一种读法。
 engine:
   # 分段标签 —— 翻译器按 tag 绑定（G3）。
   tag: abc
   # 用哪族翻译器。这里选"拼写图"：编码集合可枚举，因此能构造拼写 → 编码的映射。
   translator: spelling_graph
   candidate_cap: 200
+  processors:
+    - ascii_composer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+  filters:
+    - uniquifier
 
 speller:
   # 音节分隔符（RIME 的写法，第一位是自动插入的那个）。

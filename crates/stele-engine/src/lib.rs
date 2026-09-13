@@ -21,8 +21,10 @@
 
 pub mod engine;
 pub mod filter;
+pub mod keyspec;
 pub mod lexicon;
 pub mod pipeline;
+pub mod presets;
 pub mod processor;
 pub mod punctuator;
 pub mod regex;
@@ -36,9 +38,11 @@ pub mod translator;
 
 pub use engine::{EngineImpl, SessionImpl};
 pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
+pub use keyspec::{KeyChord, key_code_name, key_for_char, parse_key_name};
 pub use lexicon::{Entry, InMemoryLexicon, LexiconError, TextIndex};
 pub use pipeline::{PipelineImpl, CANDIDATE_CAP, DEFAULT_PAGE_SIZE};
 pub use processor::{AsciiComposer, Editor, KeyBinder, Navigator, Selector, Speller};
+pub use presets::{PRESET_STELE, Preset};
 pub use punctuator::{PunctTranslator, Punctuator, literal_pending};
 pub use regex::{Regex, RegexError};
 pub use registry::{Availability, CoverageReport, ExternalData, Slot, unmet_requirements};
@@ -48,7 +52,7 @@ pub use segmentor::{
     SymbolSegmentor,
 };
 pub use spec::{
-    AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, KeyChord, NavigatorSpec,
+    AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, NavigatorSpec,
     PunctuatorSpec, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
     TranslatorKindSpec, TranslatorSpec, WhenPredicate, split_alias,
 };
