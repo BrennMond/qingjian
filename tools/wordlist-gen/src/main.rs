@@ -21,9 +21,13 @@
 //! | --- | --- | --- | --- |
 //! | `pinyin.txt` | `mozillazg/pinyin-data` | MIT | 41k 汉字的拼音，**首要读音在前** |
 //! | `THUOCL_*.txt` | `thunlp/THUOCL` | MIT | 分领域词表，**带语料词频** |
+//! | `jieba_dict.txt` | `fxsjy/jieba` | MIT | 通用词表（58 万条，`词 词频 词性`） |
+//! | `opencc/TSCharacters.txt` | `BYVoid/OpenCC` | Apache-2.0 | 繁体字形集合，用于**简体过滤** |
 //!
 //! 取回它们是 [`tools/fetch-sources.sh`](../../fetch-sources.sh) 的事，
 //! 这个工具只读本地文件——**部署期一次网络访问都不做**。
+//! 每个来源的固定 revision、sha256 与许可证见
+//! [`tools/sources.lock`](../../sources.lock) 与 `THIRD_PARTY_NOTICES.md`。
 //!
 //! # 三条必须说清的取舍
 //!
@@ -577,8 +581,8 @@ fn dict_header(policy: ReadingPolicy, entries: usize, sources: &[String]) -> Str
         let _ = writeln!(out, "#   · {s}");
     }
     out.push_str("#\n");
-    out.push_str("# 许可以及为什么这些源数据不随仓库分发，见 PLAN.md §10 与\n");
-    out.push_str("# `tools/fetch-sources.sh` 的文件头。\n");
+    out.push_str("# 逐项的许可、版权、固定 revision 与 sha256 见 `THIRD_PARTY_NOTICES.md`、\n");
+    out.push_str("# `tools/sources.lock`、`licenses/`；为什么源数据不随仓库分发见 PLAN.md §10。\n");
     out.push_str("#\n");
     let _ = writeln!(out, "# 词条数：{entries}");
     let _ = writeln!(out, "# 多音字策略：{policy_text}");
@@ -671,7 +675,15 @@ fn run() -> Result<(), String> {
             ws.truncate(n);
         }
         eprintln!("· {name}：{} 条", ws.len());
-        source_notes.push(format!("{name}（THUOCL，MIT）—— {} 条", ws.len()));
+        // **来源名要写对**：THUOCL 与 jieba 都是 MIT，但是两个上游、
+        // 两个版权人。旧版把 jieba 也标成「THUOCL」，产物头部因此携带
+        // 一句错误的署名——许可信息的价值全在准确。
+        let upstream = if name.starts_with("THUOCL_") {
+            "THUOCL"
+        } else {
+            "jieba"
+        };
+        source_notes.push(format!("{name}（{upstream}，MIT）—— {} 条", ws.len()));
         words.extend(ws);
     }
 

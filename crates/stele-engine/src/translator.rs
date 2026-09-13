@@ -42,6 +42,10 @@ pub struct ExactCodeTranslator {
     texts_by_len: Vec<String>,
     /// 词条补全（RIME 的 `enable_completion`）。
     completion: bool,
+    /// `initial_quality`：这个实例的**权重倍率**（线性域）。
+    ///
+    /// 换算成对数域在装载期做一次，按键路径上只做加法。
+    quality: Score,
 }
 
 impl ExactCodeTranslator {
@@ -66,6 +70,7 @@ impl ExactCodeTranslator {
             by_text,
             texts_by_len,
             completion: false,
+            quality: Score::ZERO,
         }
     }
 
@@ -73,6 +78,22 @@ impl ExactCodeTranslator {
     #[must_use]
     pub fn with_completion(mut self, on: bool) -> Self {
         self.completion = on;
+        self
+    }
+
+    /// 设置 `initial_quality`（线性域权重倍率）。
+    ///
+    /// # 它到底改变什么（审计 §2.G5 点名"解析了没生效"的字段之一）
+    ///
+    /// RIME 的 `initial_quality` 是**这个翻译器实例**的权重倍率：rime-ice
+    /// 用它把英文翻译器（`initial_quality: 1.1`）排在拼音之前。
+    /// 语义是"同一个词的分数乘以它"，因此换算到对数域就是**加一个常数**。
+    ///
+    /// 必须**逐实例**生效：否则"英文 1.1、拼音 1.0"这种最常见的写法
+    /// 会变成"所有候选一起 +0.1 倍"，等于没写。
+    #[must_use]
+    pub fn with_initial_quality(mut self, q: Option<f64>) -> Self {
+        self.quality = quality_of(q);
         self
     }
 
@@ -134,6 +155,8 @@ impl Translator for ExactCodeTranslator {
             if c.attr.contains(stele_core::SpellingAttr::COMPLETION) {
                 c.score = c.score.saturating_add(COMPLETION_COST);
             }
+            // `initial_quality`：这个实例的权重倍率（对数域就是加常数）。
+            c.score = c.score.saturating_add(self.quality);
             // 覆盖整段输入。
             c.span = span;
             c.key.clone_from(&key);
@@ -150,6 +173,8 @@ pub struct SpellingGraphTranslator {
     lexicon: Arc<dyn Lexicon>,
     /// 词条补全（RIME 的 `enable_word_completion`）。
     completion: bool,
+    /// `initial_quality`（见 [`ExactCodeTranslator::with_initial_quality`]）。
+    quality: Score,
 }
 
 impl SpellingGraphTranslator {
@@ -160,6 +185,7 @@ impl SpellingGraphTranslator {
             spelling,
             lexicon,
             completion: false,
+            quality: Score::ZERO,
         }
     }
 
@@ -169,6 +195,31 @@ impl SpellingGraphTranslator {
         self.completion = on;
         self
     }
+
+    /// 设置 `initial_quality`（线性域权重倍率）。
+    ///
+    /// # 它到底改变什么（审计 §2.G5 点名"解析了没生效"的字段之一）
+    ///
+    /// RIME 的 `initial_quality` 是**这个翻译器实例**的权重倍率：rime-ice
+    /// 用它把英文翻译器（`initial_quality: 1.1`）排在拼音之前。
+    /// 语义是"同一个词的分数乘以它"，因此换算到对数域就是**加一个常数**。
+    ///
+    /// 它必须**逐实例**生效，而不是全局——否则"英文 1.1、拼音 1.0"
+    /// 这种最常见的写法就变成了"所有候选都 +0.1 倍"，等于没写。
+    #[must_use]
+    pub fn with_initial_quality(mut self, q: Option<f64>) -> Self {
+        self.quality = quality_of(q);
+        self
+    }
+}
+
+/// `initial_quality`（线性域倍率）→ 对数域加分。
+///
+/// 非正值按"不改变"处理（`0` 或负数在 RIME 里没有意义；静默地**减掉**
+/// 全部分数更糟）。
+fn quality_of(q: Option<f64>) -> Score {
+    q.filter(|v| *v > 0.0)
+        .map_or(Score::ZERO, Score::from_weight)
 }
 
 impl Translator for SpellingGraphTranslator {
@@ -316,6 +367,8 @@ impl Translator for SpellingGraphTranslator {
                     // 属性取并集：只要这条边经过了变形，候选就不是"精确"的。
                     c.attr = c.attr.union(exp.attr);
                 }
+                // `initial_quality`：这个实例的权重倍率。
+                c.score = c.score.saturating_add(self.quality);
                 c.span = consumed_span;
                 c.key.clone_from(&key);
                 out.push(c);

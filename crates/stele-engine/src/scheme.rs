@@ -351,6 +351,48 @@ impl SchemeDef {
         })
     }
 
+    /// 逐个翻译器实例检查"解析了但没人读"的字段，并**说出下一步**。
+    ///
+    /// # 为什么这件事必须由装载期做
+    ///
+    /// 静默忽略一个已解析字段的症状是"我配了却没生效"，而它**不报错**。
+    /// 这个项目已经在这上面栽过好几次：`enable_sentence`、短写法的
+    /// `enable_completion`、`translator.dictionary`。
+    ///
+    /// 判据很简单：**字段有解析点，就必须有消费点，否则必须有一条
+    /// 看得见的说明。**
+    fn check_translator_specs(&self, degraded: &mut Vec<String>) {
+        for (alias, spec) in &self.translator_specs {
+            // ① 实例独立词库（审计 §2.G3）。
+            if !alias.is_empty() {
+                if let Some(d) = &spec.dictionary {
+                    degraded.push(format!(
+                        "翻译器实例 `{alias}` 声明了独立词库 `{d}`，但引擎当前只有一份词库\
+                         （`SchemeDef::dictionary`）——该实例查的是**主词库**。\
+                         这是本项目的缺口（审计 §2.G3），不是方案写错了。"
+                    ));
+                }
+            }
+            // ② `enable_sentence` 的归属（审计 §2.G5）。
+            if let Some(on) = spec.enable_sentence {
+                match self.translator {
+                    TranslatorKind::SpellingGraph => degraded.push(
+                        "拼音族（`script_translator`）**没有** `enable_sentence` 这个开关\
+                         ——上游同款（`gear/table_translator.h:43` 才是它的归属）。\
+                         这里写了也不会被读取；拼音族的造句是无条件的。"
+                            .to_owned(),
+                    ),
+                    TranslatorKind::ExactCode if on => degraded.push(
+                        "码表族的 `enable_sentence: true` **尚未实现**：`table_translator`\
+                         的造句器还没有装配点。这是本项目的缺口，不是方案写错了。"
+                            .to_owned(),
+                    ),
+                    TranslatorKind::ExactCode => {}
+                }
+            }
+        }
+    }
+
     /// 检查"声明了零件、却没有任何东西会用到它"这一类问题。
     ///
     /// 具体查三件事，都是**会在运行期表现为"某个功能莫名其妙不生效"**
@@ -369,6 +411,14 @@ impl SchemeDef {
         let mut out = Vec::new();
         // 降级项：方案照跑，但这些零件不会生效。见 `LoadedScheme::degradations`。
         let mut degraded = Vec::new();
+
+        // **解析了、但没有消费点的字段**（审计 §2.G5「解析不等于生效」）。
+        //
+        // 必须在下面那个 `is_declared()` 早退**之前**做：短写法
+        // （`engine.translator: spelling_graph`）没有 `engine:` 列表，
+        // 但 `translator:` 段照样会被解析——那正是最容易"写了不生效"的组合。
+        self.check_translator_specs(&mut degraded);
+
         if !self.engine.is_declared() {
             return (out, degraded);
         }
@@ -895,7 +945,8 @@ impl LoadedSchema for LoadedScheme {
                 TranslatorKind::ExactCode => vec![
                     Box::new(
                         ExactCodeTranslator::new(&self.alphabet, Arc::clone(&self.lexicon))
-                            .with_completion(spec.completion()),
+                            .with_completion(spec.completion())
+                            .with_initial_quality(spec.initial_quality),
                     ),
                     Box::new(EchoTranslator::new()),
                 ],
@@ -908,7 +959,8 @@ impl LoadedSchema for LoadedScheme {
                     vec![
                         Box::new(
                             SpellingGraphTranslator::new(spelling, Arc::clone(&self.lexicon))
-                                .with_completion(spec.completion()),
+                                .with_completion(spec.completion())
+                                .with_initial_quality(spec.initial_quality),
                         ),
                         Box::new(EchoTranslator::new()),
                     ]
@@ -1166,6 +1218,7 @@ impl LoadedScheme {
                 .map(|sp| {
                     SpellingGraphTranslator::new(sp, Arc::clone(lexicon))
                         .with_completion(spec.completion())
+                        .with_initial_quality(spec.initial_quality)
                 }),
             K::ExactCode => None,
         };
@@ -1178,7 +1231,8 @@ impl LoadedScheme {
             },
             K::ExactCode => Box::new(
                 ExactCodeTranslator::new(alphabet, Arc::clone(lexicon))
-                    .with_completion(spec.completion()),
+                    .with_completion(spec.completion())
+                    .with_initial_quality(spec.initial_quality),
             ),
         }
     }

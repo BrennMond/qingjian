@@ -1,0 +1,58 @@
+# Stele-IME 部署源数据锁文件 —— **已跟踪的可复现输入**（阶段 4 / 审计 J2.2）
+#
+# 这个文件**进仓库**，取回的数据**不进**（落在 `schemes/stele-default/build/`，
+# 被 `.gitignore` 排除）。它替换了旧方案里"只存在于 build/ 的
+# sources.lock"——那份文件是**输出**，克隆仓库的人看不到；
+# 这一份是**输入**，`tools/fetch-sources.sh` 以它为唯一权威清单。
+#
+# ── 格式 ────────────────────────────────────────────────────────────────
+#
+# 每行一条记录，字段用 `|` 分隔（上游 URL 中不含 `|`）。`#` 起是注释，
+# 空行忽略。
+#
+#   字段 1  目标路径（相对 `schemes/stele-default/build/`）
+#   字段 2  下载 URL。**必须固定到 commit SHA 或 release asset**，
+#           不得出现 `main` / `master` / `latest` 这类浮动引用。
+#   字段 3  revision：commit SHA（release asset 时写 tag 名）
+#   字段 4  SPDX 许可标识（照上游 LICENSE 原文，不推断）
+#   字段 5  版权行（照上游 LICENSE / 文件头原文；上游没写就写「未署名」）
+#   字段 6  sha256（小写十六进制）。`TODO-UNVERIFIED` = 尚未核对，
+#           `fetch-sources.sh` 会下载、报告实测哈希，但**不会**把它写回这里，
+#           并且默认以非零退出提示"清单未核对完"。
+#   字段 7  说明（含取这份数据做什么）
+#
+# ── sha256 是怎么来的（不是猜的） ──────────────────────────────────────
+#
+# 本文件的全部 sha256 于 2026-09-13 按**字段 2 的 URL** 下载后实测；
+# 同时与仓库里已有的 `schemes/stele-default/build/` 副本核对，
+# 16 份**全部逐字节一致**。也就是说：这些哈希对应的正是字段 3 的 revision。
+# 复现命令见 `THIRD_PARTY_NOTICES.md` §6。
+#
+# 上游改了数据（同一个 URL 内容变化）时，`fetch-sources.sh` 会报错停下，
+# 而不是静默采用——词库内容变了，权重、音节表与候选排序都会跟着变。
+#
+# ── 许可边界 ────────────────────────────────────────────────────────────
+#
+# 这些文件**由使用者在自己机器上取回**，用于本地编译，不随本仓库分发。
+# 其中 emoji/* 属于 rime-ice（**GPL-3.0-only**）：本项目**不分发**它们，
+# 也不把它们编译进任何已跟踪的产物；若使用者再分发自己 build/ 下的副本，
+# 需要自行满足 GPL-3.0 的义务。完整清单与许可证文本见
+# `THIRD_PARTY_NOTICES.md` 与 `licenses/`。
+#
+# 目标路径|URL|revision|许可|版权|sha256|说明
+pinyin.txt|https://raw.githubusercontent.com/mozillazg/pinyin-data/923b108dc5d45dee061324c011b478fb649f8b73/pinyin.txt|923b108dc5d45dee061324c011b478fb649f8b73|MIT|Copyright (c) 2016 mozillazg|621f8ca9eff8519f47e2b17b564fd318161e13bca07eea8c8e04993cd5d3b52e|4.4 万汉字的拼音（首要读音在前），生成词库的单字读音来源
+THUOCL_IT.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_IT.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|e8cd42c9f5559735fa3bfb91515cbe051f991efd4a803038a1d5c0da85af3526|THUOCL 信息技术词表（词+语料词频）
+THUOCL_law.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_law.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|8ef1a5f41052ac95dedde88b167c5031a43b3e0211bf128b6125736cc76ef7b2|THUOCL 法律词表
+THUOCL_medical.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_medical.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|a01f39f1677af0b6a620bbc68bf293e8e436f06248b74adb625cd61d9ad7bbcd|THUOCL 医学词表
+THUOCL_car.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_car.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|58ffd756b89e8574852bc72c254276a1d7fa8821342eb3cbf3be73ca33ab921c|THUOCL 汽车词表
+THUOCL_food.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_food.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|084caa96ad4f976720003e9420097ba7cb5ddbb17f9f8c8f76bc4b8e0cc777fd|THUOCL 饮食词表
+THUOCL_lishimingren.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_lishimingren.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|d0e5094016e6db8c55d363dc022f48f7b1753cf6d07e216f63cf522ce8e53605|THUOCL 历史名人词表
+THUOCL_chengyu.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_chengyu.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|c339d5d6e37d4f8ecdcb82f2a02b7fdfc66796f0a5215155f2aff8a77e89a7eb|THUOCL 成语词表
+THUOCL_poem.txt|https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_poem.txt|a30ce79d895d01ab5132a5c74c29703ff7efb4cc|MIT|Copyright (c) 2018 THUNLP|f7045571f57114a3a70d2eaaeec8f991897d536be808f93161709f1289c8108c|THUOCL 诗词词表（含较多冷僻字，按需裁剪）
+jieba_dict.txt|https://raw.githubusercontent.com/fxsjy/jieba/67fa2e36e72f69d9134b8a1037b83fbb070b9775/extra_dict/dict.txt.big|67fa2e36e72f69d9134b8a1037b83fbb070b9775|MIT|Copyright (c) 2013 Sun Junyi|b16011275c42955ccd81fc1adecc93a59dbb7926af69d93fc95d4943d40f6aad|jieba 通用词表（58 万条，「词 词频 词性」；含繁体条目，生成时按简繁表过滤）
+opencc/STCharacters.txt|https://raw.githubusercontent.com/BYVoid/OpenCC/c363a7ba51d487950982bd8a589211ffbfd95ba1/data/dictionary/STCharacters.txt|c363a7ba51d487950982bd8a589211ffbfd95ba1|Apache-2.0|未署名（文件头声明 License: Apache-2.0；上游 BYVoid/OpenCC）|a0ca1601c70648cf48b33c3c6210ccbecc5c7eead4b4c3daf76587ba2c03582b|简→繁 单字表（OpenCC 转换数据，供 traditionalize 滤镜）
+opencc/STPhrases.txt|https://raw.githubusercontent.com/BYVoid/OpenCC/c363a7ba51d487950982bd8a589211ffbfd95ba1/data/dictionary/STPhrases.txt|c363a7ba51d487950982bd8a589211ffbfd95ba1|Apache-2.0|未署名（文件头声明 License: Apache-2.0；上游 BYVoid/OpenCC）|f6eab5e5c6dd7640597878d3dfc6599ee1279d2bc91561eadd8e114194e2925a|简→繁 词组表
+opencc/TSCharacters.txt|https://raw.githubusercontent.com/BYVoid/OpenCC/c363a7ba51d487950982bd8a589211ffbfd95ba1/data/dictionary/TSCharacters.txt|c363a7ba51d487950982bd8a589211ffbfd95ba1|Apache-2.0|未署名（文件头声明 License: Apache-2.0；上游 BYVoid/OpenCC）|737c21c66f55a419dd6956cb3089476cdefc5a36877452631617696df1e5d925|繁→简 单字表；既用于 OpenCC，也在生成词库时滤掉繁体词条
+emoji/emoji.json|https://raw.githubusercontent.com/iDvel/rime-ice/859e3b5300e0ea01334a627b15db101e94312a75/opencc/emoji.json|859e3b5300e0ea01334a627b15db101e94312a75|GPL-3.0-only|未署名（上游仓库 iDvel/rime-ice 声明 GPL-3.0 only）|79fe3b878625d8f96d70aeb6c4d1929ab2a582f8b935d309125b6ccffd799602|OpenCC 配置：中文 → emoji（**不随本仓库分发**）
+emoji/emoji.txt|https://raw.githubusercontent.com/iDvel/rime-ice/859e3b5300e0ea01334a627b15db101e94312a75/opencc/emoji.txt|859e3b5300e0ea01334a627b15db101e94312a75|GPL-3.0-only|未署名（上游仓库 iDvel/rime-ice 声明 GPL-3.0 only）|09e29b83ad367ea273e9ab438e572a7621649d93b36924ead28852762d2898b1|emoji 转换表（**不随本仓库分发**）
+emoji/others.txt|https://raw.githubusercontent.com/iDvel/rime-ice/859e3b5300e0ea01334a627b15db101e94312a75/opencc/others.txt|859e3b5300e0ea01334a627b15db101e94312a75|GPL-3.0-only|未署名（上游仓库 iDvel/rime-ice 声明 GPL-3.0 only）|9595273a49139e1184bca0f1923660793b3873d7b4996d0a5dd665e777d4e55c|日期/单位等短语转换表（**不随本仓库分发**）
