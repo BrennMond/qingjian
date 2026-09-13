@@ -663,6 +663,11 @@ cargo run -p qingjian-cli -- --scheme-dir <目录> --list    # 装载自建方�
 **环境事实**：WSL2，仓库在 ext4（`/home/brennmond/projects/qingjian`），
 rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 `librime-bin 1.16.1` 已装（`rime_deployer` 可用）。
+**搬过仓库（绝对路径变了）之后必须 `cargo clean` 再跑测试**：`target/` 里的测试
+二进制把编译时的 `env!("CARGO_MANIFEST_DIR")` 烧死成了旧绝对路径，而 cargo 指纹
+按 mtime 判断、不会自己重编——`calc_oracle` / `number_oracle` / `context_cases` /
+`predict_next` 与 `qingjian-schemes` 的测试会以"读不到对照数据 <旧路径>"失败；
+`cargo clean` 一次即好（本仓零第三方依赖，重建很快）。
 
 ---
 
