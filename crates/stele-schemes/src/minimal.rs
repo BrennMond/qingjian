@@ -43,9 +43,14 @@ pub const EMBEDDED: &[(&str, &str)] = &[
     // 后者的词库是 41 万条的生成词库（11 MB），`include_str!` 会把它
     // 整个搬进二进制。孪生体的字段完全一样，只把 `dictionary` 指向
     // 手写的 `base`。真实词库走 `--scheme-dir` 的部署路径。
+    // **内嵌演示方案的文件名以 `z-` 开头**：目录装载按文件名排序，
+    // 而第一个装载的方案是会话默认方案。演示版若排在
+    // `pinyin.schema.yaml` 前面，`stele --scheme-dir schemes/stele-default`
+    // 默认就会用它——于是 41 万条的真实词库永远用不上
+    // （实测症状：`weixiao` 出字面量）。
     (
-        "pinyin.schema.yaml",
-        include_str!("../../../schemes/stele-default/pinyin.embedded.schema.yaml"),
+        "z-pinyin-demo.schema.yaml",
+        include_str!("../../../schemes/stele-default/z-pinyin-demo.schema.yaml"),
     ),
     (
         "cn_dicts/base.dict.yaml",
@@ -62,7 +67,7 @@ pub const EMBEDDED: &[(&str, &str)] = &[
 ];
 
 /// 要装载哪几份方案（以及装载顺序）。
-const EMBEDDED_SCHEMAS: &[&str] = &["pinyin.schema.yaml", "shape.schema.yaml"];
+const EMBEDDED_SCHEMAS: &[&str] = &["z-pinyin-demo.schema.yaml", "shape.schema.yaml"];
 
 /// 从内嵌数据里读词典。
 pub struct EmbeddedSource;
@@ -177,14 +182,17 @@ mod tests {
             uses_both_translator_families(&defs),
             "默认方案必须同时覆盖两族翻译器（D33）"
         );
-        assert!(defs.iter().any(|d| d.info.schema_id == "pinyin"));
+        assert!(defs.iter().any(|d| d.info.schema_id == "pinyin-demo"));
         assert!(defs.iter().any(|d| d.info.schema_id == "shape"));
     }
 
     #[test]
     fn pinyin_has_rules_and_shape_has_none() {
         let defs = all().unwrap();
-        let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
+        let p = defs
+            .iter()
+            .find(|d| d.info.schema_id == "pinyin-demo")
+            .unwrap();
         assert_eq!(p.translator, TranslatorKind::SpellingGraph);
         assert!(!p.rules.is_empty(), "拼音方案需要缩写规则");
 
@@ -200,7 +208,10 @@ mod tests {
     #[test]
     fn embedded_demo_dictionary_is_loaded() {
         let defs = all().unwrap();
-        let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
+        let p = defs
+            .iter()
+            .find(|d| d.info.schema_id == "pinyin-demo")
+            .unwrap();
         let stele_engine::scheme::DictSource::Inline(entries) = &p.dictionary else {
             panic!("内嵌方案应当用内联词条");
         };
@@ -221,7 +232,10 @@ mod tests {
     #[test]
     fn family_is_declared_for_shared_user_dictionary() {
         let defs = all().unwrap();
-        let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
+        let p = defs
+            .iter()
+            .find(|d| d.info.schema_id == "pinyin-demo")
+            .unwrap();
         assert_eq!(p.info.family.as_deref(), Some("stele-pinyin"));
     }
 
@@ -253,7 +267,10 @@ mod tests {
     fn traditionalization_switch_exists_but_defaults_off() {
         // D32：能力保留、数据自备。
         let defs = all().unwrap();
-        let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
+        let p = defs
+            .iter()
+            .find(|d| d.info.schema_id == "pinyin-demo")
+            .unwrap();
         let sw = p
             .switches
             .iter()

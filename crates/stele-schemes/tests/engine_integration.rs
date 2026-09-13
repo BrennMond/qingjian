@@ -129,7 +129,7 @@ fn switching_schema_keeps_the_session_usable() {
     assert!(s.switch_schema("no-such-scheme").is_err());
     type_text(&mut s, "hao");
     assert_eq!(s.candidates()[0].text, "你好");
-    assert_eq!(s.schema_id(), "pinyin");
+    assert_eq!(s.schema_id(), "pinyin-demo");
 
     // 切换成功。
     assert!(s.switch_schema("shape").is_ok());
@@ -281,8 +281,11 @@ fn scheme_catalog_lists_what_it_ships() {
         .iter()
         .map(|i| i.schema_id.as_str())
         .collect();
-    assert_eq!(ids, ["pinyin", "shape"]);
-    assert!(e.schemas().acquire("pinyin").is_ok());
+    // 内嵌集合是**演示方案**（`pinyin-demo`，几十条词）+ 字形码方案。
+    // 41 万条的真实词库不进二进制（它 11 MB，走 `--scheme-dir` 的
+    // 部署路径；CLI 在仓库里会自动发现它）。
+    assert_eq!(ids, ["pinyin-demo", "shape"]);
+    assert!(e.schemas().acquire("pinyin-demo").is_ok());
     assert!(e.schemas().acquire("nope").is_err());
     assert_eq!(all().unwrap().len(), 2);
 }

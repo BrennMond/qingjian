@@ -1,4 +1,9 @@
-# 石经・拼音（**内嵌演示版**）
+# 石经・拼音（**内嵌演示版**，文件名以 `z-` 开头）
+#
+# **为什么文件名要 `z-` 开头**：目录装载按文件名排序，而第一个装载的
+# 方案是会话的**默认方案**。演示版若排在 `pinyin.schema.yaml` 前面，
+# `stele --scheme-dir schemes/stele-default` 默认就会用它——于是 41 万条
+# 的真实词库永远用不上（症状：常见词查不到）。这个错真发生过。
 #
 # 这份文件是 `pinyin.schema.yaml` 的**精简孪生体**：字段完全一样，
 # 只有 `translator.dictionary` 指向手写的演示词库（`base`）而不是
@@ -26,8 +31,12 @@
 #    要加音节，请加词条或改生成器。
 
 schema:
-  schema_id: pinyin
-  name: 石经・拼音
+  # **id 必须与真实方案不同**：目录装载会同时看到两份（`pinyin-demo`
+  # 排在 `pinyin` 之后），而 `Session::switch_schema` 按 **id** 找方案——
+  # 两个 id 相同，先装载的那份（真实方案）与内嵌兜底就会互相遮蔽，
+  # 症状是"换到某个目录就跑不起来"。
+  schema_id: pinyin-demo
+  name: 石经・拼音（内嵌演示）
   version: "0.2.0"
   family: stele-pinyin      # 同族方案共享用户词典（D29）
 

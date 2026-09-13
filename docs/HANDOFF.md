@@ -63,7 +63,8 @@ stele/
 ├── schemes/stele-default/   ← 默认方案（数据文件）
 │   ├── pinyin.schema.yaml   ← 方案；`speller.alphabet` 由生成器维护
 │   ├── pinyin.dict.yaml     ← 主词典（导入清单）
-│   ├── pinyin.embedded.schema.yaml ← 内嵌演示版（词库指向 base，避免 11 MB 进二进制）
+│   ├── z-pinyin-demo.schema.yaml ← 内嵌演示版（`z-` 前缀让它排最后；
+│   │                              词库指向 base，避免 11 MB 进二进制）
 │   ├── cn_dicts/generated.dict.yaml ← **41 万条**默认词库（生成产物，随仓库分发）
 │   ├── opencc.manifest.yaml ← OpenCC 数据清单（声明，不含数据）
 │   ├── opencc.patch.yaml    ← 可选叠加层：启用 emoji / 简繁转换
