@@ -34,6 +34,9 @@
 use std::collections::BTreeSet;
 use stele_config::{parse_at, Node};
 
+pub mod json;
+pub mod opencc;
+
 /// 词典文件里的一个原始词条。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawEntry {
@@ -238,6 +241,15 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         format!("{}…", s.chars().take(n).collect::<String>())
     }
+}
+
+/// 诊断里截断一段文本，**按字符**（中文按字节切会切出乱码）。
+///
+/// 公开是为了让 [`opencc`] 的报错也用它——两处各写一份的话，
+/// 迟早有一处忘了"按 char 而不是按 u8"这条教训。
+#[must_use]
+pub fn truncate_for_diag(s: &str, n: usize) -> String {
+    truncate(s, n)
 }
 
 /// 逐行解析正文，对每一条合法词条调用 `f`。
