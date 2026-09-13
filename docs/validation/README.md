@@ -62,7 +62,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | --- | --- | --- | --- |
 | 1 | 短、长、歧义、无效输入均入基准 | `stele-bench --keys` 默认六条：`nihao`（短）/`nihaoshijie`（长）/`nh`、`nhao`（歧义）/`ssss`、`woaizhongguo`（病态） | ✅ |
 | 2 | 报告 P50/P95/P99/max、状态数、查询数、VmRSS/VmHWM | `stele-bench` 逐语料分位数 + `VmRSS`/`VmHWM` + `--count-queries`；状态数在图/工作量上界测试里（`ExpansionStats`），并断言为**硬上限** | ✅ |
-| 3 | 区分进程 RSS、内核页缓存、系统总内存、冷/热缓存 | `VmRSS` 与 `VmHWM` 分开报；冷/热由"缓存是否命中"区分（报告里注明）；**内核页缓存与系统总内存未测** | ⚠️ |
+| 3 | 区分进程 RSS、内核页缓存、系统总内存、冷/热缓存 | `stele-bench` 现在同时报 `VmRSS`/`VmHWM`（进程）、`MemTotal`/`MemAvailable`/`Cached`（系统 + **内核页缓存**），并明确写出"`TableLexicon` 读过的产物页在页缓存里、**不计入 VmRSS**，只看 RSS 会低估真实占用"。冷/热由"缓存是否命中"区分（报告里注明） | ✅ |
 | 4 | 证明复杂度上界，不仅报告某次机器上的快数字 | `docs/decoder-design.md` §5 的复杂度表（`L`/`E`/`W` 记法）+ `spelling_resource_bounds.rs` 对**状态数/边尝试数/图字节数**的硬上限断言（与机器无关） | ✅ |
 | 5 | 可选记忆/预测/向量的内存另计，默认与显式开启分开报告 | `stele-bench --seed-memory/--seed-predict/--embed` 各自单独报；默认关闭（不给 `--userdb` 就没有记忆） | ✅ |
 
@@ -85,7 +85,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | 项 | 位置 | 缺口 |
 | --- | --- | --- |
 | 6.2 #3 会话状态机 | 阶段 2 任务包 F | 逐段确认、重开、任意 span、删除/中英/数字的端到端转换表 |
-| 6.3 #3 | 测量方法 | 内核页缓存与系统总内存未测 |
+
 | 6.4 #3 | 词库质量 | 没有可分发的**词级拼音数据集**；覆盖表是人工枚举 |
 | 6.4 #4 | 许可 | `reference/wiki-*.md` 许可未定（三种处置待决） |
 

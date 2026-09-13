@@ -151,6 +151,38 @@ fn hwm_kib() -> Option<u64> {
     status_kib("VmHWM:")
 }
 
+/// 系统层面的内存读数（KiB）：`(MemTotal, MemAvailable, Cached)`。
+///
+/// # 为什么它与进程 RSS **必须分开报**（审计 §6.3 第 3 条）
+///
+/// 四个数说的是四件不同的事，混在一起会得出错误结论：
+///
+/// | 数 | 含义 | 本项目里被谁影响 |
+/// | --- | --- | --- |
+/// | `VmRSS` / `VmHWM` | **本进程**的常驻 / 峰值 | 索引、竞技场、候选 |
+/// | `Cached` | **内核页缓存**：读过的文件页 | `TableLexicon` 的 `read_at` 把产物页带进来 |
+/// | `MemTotal` | 机器总内存 | 不随我们变，用来给读者一个尺度 |
+/// | `MemAvailable` | 还能用多少 | 判断"我们是不是把机器吃满了" |
+///
+/// **`TableLexicon` 的文件页不计入本进程 RSS**——那正是这个设计想要的效果
+/// （文档里写过"文件大小 ≠ 常驻内存"）。但它们在 `Cached` 里，
+/// 所以只报 RSS 会低估真实的内存占用。两个都报，读者才不会被误导。
+fn system_memory() -> Option<(u64, u64, u64)> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let grab = |key: &str| -> Option<u64> {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key))
+            .and_then(|rest| {
+                rest.chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+    };
+    Some((grab("MemTotal:")?, grab("MemAvailable:")?, grab("Cached:")?))
+}
+
 fn status_kib(prefix: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
@@ -802,6 +834,18 @@ fn main() {
             hwm / 1024
         ),
         None => println!("常驻内存（VmHWM）: 本平台不提供 /proc/self/status"),
+    }
+    if let Some((total, avail, cached)) = system_memory() {
+        println!(
+            "系统内存（与本进程**分开**看）: 总计 {} MiB，可用 {} MiB，页缓存 {} MiB",
+            total / 1024,
+            avail / 1024,
+            cached / 1024
+        );
+        println!(
+            "  · 页缓存里含 `TableLexicon` 读过的产物页——**它们不计入上面的 VmRSS**，\n\
+             \x20   所以只看 RSS 会低估真实占用。两个数一起读。"
+        );
     }
     println!("引擎装载（含全部方案）: {load_us} µs");
     if let Some(c) = &memory_cost {
