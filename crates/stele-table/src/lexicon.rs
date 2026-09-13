@@ -186,6 +186,32 @@ impl TableLexicon {
         self.header.file_size()
     }
 
+    /// 索引里第 `i` 个编码（已校验，越界返回 `None`）。
+    fn code_at(&self, i: usize) -> Option<&[u16]> {
+        let a = *self.unit_offsets.get(i)? as usize;
+        let b = *self.unit_offsets.get(i + 1)? as usize;
+        self.units.get(a..b)
+    }
+
+    /// 第一个 **≥ `code`** 的编码下标（二分下界）。
+    ///
+    /// 编码在索引里按字典序升序，因此"以 `P` 为前缀"的编码紧跟在
+    /// `P` 的下界之后——[`TableLexicon::has_prefix`] 与
+    /// [`TableLexicon::prefix_lookup`] 都建立在这一点上。
+    fn lower_bound(&self, code: &[u16]) -> usize {
+        let n = self.entry_offsets.len().saturating_sub(1);
+        let (mut lo, mut hi) = (0usize, n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.code_at(mid).map(|c| c.cmp(code)) {
+                Some(std::cmp::Ordering::Less) => lo = mid + 1,
+                Some(_) => hi = mid,
+                None => break,
+            }
+        }
+        lo
+    }
+
     /// 编码在索引里的位置。
     ///
     /// **全程 `get`**：`open_checked` 已经保证了下标合法，但这条路径是
@@ -314,6 +340,18 @@ impl TableLexicon {
     }
 }
 
+/// `CodeUnitId` 序列 → 产物里的 `u16` 序列；超出表达范围时返回 `Err`。
+fn narrow_code(code: &[CodeUnitId]) -> Result<Vec<u16>, ()> {
+    let mut narrow: Vec<u16> = Vec::with_capacity(code.len());
+    for u in code {
+        match u16::try_from(u.0) {
+            Ok(v) => narrow.push(v),
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(narrow)
+}
+
 /// 从前缀和数组里取一个 `u32`，越界就报损坏。
 fn u32_at(raw: &[u8], p: usize) -> Result<u32, FormatError> {
     raw.get(p..p + 4)
@@ -381,15 +419,104 @@ fn body_checksum_of(file: &File, header: &TableHeader) -> Result<u64, FormatErro
 }
 
 impl Lexicon for TableLexicon {
+    /// 紧凑产物**支持**前缀存在性查询（审计 G4 的能力缺口）。
+    ///
+    /// 索引里的编码是**有序且连续**的（`codes` 按字典序拼接，
+    /// `unit_offsets` 给出每段边界），因此"以 `P` 为前缀"的编码是连续
+    /// 的一段，二分定位即可——**不需要扫描整张表**。
+    fn supports_prefix(&self) -> bool {
+        true
+    }
+
+    /// 是否存在以 `code` 为前缀的编码（含恰好相等）。
+    ///
+    /// # 这是"词典约束搜索"的落点（审计 §2.A）
+    ///
+    /// 展开的绝大部分分支从一开始就不可能命中任何词条。先问这个问题，
+    /// 搜索空间就从"所有切分"塌缩成"真的有词的切分"。
+    ///
+    /// # 实现
+    ///
+    /// 二分找**下界**：第一个 ≥ `code` 的编码。编码按字典序升序，
+    /// 因此以 `code` 开头的编码必然紧接着 `code` 本身——下界项是否以
+    /// `code` 开头就是答案。与 `find_code` 共用同一张已校验的索引。
+    fn has_prefix(&self, code: &[CodeUnitId]) -> bool {
+        if code.is_empty() {
+            return false;
+        }
+        let Ok(narrow) = narrow_code(code) else {
+            return false; // 超出产物能表达的编码单元范围 ⇒ 产物里不存在
+        };
+        let lo = self.lower_bound(&narrow);
+        self.code_at(lo).is_some_and(|c| c.starts_with(&narrow))
+    }
+
+    /// **词条补全：前缀区间扫描**（审计 G4 的能力缺口）。
+    ///
+    /// # 为什么必须与内存实现语义相同
+    ///
+    /// 上一版这里只声明了 [`Lexicon::supports_prefix`] 而**没有实现**
+    /// 本方法，于是同一份方案在"内嵌/内存词库"与"部署词库"两条路上
+    /// 给出**不同的候选**：`shape` 方案敲 `ab`，内存实现给 4 条
+    /// （含补全），部署实现给 2 条。这不是"部署路径的取舍"，
+    /// 而是**声明了能力却没有实现**——审计 §2.G4 点名的形态。
+    ///
+    /// # 实现
+    ///
+    /// 索引里的编码按字典序连续排列，所以"以 `P` 为前缀"是一个
+    /// **连续区间**：二分定位下界，然后顺序扫到前缀不再匹配为止。
+    /// 与 [`TableLexicon::has_prefix`] 共用同一张已校验的索引。
+    fn prefix_lookup(
+        &self,
+        prefix: &[CodeUnitId],
+        exclude_exact: bool,
+        out: &mut CandidateSink<'_>,
+    ) {
+        if prefix.is_empty() {
+            return;
+        }
+        let Ok(narrow) = narrow_code(prefix) else {
+            return;
+        };
+        let span = Span::new(0, narrow.len());
+        let mut idx = self.lower_bound(&narrow);
+        let n = self.entry_offsets.len().saturating_sub(1);
+        while idx < n && out.remaining() > 0 {
+            let Some(code) = self.code_at(idx) else { break };
+            if !code.starts_with(&narrow) {
+                // 编码按字典序升序：一旦不再以 `narrow` 开头，后面都不会。
+                break;
+            }
+            if !(exclude_exact && code == narrow.as_slice()) {
+                let limit = out.remaining().clamp(1, MAX_ENTRIES_PER_CODE);
+                if let Ok(entries) = self.read_entries(idx, limit) {
+                    for (text, score) in entries {
+                        out.push(Candidate {
+                            text,
+                            comment: None,
+                            score: Score::from_milli_log(score),
+                            origin: Origin::SystemWord,
+                            // 与内存实现**逐字段一致**：补出来的候选必须
+                            // 打上 COMPLETION 位、来源是 SystemWord、
+                            // kind 是 Completion。
+                            attr: SpellingAttr::COMPLETION,
+                            span,
+                            lane: Lane::Input,
+                            kind: stele_core::CandidateKind::Completion,
+                            key: None,
+                        });
+                    }
+                }
+            }
+            idx += 1;
+        }
+    }
+
     fn lookup(&self, code: &[CodeUnitId], out: &mut CandidateSink<'_>) {
         // 编码单元在产物里是 u16（`CodeUnitId` 是 u32，但方案规模远达不到 65536 个单元）。
-        let mut narrow: Vec<u16> = Vec::with_capacity(code.len());
-        for u in code {
-            match u16::try_from(u.0) {
-                Ok(v) => narrow.push(v),
-                Err(_) => return, // 超出产物能表达的编码单元范围 → 查不到
-            }
-        }
+        let Ok(narrow) = narrow_code(code) else {
+            return; // 超出产物能表达的编码单元范围 → 查不到
+        };
 
         let Some(idx) = self.find_code(&narrow) else {
             return;

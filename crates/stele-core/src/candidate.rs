@@ -351,6 +351,14 @@ impl<'a> CandidateSink<'a> {
     pub fn remaining(&self) -> usize {
         self.cap.saturating_sub(self.buf.len())
     }
+
+    /// 已写入的候选（只读迭代）。
+    ///
+    /// 翻译器用它做**去重**（例如"造句的结果与已有的整词候选同名"），
+    /// 而不是自己再维护一份影子列表。
+    pub fn iter(&self) -> impl Iterator<Item = &Candidate> {
+        self.buf.iter()
+    }
 }
 
 #[cfg(test)]

@@ -122,6 +122,18 @@ impl Translator for ExactCodeTranslator {
         // 展开边查不到任何词条。实测这一步值得——见 HANDOFF 的 P4a 数字。
         let key = stele_core::code_key(&self.alphabet, &code);
         for mut c in raw {
+            // **补全出来的词要扣分**——与拼写图翻译器同一条规则。
+            //
+            // 少了这一步会出一个**语义错误**：精确编码方案里敲 `ab` 时
+            // 「十」（编码就是 `a b`）会被「木」（编码 `a b c`，词条权重更高）
+            // 压下去——那意味着"**打全的排在没打全的后面**"。
+            // 实测就是这么发现的：`stele --check` 的冒烟测试从「十」变成了「木」。
+            //
+            // 数值与拼写层共用同一个常量：它就是"补全"这一类边的标准代价
+            // （`ln 0.05 ≈ -3.0`）。
+            if c.attr.contains(stele_core::SpellingAttr::COMPLETION) {
+                c.score = c.score.saturating_add(COMPLETION_COST);
+            }
             // 覆盖整段输入。
             c.span = span;
             c.key.clone_from(&key);
@@ -161,37 +173,99 @@ impl SpellingGraphTranslator {
 
 impl Translator for SpellingGraphTranslator {
     fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>) {
+        let input = q.segment_text;
+
+        // ── 通路 ①：可解释前缀 + 拼写层补全 ──
+        //
+        // 用 `expand_paths` 而不是 `expand`：前者产出**带消费长度**的路径，
+        // 于是 `niha` 的 `ni`+`h`（`h` 是 `hao` 的缩写，只消费了 3 个字节）
+        // 也是一条合法路径——剩下的 `a` 是**余码**，留在预编辑串里。
+        //
+        // 这正是 librime 的音节图做法：`interpreted_length` 可以小于
+        // `input_length`（`algo/syllabifier.cc:267-274`），
+        // `Dictionary::Lookup` 对图上**每一条边**分别查表、
+        // 返回 `map<end_pos, entries>`（`gear/script_translator.cc:705-722`）。
         let mut expansions = Vec::new();
         {
-            let mut sink = stele_core::ExpansionSink::new(&mut expansions, 64);
-            self.spelling.expand(q.segment_text, &mut sink);
+            // **补全开关交给拼写层**——这正是上游的做法：
+            // `syllabifier_(..., translator->enable_completion(), ...)`
+            // （`gear/script_translator.cc:87-90`），补全发生在
+            // `Prism::ExpandSearch`，不在词库那一层。
+            let limits = stele_core::PathLimits::default().with_completion(self.completion);
+            let mut sink = stele_core::PathSink::new(&mut expansions, 512);
+            self.spelling.expand_paths(input, limits, &mut sink);
         }
 
-        // 这一次查询要不要补全：**只有当这段拼写是一条完整的切分时才做**。
+        // **词典约束搜索**（审计 §2.A 的推荐方向）：
+        // 不可能命中任何词条的编码根本不必查表。
         //
-        // 为什么：`niha` 展开出的编码是 `[ni, ha]`，而 `ha` 不是一个合法的
-        // 编码单元——[`Spelling::expand`] 根本不会产出这条展开（短路的边
-        // 必须在表里）。**"补全"所以不是"前缀扫描一条编码"，而是
-        // "把最后那个编码单元之后可能接什么补出来"**——那需要知道
-        // 字母表里有哪些单元以它开头，而那正是前缀扫描能回答的问题。
+        // `has_prefix` 只在词库声明支持前缀查询时才有意义——默认实现返回
+        // `false`（"不支持"与"不存在"在类型上无法区分），把它当成
+        // "不存在"会**静默丢掉全部候选**，所以先问 `supports_prefix()`。
+        let constrained = self.lexicon.supports_prefix();
         let completion = self.completion && self.lexicon.supports_prefix();
 
-        for exp in expansions {
+        // ── 先判断"要不要造句"，**再**铺开前缀 / 补全候选 ──
+        //
+        // # 顺序为什么重要（一个真踩到的坑）
+        //
+        // 造句的触发条件之一是"没有覆盖整串的可靠词条"
+        // （librime `gear/script_translator.cc:502-514` 的
+        // `has_reliable_phrase`），所以它必须在看完展开之后才能决定。
+        // 但**候选缓冲是有上限的**（[`TRANSLATE_CAP`]）：先铺开一百多条
+        // 前缀 / 补全候选，造句结果就会被挤掉、**静默消失**。
+        // 实测：真实词库下 `haoni` 的「好你」、`woaizhongguo` 的
+        // 「我爱中国」都因为这一条根本不出现。
+        //
+        // 所以先做一次**代价极小的预扫**（命中即停）拿到 `covered_whole`，
+        // 把至多一条造句候选先放进缓冲，再铺开其余候选。
+        let covered_whole = expansions.iter().any(|exp| {
+            if exp.consumed < input.len() || exp.code.len() < 2 {
+                return false;
+            }
+            if constrained && !self.lexicon.has_prefix(&exp.code) {
+                return false;
+            }
             let mut raw: Vec<Candidate> = Vec::new();
             {
-                {
-                    let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
-                    self.lexicon.lookup(&exp.code, &mut sink);
-                }
-                if completion {
-                    // 补全只对**规范拼写**那条边做：简拼/纠错的边上再补全
-                    // 会让候选数量乘起来，而收益极小（用户敲简拼时本来就
-                    // 不指望看到完整词的补全）。
-                    if exp.attr == stele_core::SpellingAttr::NORMAL {
-                        let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
-                        self.lexicon.prefix_lookup(&exp.code, true, &mut sink);
-                    }
-                }
+                let mut sink = CandidateSink::new(&mut raw, 1);
+                self.lexicon.lookup(&exp.code, &mut sink);
+            }
+            !raw.is_empty()
+        });
+
+        // ── 通路 ③：词图造句（没有精确整词匹配时） ──
+        //
+        // librime：拼音族的造句是**无条件**的（只有"至少两个音节 +
+        // 没有可靠整词"两个条件，`gear/script_translator.cc:502-514`），
+        // `enable_sentence` 是**码表族**的开关（`table_translator.h:43`）。
+        // 我们按同一语义实现：这里不看 `enable_sentence`。
+        if !covered_whole {
+            self.make_sentence(input, span, out);
+        }
+
+        for exp in &expansions {
+            let mut raw: Vec<Candidate> = Vec::new();
+            {
+                let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
+                self.lexicon.lookup(&exp.code, &mut sink);
+            }
+            // 词条补全的两个门槛，**都照上游**：
+            //
+            // 1. **输入必须被完整消费**——上游：
+            //    `bool predict_word = translator_->enable_word_completion() &&
+            //     start_ + consumed == end_of_input_;`
+            //    （`gear/script_translator.cc:461-464`）。只消费了前缀的
+            //    路径不做词条补全：它连输入都没走完，谈"补出更长的词"
+            //    没有意义，而且会把候选数与查表次数乘起来。
+            // 2. **只对规范拼写那条边做**：简拼/纠错的边上再补全会让
+            //    候选数量再乘一次，收益极小。
+            if completion
+                && exp.consumed >= input.len()
+                && exp.attr == stele_core::SpellingAttr::NORMAL
+            {
+                let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
+                self.lexicon.prefix_lookup(&exp.code, true, &mut sink);
             }
             // 没有候选的展开边直接跳过——**键要分配字符串**，
             // 而简拼会产出大量查不到词的展开边（拼写展开是按代价排序的，
@@ -203,25 +277,46 @@ impl Translator for SpellingGraphTranslator {
             // 编码 `[ni, hao]`，于是渲染出**同一把**键 `ni'hao`——
             // 跨拼法共享记忆就是在这里自动成立的，不需要记忆层做反查。
             let key = stele_core::code_key(self.spelling.alphabet(), &exp.code);
+            // **候选只覆盖它真正消费掉的那一段输入**，而不是整段：
+            // `niha` 的 `[ni][hao]` 只消费 3 个字节（`a` 是余码）。
+            // `Span` 的定义本来就是"覆盖输入串的哪一段"（字节），
+            // 所以这里不需要新字段——旧实现写死成 `span` 才是把信息丢了。
+            let consumed_span = Span::new(span.start, span.start + exp.consumed);
+            // **余码越少越好**：一条只消费了 `ni`（余码 `hao`）的候选
+            // 不该压过消费整串的 `ni hao`。
+            //
+            // 为什么不能只靠词条权重：单字「你」在词库里的权重远高于
+            // 词「你好」，于是"敲 `nihao` 第一个候选是「你」"——而用户
+            // 敲了五个字母。librime 的 `has_reliable_phrase` 走的是
+            // 另一条机制（把整串匹配单独挑出来排前面），这里用**可加的
+            // 余码罚分**达成同一效果，且不改变跨来源的排序规则。
+            //
+            // 数值：每字节 4000 毫对数（≈ ln 55）。它必须大于"单字权重
+            // 与词权重之差"的量级（实测几千毫对数），又不能让
+            // "多覆盖一个字节"压过"这个词根本不存在"。
+            let remainder = input.len().saturating_sub(exp.consumed);
+            let rest_penalty = i32::try_from(remainder).map_or(i32::MIN, |r| {
+                PREFIX_PENALTY_MILLI_PER_BYTE.saturating_mul(r)
+            });
             for mut c in raw {
-                // 候选的分数 = 词条分数 + 这条边的代价。
-                // **这就是"简拼天然排在精确匹配之后"的全部机制**：
+                // 候选的分数 = 词条分数 + 这条边的代价 - 余码罚分。
+                // **"简拼天然排在精确匹配之后"靠的是边代价**：
                 // 缩写边的代价是负的，不需要任何额外规则。
-                c.score = c.score.saturating_add(exp.cost);
+                c.score = c
+                    .score
+                    .saturating_add(exp.cost)
+                    .saturating_add(Score::from_milli_log(rest_penalty));
                 if completion && c.attr.contains(stele_core::SpellingAttr::COMPLETION) {
-                    // 补全出来的词**扣一次分**：它是"猜你要打这个",
-                    // 不该与真正打全的词平起平坐。
-                    //
-                    // 代价数值**属于方案数据**（RIME 的 `enable_word_completion`
-                    // 也有对应的权重扣减）。这里用一个与拼写代数里
-                    // `Completion` 边同量级的值（ln 0.05 ≈ -3.0，
-                    // 见 `docs/engine-design.md` §5.2 的表）。
+                    // 补全出来的词**扣一次分**：它是"猜你要打这个"，
+                    // 不该与真正打全的词平起平坐。代价数值**属于方案数据**
+                    // （RIME 的 `enable_word_completion` 也有对应的权重扣减），
+                    // 这里取与拼写代数里 `Completion` 边同量级的值。
                     c.score = c.score.saturating_add(COMPLETION_COST);
                 } else {
                     // 属性取并集：只要这条边经过了变形，候选就不是"精确"的。
                     c.attr = c.attr.union(exp.attr);
                 }
-                c.span = span;
+                c.span = consumed_span;
                 c.key.clone_from(&key);
                 out.push(c);
             }
@@ -230,6 +325,227 @@ impl Translator for SpellingGraphTranslator {
             }
         }
     }
+}
+
+/// 每留下一个**未消费字节**扣多少分（毫对数，**负值**）。
+///
+/// 「敲了五个字母却只匹配了一个字」应该排在「匹配了两个音节」之后。
+/// 见 `translate` 里的使用点。
+const PREFIX_PENALTY_MILLI_PER_BYTE: i32 = -4_000;
+
+/// 造句的编码单元奖励（毫对数/单元）。
+///
+/// 用途：在词图上偏向"用更少、更长的词覆盖同一段输入"。
+/// `300` 毫对数 ≈ `ln(1.35)`——足以在"同一个词条分数"时选择更长的那条边，
+/// 又不足以压过词条本身的权重差异（词条权重是几千毫对数起步）。
+///
+/// **这不是语言模型**：第一版只有词频与长度策略。上游没有 grammar 时
+/// 也是动态规划（`gear/poet.cc:246-253`），不是神经模型。
+const SENTENCE_UNIT_BONUS_MILLI: i32 = 300;
+
+/// 造句里**每多一个词**扣多少分（毫对数）。
+///
+/// # 它解决的具体问题
+///
+/// 词库里**单字**的权重往往高于**词**（「是」比「世界」常见得多），
+/// 于是纯按词频求和会把 `nihaoshijie` 拼成「你好**是界**」而不是
+/// 「你好**世界**」——两者都是 4 个编码单元、都是 3 个/2 个词。
+///
+/// 上游的做法是给短语（phrase）词条额外的权重加成；我们没有那个数据，
+/// 于是等价地在**动态规划的得分里**惩罚词数：覆盖同一段输入时，
+/// **词越少越好**（也就是词越长越好）。这是"第一版不接语言模型"的
+/// 诚实替代，不是语言模型。
+const SENTENCE_WORD_PENALTY_MILLI: i32 = -12_000;
+
+/// 造句候选比精确词条低多少（毫对数）。
+///
+/// 它保证"猜出来的句子"排在"真有这个词"之后——`Origin::Sentence`
+/// 已经在排序时被降级（`sort::origin_rank`），这里再扣一次是**双保险**：
+/// 排序里的降级管的是"跨来源"的比较，这个扣分管的是"同一来源内部"。
+const SENTENCE_PENALTY_MILLI: i32 = -1_500;
+
+impl SpellingGraphTranslator {
+    /// 在**词图**上做有界动态规划，拼出词库里没有的词。
+    ///
+    /// # 词图是什么
+    ///
+    /// `map<起点, map<终点, 词条列表>>`：从位置 `i` 到位置 `j` 有哪些词。
+    /// 上游就是这个名字与这个形状（`reference/rime-sentence-and-completion.md` §4）。
+    ///
+    /// # 为什么必须"有界"
+    ///
+    /// 每个起始位置各展开一次，所以预算是
+    /// `起始位置数 × PathLimits::sentence_scan()`；词的条数与去重后的
+    /// 路径数都有硬上限。**不这么做的话，"为每个位置各扫一遍词库"
+    /// 就是审计点名的那种无界行为。**
+    ///
+    /// # 不做的事
+    ///
+    /// - 不扫全词库（只查拼写图给出的那些编码）；
+    /// - 不把**整串就是一个词**的情形当成句子（上游同款排除，
+    ///   `gear/poet.cc:206-208`）；
+    /// - 不无限组合（边严格向前，DP 无环；词数上限 `MAX_SENTENCE_WORDS`）。
+    fn make_sentence(&self, input: &str, span: Span, out: &mut CandidateSink<'_>) {
+        if input.len() < 2 {
+            return;
+        }
+        let constrained = self.lexicon.supports_prefix();
+
+        // ① 起点集合：从 0 出发能走到的地方（含 0）。
+        let mut starts: Vec<usize> = vec![0];
+        let mut probe: Vec<stele_core::SpellingPath> = Vec::new();
+        {
+            let mut sink = stele_core::PathSink::new(&mut probe, 64);
+            self.spelling
+                .expand_paths(input, stele_core::PathLimits::sentence_scan(), &mut sink);
+        }
+        for p in &probe {
+            if p.consumed < input.len() {
+                starts.push(p.consumed);
+            }
+        }
+        starts.sort_unstable();
+        starts.dedup();
+
+        // ② 词图边：`(start, end, text, score, units)`。
+        let mut edges: Vec<WordEdge> = Vec::new();
+        for &start in &starts {
+            let mut paths: Vec<stele_core::SpellingPath> = Vec::new();
+            {
+                let limit = stele_core::PathLimits::sentence_scan();
+                let mut sink = stele_core::PathSink::new(&mut paths, limit.max_paths);
+                self.spelling
+                    .expand_paths(&input[start..], limit, &mut sink);
+            }
+            for p in &paths {
+                if p.consumed == 0 {
+                    continue;
+                }
+                if constrained && !self.lexicon.has_prefix(&p.code) {
+                    continue;
+                }
+                let mut words: Vec<Candidate> = Vec::new();
+                {
+                    let mut sink = CandidateSink::new(&mut words, 8);
+                    self.lexicon.lookup(&p.code, &mut sink);
+                }
+                for w in words {
+                    edges.push(WordEdge {
+                        start,
+                        end: start + p.consumed,
+                        text: w.text,
+                        score: w.score.as_milli_log() + p.cost.as_milli_log(),
+                        units: p.code.len(),
+                    });
+                }
+            }
+        }
+        if edges.is_empty() {
+            return;
+        }
+
+        // ③ 动态规划：`best[j]` = 覆盖输入 `[0, j)` 的最优分数与来源边。
+        //
+        // 边严格向前（`end > start`），因此这个 DP **无环**，
+        // 一次正向扫描即可——不需要迭代到不动点。
+        let len = input.len();
+        let mut best: Vec<Option<(i32, usize)>> = vec![None; len + 1]; // (分数, 边下标)
+        let mut words_used: Vec<usize> = vec![0; len + 1];
+        best[0] = Some((0, usize::MAX));
+        for j in 1..=len {
+            for (ei, e) in edges.iter().enumerate() {
+                if e.end != j {
+                    continue;
+                }
+                let Some((prev_score, _)) = best[e.start] else {
+                    continue;
+                };
+                let words = words_used[e.start] + 1;
+                if words > MAX_SENTENCE_WORDS {
+                    continue;
+                }
+                // 单元奖励：偏向"更少、更长"的词。见常量文档。
+                let bonus = i32::try_from(e.units)
+                    .map_or(0, |u| SENTENCE_UNIT_BONUS_MILLI.saturating_mul(u));
+                let total = prev_score
+                    .saturating_add(e.score)
+                    .saturating_add(bonus)
+                    .saturating_add(SENTENCE_WORD_PENALTY_MILLI)
+                    .saturating_add(SENTENCE_PENALTY_MILLI);
+                // 平局时取**词数更少**的那条；词数也相同则保留先到的
+                // （边的枚举顺序是确定的：起点升序、路径按排序键、
+                //   同码词条按分数降序——所以"先到"是可复现的）。
+                let better = match best[j] {
+                    None => true,
+                    Some((cur, _)) => total > cur || (total == cur && words < words_used[j]),
+                };
+                if better {
+                    best[j] = Some((total, ei));
+                    words_used[j] = words;
+                }
+            }
+        }
+
+        // ④ 回溯出词序列，只接受**至少两个词**（整串是一个词不算造句）。
+        let Some(()) = best[len].map(|_| ()) else {
+            return;
+        };
+        let mut seq: Vec<usize> = Vec::new();
+        let mut pos = len;
+        while pos > 0 {
+            let Some((_, ei)) = best[pos] else { return };
+            if ei == usize::MAX {
+                break;
+            }
+            seq.push(ei);
+            pos = edges[ei].start;
+        }
+        if pos != 0 || seq.len() < 2 {
+            return;
+        }
+        seq.reverse();
+
+        let mut text = String::new();
+        for &ei in &seq {
+            text.push_str(&edges[ei].text);
+        }
+        if text.is_empty() {
+            return;
+        }
+        // 与已经产出的候选去重：同一个文本不再重复给。
+        // （单字/整词候选已经在上面的通路 ① 里给过了。）
+        if out.iter().any(|c| c.text == text) {
+            return;
+        }
+        let score = best[len].map_or(0, |(s, _)| s);
+        out.push(Candidate {
+            text,
+            comment: None,
+            score: Score::from_milli_log(score),
+            origin: Origin::Sentence,
+            // **造句是猜的**：属性上标出来，前端与学习都能区别对待。
+            attr: stele_core::SpellingAttr::NORMAL,
+            span: Span::new(span.start, span.start + len),
+            lane: Lane::Input,
+            kind: stele_core::CandidateKind::Normal,
+            key: None,
+        });
+    }
+}
+
+/// 一条句子最多几个词。超过它说明这条"句子"已经不是人话，而是一堆单字。
+const MAX_SENTENCE_WORDS: usize = 8;
+
+/// 词图里的一条边：从 `start` 到 `end` 有一个词。
+///
+/// `score` 是**毫对数**（`i32`）：词条分数 + 拼写边的代价，
+/// 动态规划在这个域上做整数加法，因此结果可复现。
+struct WordEdge {
+    start: usize,
+    end: usize,
+    text: String,
+    score: i32,
+    units: usize,
 }
 
 /// 补全候选的代价（对数域，`ln(0.05) ≈ -3.0`）。

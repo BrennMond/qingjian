@@ -95,8 +95,13 @@ fn pinyin_types_by_abbreviation() {
 
 #[test]
 fn shape_scheme_has_no_spelling_variants() {
-    // 精确编码方案的输入同样是"一条编码"，不经过任何拼写派生 ——
-    // 因此它命中的候选**永远是 NORMAL 属性**。
+    // 精确编码方案的输入是"一条编码"，**不经过任何拼写派生**——
+    // 因此它命中的候选永远不带**缩写 / 模糊**那类属性。
+    //
+    // 注意 `COMPLETION` 是**另一回事**：它是"词条补全"
+    // （上游 `enable_word_completion`，默认开），
+    // 与"拼写代数派生出的变体拼写"不是同一类东西。把两者混为一谈
+    // 会让这条测试在补全默认值变化时变红——而它想守的是"没有派生"。
     let e = engine();
     let mut s = e.create_session();
     s.switch_schema("shape").unwrap();
@@ -105,12 +110,20 @@ fn shape_scheme_has_no_spelling_variants() {
         s.reset();
         type_text(&mut s, keys);
         for c in s.candidates() {
-            assert_eq!(
-                c.attr,
-                SpellingAttr::NORMAL,
-                "{keys} 的候选 {:?} 不该带变体属性",
-                c.text
+            assert!(
+                !c.attr.contains(SpellingAttr::ABBREV) && !c.attr.contains(SpellingAttr::FUZZY),
+                "{keys} 的候选 {:?} 带了拼写派生属性：{:?}",
+                c.text,
+                c.attr
             );
+            if !c.attr.contains(SpellingAttr::COMPLETION) {
+                assert_eq!(
+                    c.attr,
+                    SpellingAttr::NORMAL,
+                    "{keys} 的候选 {:?} 不该带变体属性",
+                    c.text
+                );
+            }
         }
     }
 }

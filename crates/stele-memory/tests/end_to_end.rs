@@ -222,17 +222,35 @@ fn a_word_committed_enough_times_comes_first() {
 #[test]
 fn one_commit_does_not_reorder_anything_else() {
     // 反面：学过 乙 之后，**别的输入**的候选顺序一点都不许变。
+    //
+    // 判据是"与没有记忆时逐项相同"，而不是写死一个列表：写死列表会把
+    // **与记忆无关**的行为（例如补全的默认值）也钉进这条测试里，
+    // 于是改默认值会让一条关于记忆的测试变红——那是最误导人的一种红。
     let dir = scheme_dir("isolation");
+
+    // ① 无记忆的基线。
+    let cold = {
+        let memory = Arc::new(FileMemory::in_memory(clock(), 1_000));
+        let engine = engine_with(dir.path(), &memory);
+        let mut s = engine.create_session();
+        type_text(&mut s, &memory, "a");
+        texts(&s)
+    };
+
+    // ② 有记忆、且刚学过一个**别的编码**的词。
     let memory = Arc::new(FileMemory::in_memory(clock(), 1_000));
     let engine = engine_with(dir.path(), &memory);
     let mut s = engine.create_session();
-
     type_text(&mut s, &memory, "ab");
     commit(&mut s, &memory, 1);
     type_text(&mut s, &memory, "a");
-    let got = texts(&s);
-    // `a` 这个输入没有学过任何东西 —— 列表应当只有原样上屏。
-    assert_eq!(got, vec!["a".to_owned()], "无记忆的输入不该被影响：{got:?}");
+    let warm = texts(&s);
+
+    assert_eq!(
+        warm, cold,
+        "输入 `a` 没有学过任何东西，候选顺序必须与无记忆时逐项相同"
+    );
+    assert!(!warm.is_empty(), "至少要有一个候选（原样上屏兜底）");
 }
 
 #[test]

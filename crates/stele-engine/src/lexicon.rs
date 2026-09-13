@@ -160,6 +160,24 @@ impl Lexicon for InMemoryLexicon {
         true
     }
 
+    /// **前缀存在性**：`O(log n)`，与表大小无关。
+    ///
+    /// 与 [`Self::prefix_lookup`] 用的是同一个"前缀是连续区间"的性质，
+    /// 但只回答"这一段非空吗"——于是它可以在按键路径上被**每一次展开**
+    /// 调用，而不必先构造候选。这是审计 §2.A 要求的**词典约束搜索**
+    /// 的落点：不可能命中词条的切分根本不会再被展开。
+    fn has_prefix(&self, code: &[CodeUnitId]) -> bool {
+        if code.is_empty() {
+            return false;
+        }
+        // `BTreeMap` 的键是字典序，因此第一个 ≥ `code` 的键一旦以
+        // `code` 开头，区间就非空；否则区间为空。
+        self.map
+            .range(code.to_vec()..)
+            .next()
+            .is_some_and(|(k, _)| k.starts_with(code))
+    }
+
     /// **补全：前缀区间扫描**。
     ///
     /// # 为什么 `BTreeMap` 恰好能做这件事

@@ -553,6 +553,22 @@ pub struct TranslatorSpec {
     /// 用引擎默认（[`TranslatorSpec::default_completion`]）。
     pub enable_word_completion: Option<bool>,
     /// 要不要造句。
+    ///
+    /// # 它属于**码表族**，不属于拼音族
+    ///
+    /// 上游（`librime@2479df5`）：
+    ///
+    /// | 翻译器 | 有这个开关吗 | 默认 | 消费点 |
+    /// | --- | --- | --- | --- |
+    /// | `script_translator`（拼音族） | **没有** | — | 无条件造句（`gear/script_translator.cc:503`） |
+    /// | `table_translator`（码表族） | 有 | **`true`**（`gear/table_translator.h:43`） | `:218` 读 → `:226` 建 `Poet` → `:293` 触发 |
+    ///
+    /// 本字段放在**两族共用**的 `TranslatorSpec` 上，是一处**建模错位**：
+    /// 拼音族的造句是**无条件**的（只有"至少两个音节 + 没有可靠整词"
+    /// 两个条件），所以拼音翻译器**不看**这个字段。这样做是有意的：
+    /// 与上游语义一致，且不假装"拼音族也有这个开关"。
+    ///
+    /// 码表族的消费点见 `translator.rs` 的 `ExactCodeTranslator`。
     pub enable_sentence: Option<bool>,
     /// 初始权重（**线性域**，与词条权重同域）。
     ///
@@ -572,14 +588,37 @@ pub struct TranslatorSpec {
 }
 
 impl TranslatorSpec {
-    /// 词条补全的默认值：**关**。
+    /// 补全的默认值：**开**——与上游一致。
     ///
-    /// RIME 的默认也是关——`enable_word_completion` 必须显式打开。
-    /// 这条默认值很重要：补全会让**候选变多**，而"候选突然多出一堆
-    /// 你没打完的词"是一种打扰，必须由方案决定要不要。
+    /// # 这里曾经写着"RIME 的默认也是关"，**那句话是错的**
+    ///
+    /// 上游是（`librime@2479df5`）：
+    ///
+    /// ```cpp
+    /// // src/rime/gear/translator_commons.h:176
+    /// bool enable_completion_ = true;
+    /// ```
+    ///
+    /// 读取点在 `gear/translator_commons.cc:123`（键
+    /// `<命名空间>/enable_completion`）；`script_translator` 的
+    /// `enable_word_completion` 没写时也**继承**它
+    /// （`gear/script_translator.cc:194-196`）。
+    ///
+    /// 那条错误的注释还有一个实证反证：审计的"缩写 × 补全"夹具**从没写过**
+    /// `enable_completion`，而「缩写关、补全开」那一格在 librime 里仍然命中
+    /// ——它只能是默认开的（`reference/rime-sentence-and-completion.md` §7）。
+    ///
+    /// # 与它相邻但**不同**的一件事
+    ///
+    /// 这条默认值管的是**词条补全**（"编码等于某前缀的词条"）。
+    /// **拼写层补全**（把没敲完的尾巴补成完整音节）由切分器按同一个开关
+    /// 驱动，见 `stele_core::PathLimits::completion`。
+    ///
+    /// 若将来决定与上游不同（例如"候选太多，默认关掉"），必须**明确写成
+    /// Stele 的有意选择**并更新用户文档——不能再拿"上游也是关的"当理由。
     #[must_use]
     pub fn default_completion() -> bool {
-        false
+        true
     }
 
     /// 生效的补全设置。
@@ -971,10 +1010,18 @@ mod tests {
     }
 
     #[test]
-    fn completion_defaults_to_off() {
-        // RIME 的默认是关：补全会让候选变多，必须由方案显式决定。
+    fn completion_defaults_to_on_like_upstream() {
+        // 上游 `translator_commons.h:176`：`enable_completion_ = true`。
+        // **这条断言曾经是反的**，因为注释里写着"RIME 的默认也是关"。
+        // 审计的"缩写 × 补全"夹具给出了反证：它从没写过 enable_completion，
+        // 而「缩写关、补全开」那一格在上游仍然命中。
         let s = TranslatorSpec::default();
-        assert!(!s.completion());
+        assert!(s.completion(), "默认必须与上游一致：开");
+        let off = TranslatorSpec {
+            enable_word_completion: Some(false),
+            ..Default::default()
+        };
+        assert!(!off.completion(), "方案显式写 false 时必须关");
         let on = TranslatorSpec {
             enable_word_completion: Some(true),
             ..Default::default()

@@ -883,12 +883,20 @@ impl LoadedSchema for LoadedScheme {
         let transl = |alias: &str| self.translator_spec(alias);
         let translators: Vec<Box<dyn Translator>> = if self.engine.translators.is_empty() {
             // 老行为：按翻译器族自动装配。
+            //
+            // **但它必须同样消费方案里的 `translator:` 段**：
+            // 短写法（`engine.translator: spelling_graph`）曾经直接
+            // `SpellingGraphTranslator::new(...)`，把 `translator:` 段里
+            // 解析出来的 `enable_completion` / `initial_quality` 全丢掉——
+            // 这正是审计 G5「解析不等于生效」的一个实例：字段有人读、
+            // 有人存，装配时却没人用。
+            let spec = self.translator_spec("");
             match self.kind {
                 TranslatorKind::ExactCode => vec![
-                    Box::new(ExactCodeTranslator::new(
-                        &self.alphabet,
-                        Arc::clone(&self.lexicon),
-                    )),
+                    Box::new(
+                        ExactCodeTranslator::new(&self.alphabet, Arc::clone(&self.lexicon))
+                            .with_completion(spec.completion()),
+                    ),
                     Box::new(EchoTranslator::new()),
                 ],
                 TranslatorKind::SpellingGraph => {
@@ -898,10 +906,10 @@ impl LoadedSchema for LoadedScheme {
                         .expect("SpellingGraph 方案必定有拼写表")
                         as Arc<dyn stele_core::Spelling>;
                     vec![
-                        Box::new(SpellingGraphTranslator::new(
-                            spelling,
-                            Arc::clone(&self.lexicon),
-                        )),
+                        Box::new(
+                            SpellingGraphTranslator::new(spelling, Arc::clone(&self.lexicon))
+                                .with_completion(spec.completion()),
+                        ),
                         Box::new(EchoTranslator::new()),
                     ]
                 }

@@ -26,7 +26,9 @@
 
 use std::collections::BTreeMap;
 use std::collections::BinaryHeap;
-use stele_core::{CodeUnitId, Expansion, ExpansionSink, Score, SpellingAttr};
+use stele_core::{
+    CodeUnitId, Expansion, ExpansionSink, PathLimits, PathSink, Score, SpellingAttr, SpellingPath,
+};
 
 use crate::regex::{Regex, RegexError};
 
@@ -803,6 +805,143 @@ impl SpellingTable {
         self.edges.len()
     }
 
+    /// 走一遍按代价排序的搜索图，对每个出队节点调用 `visit`。
+    ///
+    /// `visit(pos, code, cost, attr)` 返回 `false` 表示"够了，停下"。
+    ///
+    /// # 为什么把搜索抽成这一层
+    ///
+    /// 两个调用方要的是**同一个搜索的不同切片**：
+    ///
+    /// - [`SpellingTable::expand_into`]：只要 `pos == 输入长度` 的节点
+    ///   （"恰好消费完整串"）；
+    /// - [`stele_core::Spelling::expand_paths`]：**每个** `pos > 0` 的节点
+    ///   （"消费了多远"是候选的一部分）。
+    ///
+    /// 抽出来之后，"资源上界"这件事只有一处实现——两条路都受同一组
+    /// 硬预算约束，不会出现"新加的那条路忘了限流"。
+    fn walk<F>(
+        &self,
+        spelling: &str,
+        limits: PathLimits,
+        max_units: usize,
+        mut visit: F,
+    ) -> ExpansionStats
+    where
+        F: FnMut(usize, &[CodeUnitId], Score, SpellingAttr) -> bool,
+    {
+        let mut stats = ExpansionStats::default();
+        if spelling.is_empty() {
+            return stats;
+        }
+
+        // 搜索图：节点是 (位置, 走过的边序列)，父指针重建序列。
+        //
+        // **不再用 `HashSet<(pos, Vec<CodeUnitId>)>` 去重**：那份去重表
+        // 每插入一个状态就要 clone 一整条编码，而它换来的只是"重复状态
+        // 少扩展一次"。在 `max_states` 硬限之下，重复状态只花预算、
+        // 不破坏正确性（最终 `dedup_by` 会去掉重复结果），而内存从
+        // "每条路径一份堆分配"降到"每状态 24 字节"。
+        let mut arena: Vec<SearchNode> = Vec::with_capacity(limits.max_states.min(1024));
+        arena.push(SearchNode {
+            parent: NO_PARENT,
+            unit: CodeUnitId(0),
+            cost: Score::ZERO,
+            attr: SpellingAttr::NORMAL,
+            pos: 0,
+            depth: 0,
+        });
+        stats.states_pushed = 1;
+
+        let mut heap: BinaryHeap<Frontier> = BinaryHeap::new();
+        heap.push(Frontier {
+            cost: Score::ZERO,
+            depth: 0,
+            node: 0,
+            seq: 0,
+        });
+        let mut seq: u64 = 1;
+
+        while let Some(f) = heap.pop() {
+            if stats.edge_attempts >= limits.max_work || stats.states_pushed >= limits.max_states {
+                stats.truncated = true;
+                break;
+            }
+            stats.states_popped += 1;
+            let node = arena[f.node as usize];
+
+            if node.pos > 0 {
+                let code = rebuild_code(&arena, f.node);
+                stats.results += 1;
+                if !visit(node.pos as usize, &code, node.cost, node.attr) {
+                    break;
+                }
+            }
+
+            if node.pos as usize == spelling.len() || node.depth as usize >= max_units {
+                continue;
+            }
+            let Some(c) = spelling[node.pos as usize..].chars().next() else {
+                continue;
+            };
+            let Some(cands) = self.by_first_char.get(&c) else {
+                continue;
+            };
+
+            let rest = &spelling[node.pos as usize..];
+            for &idx in cands {
+                if stats.edge_attempts >= limits.max_work
+                    || stats.states_pushed >= limits.max_states
+                {
+                    stats.truncated = true;
+                    break;
+                }
+                stats.edge_attempts += 1;
+                let edge = &self.edges[idx];
+                let (next_pos, extra_attr) = if rest.starts_with(&edge.text) {
+                    // 正常：边文本被输入完整覆盖。
+                    (node.pos as usize + edge.text.len(), SpellingAttr::NORMAL)
+                } else if limits.completion
+                    && edge.text.len() > rest.len()
+                    && edge.text.starts_with(rest)
+                {
+                    // **拼写层补全**：剩余输入是这条边的**前缀**。
+                    // 把它当作"用户还没敲完"，消费到输入末尾，
+                    // 并标上 COMPLETION（于是候选会扣一次可信度）。
+                    (spelling.len(), SpellingAttr::COMPLETION)
+                } else {
+                    continue;
+                };
+                // 位置按字节推进；边文本是 UTF-8，因此不会切在多字节中间。
+                #[allow(clippy::cast_possible_truncation)]
+                let next_pos = next_pos as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let child = arena.len() as u32;
+                arena.push(SearchNode {
+                    parent: f.node,
+                    unit: edge.unit,
+                    cost: node.cost.saturating_add(edge.cost),
+                    attr: node.attr.union(edge.attr).union(extra_attr),
+                    pos: next_pos,
+                    depth: node.depth + 1,
+                });
+                stats.states_pushed += 1;
+                heap.push(Frontier {
+                    cost: node.cost.saturating_add(edge.cost),
+                    depth: node.depth + 1,
+                    node: child,
+                    seq,
+                });
+                seq += 1;
+            }
+        }
+
+        // **不再往 heap / arena 之外分配**：图字节数就是 arena + 前沿。
+        stats.graph_bytes = arena.len() * core::mem::size_of::<SearchNode>()
+            + heap.len() * core::mem::size_of::<Frontier>();
+        stats
+    }
+
     /// 把一段拼写展开成所有可能的编码切分。
     ///
     /// # 算法
@@ -841,39 +980,11 @@ impl SpellingTable {
         out: &mut ExpansionSink<'_>,
     ) -> ExpansionStats {
         let limits = self.limits;
-        let mut stats = ExpansionStats::default();
         if spelling.is_empty() {
-            return stats;
+            return ExpansionStats::default();
         }
 
-        // 搜索图：节点是 (位置, 走过的边序列)，父指针重建序列。
-        //
-        // **不再用 `HashSet<(pos, Vec<CodeUnitId>)>` 去重**：那份去重表
-        // 每插入一个状态就要 clone 一整条编码，而它换来的只是"重复状态
-        // 少扩展一次"。在 `max_states` 硬限之下，重复状态只花预算、
-        // 不破坏正确性（最终 `dedup_by` 会去掉重复结果），而内存从
-        // "每条路径一份堆分配"降到"每状态 24 字节"。
-        let mut arena: Vec<SearchNode> = Vec::with_capacity(limits.max_states.min(1024));
-        arena.push(SearchNode {
-            parent: NO_PARENT,
-            unit: CodeUnitId(0),
-            cost: Score::ZERO,
-            attr: SpellingAttr::NORMAL,
-            pos: 0,
-            depth: 0,
-        });
-        stats.states_pushed = 1;
-
-        let mut heap: BinaryHeap<Frontier> = BinaryHeap::new();
-        heap.push(Frontier {
-            cost: Score::ZERO,
-            depth: 0,
-            node: 0,
-            seq: 0,
-        });
-        let mut seq: u64 = 1;
-
-        // 收下的**全部**结果；最后统一排序再按 `max_results` 截断。
+        // 收下**全部到达末尾**的结果；最后统一排序再按 `max_results` 截断。
         //
         // # 为什么不在收满 `max_results` 时就停
         //
@@ -883,73 +994,21 @@ impl SpellingTable {
         // 现在探索只受 `max_states`/`max_work` 限，截断发生在**按真实排序键
         // 排好之后**，于是"该留哪 512 条"由语义决定，不由探索顺序决定。
         let mut done: Vec<Expansion> = Vec::new();
-
-        while let Some(f) = heap.pop() {
-            if stats.edge_attempts >= limits.max_work || stats.states_pushed >= limits.max_states {
-                stats.truncated = true;
-                break;
-            }
-            stats.states_popped += 1;
-            let node = arena[f.node as usize];
-
-            if node.pos as usize == spelling.len() {
-                done.push(Expansion {
-                    code: rebuild_code(&arena, f.node),
-                    cost: node.cost,
-                    attr: node.attr,
-                });
-                continue;
-            }
-            if node.depth as usize >= limits.max_units {
-                continue;
-            }
-            let Some(c) = spelling[node.pos as usize..].chars().next() else {
-                continue;
-            };
-            let Some(cands) = self.by_first_char.get(&c) else {
-                continue;
-            };
-
-            for &idx in cands {
-                if stats.edge_attempts >= limits.max_work
-                    || stats.states_pushed >= limits.max_states
-                {
-                    stats.truncated = true;
-                    break;
+        let stats = self.walk(
+            spelling,
+            PathLimits::new(usize::MAX, limits.max_states, limits.max_work),
+            limits.max_units,
+            |pos, code, cost, attr| {
+                if pos == spelling.len() {
+                    done.push(Expansion {
+                        code: code.to_vec(),
+                        cost,
+                        attr,
+                    });
                 }
-                stats.edge_attempts += 1;
-                let edge = &self.edges[idx];
-                if !spelling[node.pos as usize..].starts_with(&edge.text) {
-                    continue;
-                }
-                // 位置按字节推进；边文本是 UTF-8，因此不会切在多字节中间。
-                #[allow(clippy::cast_possible_truncation)]
-                let next_pos = (node.pos as usize + edge.text.len()) as u32;
-                #[allow(clippy::cast_possible_truncation)]
-                let child = arena.len() as u32;
-                arena.push(SearchNode {
-                    parent: f.node,
-                    unit: edge.unit,
-                    cost: node.cost.saturating_add(edge.cost),
-                    attr: node.attr.union(edge.attr),
-                    pos: next_pos,
-                    depth: node.depth + 1,
-                });
-                stats.states_pushed += 1;
-                heap.push(Frontier {
-                    cost: node.cost.saturating_add(edge.cost),
-                    depth: node.depth + 1,
-                    node: child,
-                    seq,
-                });
-                seq += 1;
-            }
-        }
-
-        stats.results = done.len();
-        // **不再往 heap / arena 之外分配**：图字节数就是 arena + 前沿。
-        stats.graph_bytes = arena.len() * core::mem::size_of::<SearchNode>()
-            + heap.len() * core::mem::size_of::<Frontier>();
+                true
+            },
+        );
 
         // 排序：**代价降序 → 编码单元数升序 → 编码字典序 → 属性**。
         //
@@ -1008,6 +1067,57 @@ impl stele_core::Spelling for SpellingTable {
     fn expand(&self, spelling: &str, out: &mut ExpansionSink<'_>) {
         self.expand_into(spelling, out);
     }
+
+    /// 带消费长度的展开：**每一个到达过的位置都算一条路径**。
+    ///
+    /// # 与 [`SpellingTable::expand_into`] 的唯一差别
+    ///
+    /// `expand_into` 只在 `pos == len` 时收结果（"恰好消费完整串"）。
+    /// 这里在**每个非根节点**都收——节点带着"已经消费了多少字节"，
+    /// 于是"只解释了前缀"的路径（`niha` 的 `ni`+`h`，消费 3 字节）
+    /// 自然出现在结果里。
+    ///
+    /// librime 的 `Dictionary::Lookup` 正是对音节图**每一条边**分别查表、
+    /// 返回 `map<end_pos, entries>`——"消费了多远"是候选的一部分，
+    /// 而不是被丢掉的信息（`gear/script_translator.cc:705-722`）。
+    ///
+    /// # 排序
+    ///
+    /// **消费得多**的优先，其次代价高、单元数少、编码字典序。
+    /// 前端于是可以"先给覆盖整串的候选，再给前缀候选"。
+    fn expand_paths(&self, spelling: &str, limits: PathLimits, out: &mut PathSink<'_>) {
+        let mut found: Vec<SpellingPath> = Vec::new();
+        // `walk` 只在 `pos > 0` 的节点上回调，所以根不会进来。
+        // 回调返回 `false` 即"收够了"——这样就不必为每个状态都重建一次编码。
+        let _ = self.walk(
+            spelling,
+            limits,
+            self.limits.max_units,
+            |pos, code, cost, attr| {
+                found.push(SpellingPath {
+                    code: code.to_vec(),
+                    consumed: pos,
+                    cost,
+                    attr,
+                });
+                found.len() < limits.max_paths
+            },
+        );
+        found.sort_by(|a, b| {
+            b.consumed
+                .cmp(&a.consumed)
+                .then_with(|| b.cost.cmp(&a.cost))
+                .then_with(|| a.code.len().cmp(&b.code.len()))
+                .then_with(|| a.code.cmp(&b.code))
+                .then_with(|| a.attr.bits().cmp(&b.attr.bits()))
+        });
+        found.dedup_by(|a, b| {
+            a.code == b.code && a.consumed == b.consumed && a.cost == b.cost && a.attr == b.attr
+        });
+        for p in found.into_iter().take(limits.max_paths) {
+            out.push(p);
+        }
+    }
 }
 
 /// 对**一个**有效拼写施加一条运算，把结果追加进 `out`。
@@ -1017,22 +1127,22 @@ impl stele_core::Spelling for SpellingTable {
 fn apply_rule(rule: &Rule, p: &Projected, out: &mut Vec<Projected>) {
     match rule {
         Rule::Xlit { from, to } => {
-            let mut changed = false;
+            // **`xlit` 是改写，不是派生**（上游 wiki + librime
+            // `Transliteration::Apply`）。这里**不再**把原拼写推进 `out`：
+            // 推进去就等于宣称 `xlit/a/b/` 之后 `aa` 与 `bb` 都有效，
+            // 而 librime 里只有 `bb` 有效。
+            //
+            // 代价与属性随原拼写保留（`..p.clone()`）：转写不改变
+            // "这条拼写有多可信"。
             let text: String = p
                 .text
                 .chars()
                 .map(|c| match from.iter().position(|f| *f == c) {
-                    Some(i) => {
-                        changed = true;
-                        to.get(i).copied().unwrap_or(c)
-                    }
+                    Some(i) => to.get(i).copied().unwrap_or(c),
                     None => c,
                 })
                 .collect();
-            out.push(p.clone());
-            if changed && text != p.text {
-                out.push(Projected { text, ..p.clone() });
-            }
+            out.push(Projected { text, ..p.clone() });
         }
         Rule::Xform { pattern, repl } => {
             let text = pattern.replace_all(&p.text, repl);
@@ -1327,6 +1437,27 @@ mod algebra_tests {
         //  "哪些拼写有效"，不是"有几条"。这正是上面四个 looks_up 断言在做的。）
         assert_eq!(a.edge_count(), 2, "先缩写后改写：{{ni, m}}");
         assert_eq!(b.edge_count(), 2, "先改写后缩写：{{ni, n}}");
+    }
+
+    #[test]
+    fn xlit_is_a_rewrite_not_a_derivation() {
+        // 上游语义：`xlit/a/b/` 之后 `bb` 有效、`aa` **无效**。
+        // 旧实现把 `xlit` 当派生，两个都有效——与 librime 不一致。
+        let t = SpellingTable::compile(alphabet(&["aa"]), &[Rule::parse("xlit/a/b/").unwrap()]);
+        assert!(t.looks_up("bb"), "转写结果必须有效");
+        assert!(
+            !t.looks_up("aa"),
+            "`xlit` 是**改写**：原拼写不再有效（这是与 librime 的对照点）"
+        );
+        assert_eq!(t.edge_count(), 1, "只应当留下转写后的那一条边");
+    }
+
+    #[test]
+    fn xlit_unchanged_spelling_stays() {
+        // 字母表里没有要转写的字符时，拼写原样保留（不是"消失"）。
+        let t = SpellingTable::compile(alphabet(&["ni"]), &[Rule::parse("xlit/a/b/").unwrap()]);
+        assert!(t.looks_up("ni"));
+        assert_eq!(t.edge_count(), 1);
     }
 
     #[test]

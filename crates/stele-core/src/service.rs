@@ -119,6 +119,24 @@ pub trait Lexicon: Send + Sync {
     fn supports_prefix(&self) -> bool {
         false
     }
+
+    /// 是否存在**以 `code` 为前缀**的词库编码（含恰好相等）？
+    ///
+    /// # 它回答的是"要不要继续往下搜"，不是"有哪些词"
+    ///
+    /// 拼写展开的绝大部分分支**从一开始就不可能命中任何词条**。
+    /// 先用这个问题剪掉它们，搜索空间就从"所有切分"塌缩成
+    /// "真的有词的切分"——这是审计 §2.A 要求的**词典约束搜索**。
+    ///
+    /// # 调用方必须先问 `supports_prefix()`
+    ///
+    /// 默认实现返回 `false`（"不支持"和"不存在"在类型上无法区分）。
+    /// **把"不支持"误读成"不存在"会静默丢掉全部候选**，所以调用方
+    /// 只在 `supports_prefix()` 为真时才用它剪枝。
+    fn has_prefix(&self, code: &[CodeUnitId]) -> bool {
+        let _ = code;
+        false
+    }
 }
 
 /// 一条展开出来的编码切分：编码 + 代价 + 属性。
@@ -193,6 +211,175 @@ pub trait Spelling: Send + Sync {
     /// 这是**通用最短路算法**的输入：简拼 / 模糊音 / 补全 / 纠错在这里变成
     /// "带代价的边"，而引擎并不认识这些名字。
     fn expand(&self, spelling: &str, out: &mut ExpansionSink<'_>);
+
+    /// 把拼写展开成**带消费长度的路径**——包括"只解释了前缀"的那些。
+    ///
+    /// # 为什么需要它（审计 §2.E 的第 ① 条通路）
+    ///
+    /// librime 的音节图有 `input_length` 与 `interpreted_length` **两个数**：
+    /// 图可以只覆盖输入的前缀，查表在那个前缀上做，剩下的字符留在输入里
+    /// （`algo/syllabifier.cc:267-274`）。这正是 `niha` 能给出「你好」的机制：
+    /// 图只覆盖 `ni` + `h`（`h` 是 `hao` 的缩写），第 4 个字符 `a`
+    /// 从未被消费。
+    ///
+    /// [`Spelling::expand`] 只产出"恰好消费完整个输入"的路径，
+    /// 所以它**表达不了**这件事。
+    ///
+    /// # 默认实现
+    ///
+    /// 退化成 [`Spelling::expand`] 并把 `consumed` 填成输入长度。
+    /// 语义正确（那些路径确实消费了整串），只是没有前缀路径。
+    fn expand_paths(&self, spelling: &str, _limits: PathLimits, out: &mut PathSink<'_>) {
+        let mut exps = Vec::new();
+        {
+            let mut sink = ExpansionSink::new(&mut exps, out.remaining().max(1));
+            self.expand(spelling, &mut sink);
+        }
+        for e in exps {
+            out.push(SpellingPath {
+                code: e.code,
+                consumed: spelling.len(),
+                cost: e.cost,
+                attr: e.attr,
+            });
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 带消费长度的拼写路径
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一条拼写路径：**编码 + 消费了多少输入** + 代价 + 属性。
+///
+/// `consumed < spelling.len()` 表示这条路径只解释了输入的**前缀**——
+/// 剩下的字符是**余码**，前端应当让它继续留在预编辑串里。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellingPath {
+    /// 展开出的编码。
+    pub code: Vec<CodeUnitId>,
+    /// 消费掉的输入**字节**数（≤ 输入长度）。
+    pub consumed: usize,
+    /// 相对规范拼写的代价（对数域，通常 ≤ 0）。
+    pub cost: Score,
+    /// 这条路径经过了哪些变形。
+    pub attr: crate::candidate::SpellingAttr,
+}
+
+impl SpellingPath {
+    /// 余码长度（给定输入总长）。
+    #[must_use]
+    pub fn remainder_len(&self, input_len: usize) -> usize {
+        input_len.saturating_sub(self.consumed)
+    }
+}
+
+/// 一次前缀展开的**硬预算**。
+///
+/// 与 [`ExpansionSink`] 的容量是两件事：那个限制**写出多少条**，
+/// 这个限制**搜索花多少**。造句要为每个起始位置各展开一次，
+/// 所以那里必须用一个比"整串展开"小得多的预算。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PathLimits {
+    /// 一次最多产出多少条路径。
+    pub max_paths: usize,
+    /// 搜索图最多几个状态。
+    pub max_states: usize,
+    /// 最多尝试多少次边。
+    pub max_work: usize,
+    /// **拼写层补全**：允许最后一条边"吃掉"没敲完的尾巴吗？
+    ///
+    /// 打开时，若剩余输入 `ha` 是某个拼写 `hao` 的**前缀**，那条边也可以走，
+    /// 并把它标成 [`crate::SpellingAttr::COMPLETION`]。这正是 librime 的
+    /// `Prism::ExpandSearch`（`algo/syllabifier.cc:224-228`）：
+    /// 补全发生在**拼写层**，所以 `ha`（不是一个合法音节）也能被补成 `hao`。
+    ///
+    /// 关掉时只有"输入是边的完整匹配"才成立——那是补全关闭时该有的行为。
+    pub completion: bool,
+}
+
+impl Default for PathLimits {
+    fn default() -> Self {
+        Self {
+            max_paths: 512,
+            max_states: 16_384,
+            max_work: 131_072,
+            completion: false,
+        }
+    }
+}
+
+impl PathLimits {
+    /// 三项预算显式给出；补全默认关闭。
+    #[must_use]
+    pub const fn new(max_paths: usize, max_states: usize, max_work: usize) -> Self {
+        Self {
+            max_paths,
+            max_states,
+            max_work,
+            completion: false,
+        }
+    }
+
+    /// 打开/关闭拼写层补全。
+    #[must_use]
+    pub const fn with_completion(mut self, on: bool) -> Self {
+        self.completion = on;
+        self
+    }
+
+    /// 用于"每个起始位置各展开一次"的小预算（造句）。
+    ///
+    /// 取值理由：造句只有在**没有精确整词匹配**时才会跑，而那时输入通常
+    /// 只有两三个音节。`256` 个状态足够覆盖"几个音节的少量切分"，
+    /// 同时把 `起始位置数 × 状态上界` 压在几千以内。
+    #[must_use]
+    pub const fn sentence_scan() -> Self {
+        Self {
+            max_paths: 48,
+            max_states: 256,
+            max_work: 2_048,
+            completion: false,
+        }
+    }
+}
+
+/// 路径写入缓冲，限流。
+pub struct PathSink<'a> {
+    buf: &'a mut Vec<SpellingPath>,
+    cap: usize,
+}
+
+impl<'a> PathSink<'a> {
+    /// 构造。
+    pub fn new(buf: &'a mut Vec<SpellingPath>, cap: usize) -> Self {
+        Self { buf, cap }
+    }
+
+    /// 推入一条；超出上限则丢弃。
+    pub fn push(&mut self, p: SpellingPath) {
+        if self.buf.len() < self.cap {
+            self.buf.push(p);
+        }
+    }
+
+    /// 已写入数量。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// 剩余配额。
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.cap.saturating_sub(self.buf.len())
+    }
 }
 
 /// 重排器：记忆、上下文、向量都实现它。

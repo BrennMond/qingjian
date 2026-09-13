@@ -109,9 +109,8 @@ fn the_audited_tamper_is_refused_not_a_panic() {
     let at = index_offset(&b) + 4;
     b[at..at + 4].copy_from_slice(&10_000u32.to_le_bytes());
     let p = write("tamper", &b);
-    let e = TableLexicon::open_checked(&p, Some(fingerprint()))
-        .err()
-        .expect("篡改过的产物必须被拒绝");
+    let e =
+        TableLexicon::open_checked(&p, Some(fingerprint())).expect_err("篡改过的产物必须被拒绝");
     let msg = e.to_string();
     assert!(
         msg.contains("校验和") || msg.contains("损坏"),
@@ -129,8 +128,7 @@ fn the_audited_tamper_with_a_forged_checksum_is_still_refused() {
     recompute_body_checksum(&mut b);
     let p = write("forge", &b);
     let e = TableLexicon::open_checked(&p, Some(fingerprint()))
-        .err()
-        .expect("结构损坏必须被拒绝，无论校验和是否正确");
+        .expect_err("结构损坏必须被拒绝，无论校验和是否正确");
     let msg = e.to_string();
     assert!(
         msg.contains("非单调") || msg.contains("超过总数"),
