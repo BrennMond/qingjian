@@ -238,7 +238,10 @@ impl SessionImpl {
                 // 前端不猜——"规范编码"这件事在产生它的地方就定了。
                 key: c.key.clone(),
             };
-            return Some(self.finish_commit(commit));
+            // **候选只覆盖它真正消费的那一段**（`Candidate.span` 是**字节**区间）。
+            // 消费不满整串时，余码要留下继续输入——见 `finish_commit`。
+            let consumed = c.span.end;
+            return Some(self.finish_commit(commit, consumed));
         }
 
         // ── 意图二：上屏当前候选的注释 ──
@@ -256,7 +259,9 @@ impl SessionImpl {
                 // 注释是候选的 `comment`，不由任何编码产出。
                 key: None,
             };
-            return Some(self.finish_commit(commit));
+            // 注释上屏会带走整段输入（它就是这段的附加信息）。
+            let consumed = self.state.composition.input.len();
+            return Some(self.finish_commit(commit, consumed));
         }
 
         // ── 意图三：从记忆里删掉当前候选（学习型删除） ──
@@ -295,11 +300,26 @@ impl SessionImpl {
             trigger,
             key: None,
         };
-        Some(self.finish_commit(commit))
+        // 直出（原样上屏、标点）：整段输入都被这次上屏带走。
+        let consumed = self.state.composition.input.len();
+        Some(self.finish_commit(commit, consumed))
     }
 
     /// 上屏的公共收尾：发学习事件、推上下文、清空输入与候选。
-    fn finish_commit(&mut self, commit: Commit) -> Commit {
+    /// `consumed` = 这次上屏**消费掉了输入的多少个字节**。
+    ///
+    /// # 为什么需要它（审计 §2.F「部分选词与余码保留」）
+    ///
+    /// 阶段 2 之后，一个候选可能只消费输入的一部分：敲 `niha` 时
+    /// 「你好」的 `span` 是 `0..3`（第 4 个字符 `a` 是**余码**）。
+    /// 旧实现无条件 `composition.reset()`——那等于**把余码丢掉**，
+    /// 用户敲的 `a` 凭空消失。
+    ///
+    /// 现在的语义：`[0, consumed)` 被这次上屏带走，`[consumed, len)`
+    /// 留在输入里继续打，并**立刻按余码重算候选**。
+    /// 这既是 RIME 的行为（`Candidate::end` 决定消费到哪里），
+    /// 也是"逐段确认"能做到的最小一步。
+    fn finish_commit(&mut self, commit: Commit, consumed: usize) -> Commit {
         // 学习事件（P4a 的实现会消费它）。
         //
         // **注意传的是规范编码键与原始输入两者**：键是主键，输入只是
@@ -329,10 +349,28 @@ impl SessionImpl {
             self.state.context.push(commit.text.clone());
         }
 
-        // 标点上屏**不打断**正在输入的编码（RIME 的行为：
-        // 敲 `ni` 再敲 `,` 会得到「你，」并把 `ni` 一起上屏）。
-        // 这里做不到那件事时，宁可把输入清掉，也不要留一段无主的输入。
+        // ── 部分选词：**余码留下**（审计 §2.F） ──
+        //
+        // `consumed` 是候选 `span.end`（字节）。它小于输入长度时，
+        // 后面的字符属于"还没被这次上屏解释的部分"，必须留在输入里。
+        let total = self.state.composition.input.len();
+        let cut = consumed.min(total);
+        // 只在**字符边界**上切：`span.end` 应当落在边界上（它来自拼写
+        // 展开的字节位置），这里再兜一次底——切出半个 UTF-8 字符比
+        // "少消费一个字节"糟糕得多。
+        let cut = (0..=cut)
+            .rev()
+            .find(|i| self.state.composition.input.is_char_boundary(*i))
+            .unwrap_or(0);
+        let remainder: String = self.state.composition.input[cut..].to_owned();
+
         self.state.composition.reset();
+        if !remainder.is_empty() {
+            // 余码成为新的输入：预编辑串只剩它，光标在末尾，
+            // 候选按它重算（下面的 `recompose` 会做）。
+            self.state.composition.caret = remainder.len();
+            self.state.composition.input = remainder;
+        }
         self.state.pending_commit = None;
 
         // **上屏之后立刻重算一次**（P4b）。

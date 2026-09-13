@@ -359,6 +359,88 @@ fn the_target_candidates_are_present_not_just_the_literal() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 任务包 F（最小一步）：部分选词与**余码保留**
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn committing_a_prefix_candidate_keeps_the_remainder_in_the_input() {
+    // 敲 `niha`，「你好」只消费前 3 个字节（`h` 是 `hao` 的缩写），
+    // 第 4 个字符 `a` 是**余码**。选中它之后，`a` 必须留在输入里
+    // 继续打——旧实现无条件 `composition.reset()`，余码凭空消失。
+    let f = Fixture::new("remainder", true, false);
+    let defs = stele_schemes::load_dir(&f.root).expect("夹具");
+    let engine = EngineImpl::new(&defs).expect("编译");
+    let mut s = engine.create_session();
+    for c in "niha".chars() {
+        s.process_key(Key::ch(c));
+    }
+    let idx = s
+        .candidates()
+        .iter()
+        .position(|c| c.text == "你好")
+        .unwrap_or_else(|| panic!("应当有「你好」，实得 {:?}", texts(s.candidates())));
+    let outcome = s.select(idx, stele_core::SelectionSource::Keyboard);
+    assert!(
+        matches!(outcome, stele_core::Outcome::Committed(_)),
+        "选中前缀候选应当上屏：{outcome:?}"
+    );
+    assert_eq!(
+        s.composition().input,
+        "a",
+        "余码 `a` 必须留在输入里继续打（审计 §2.F）"
+    );
+    assert_eq!(s.composition().caret, 1, "光标应当在余码末尾");
+}
+
+#[test]
+fn committing_a_whole_input_candidate_clears_the_input() {
+    // 反面：消费满整串时输入必须清空（否则会留下一个永远消不掉的尾巴）。
+    let f = Fixture::new("fullcommit", true, false);
+    let defs = stele_schemes::load_dir(&f.root).expect("夹具");
+    let engine = EngineImpl::new(&defs).expect("编译");
+    let mut s = engine.create_session();
+    for c in "nihao".chars() {
+        s.process_key(Key::ch(c));
+    }
+    let idx = s
+        .candidates()
+        .iter()
+        .position(|c| c.text == "你好")
+        .expect("应当有「你好」");
+    let _ = s.select(idx, stele_core::SelectionSource::Keyboard);
+    assert!(
+        s.composition().input.is_empty(),
+        "消费满整串时输入必须清空，实得 {:?}",
+        s.composition().input
+    );
+}
+
+#[test]
+fn the_remainder_is_reanalysed_after_a_partial_commit() {
+    // 余码留下之后必须**立刻重算**候选，而不是留一段"无主的输入"。
+    let f = Fixture::new("reanalyse", true, false);
+    let defs = stele_schemes::load_dir(&f.root).expect("夹具");
+    let engine = EngineImpl::new(&defs).expect("编译");
+    let mut s = engine.create_session();
+    // 夹具里 `a` 不是编码单元，因此余码 `a` 只会得到原样上屏；
+    // 用它验证"重算过"（候选列表非空且是兜底那条）。
+    for c in "niha".chars() {
+        s.process_key(Key::ch(c));
+    }
+    let idx = s
+        .candidates()
+        .iter()
+        .position(|c| c.text == "你好")
+        .expect("应当有「你好」");
+    let _ = s.select(idx, stele_core::SelectionSource::Keyboard);
+    assert_eq!(s.composition().input, "a");
+    assert!(
+        !s.candidates().is_empty(),
+        "余码必须被重新分析过（至少有原样上屏），而不是一片空白"
+    );
+}
+
 #[test]
 fn the_preedit_still_labels_the_consumed_syllable() {
     // 预编辑串至少要把被消费的第一个音节分出来（`ni`）。
