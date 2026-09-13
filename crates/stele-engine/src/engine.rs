@@ -86,6 +86,23 @@ impl EngineImpl {
         self.inner.schemes.len()
     }
 
+    /// **降级说明**：哪些方案声明了零件、但那些零件因为缺外部数据而没生效。
+    ///
+    /// 返回 `(方案 id, 说明)` 的列表。前端（以及 CLI）应当把它打印出来——
+    /// 缺失数据**不阻止启动**（D26），但"功能静默不生效"是这个项目反复
+    /// 踩的坑，所以必须有一条可见的出口。
+    #[must_use]
+    pub fn degradations(&self) -> Vec<(&str, &str)> {
+        let mut out = Vec::new();
+        for s in &self.inner.schemes {
+            let id = s.info().schema_id.as_str();
+            for d in s.degradations() {
+                out.push((id, d.as_str()));
+            }
+        }
+        out
+    }
+
     /// 是否没有任何方案。
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -161,10 +178,7 @@ impl SessionImpl {
         source: SelectionSource,
     ) -> Option<Commit> {
         // ── 意图一：选中候选列表里的某一项 ──
-        if let PendingCommit::Select {
-            index, trigger, ..
-        } = pending
-        {
+        if let PendingCommit::Select { index, trigger, .. } = pending {
             let c = self.candidates.get(index)?;
 
             // 规则 2：预测通道的候选默认不允许**键盘盲选**。
@@ -310,15 +324,11 @@ impl Session for SessionImpl {
                             Some(c) => Outcome::Committed(c),
                             // 意图没能兑现（下标越界 / 预测候选被盲选）
                             // → 按键仍被消费（否则空格会漏给系统）。
-                            None => {
-                                Outcome::Consumed
-                            }
+                            None => Outcome::Consumed,
                         }
                     }
                     // 没有请求上屏：按键被消费，只需重绘。
-                    None => {
-                        Outcome::Consumed
-                    }
+                    None => Outcome::Consumed,
                 }
             }
         }

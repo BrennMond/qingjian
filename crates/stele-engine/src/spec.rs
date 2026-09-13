@@ -455,6 +455,14 @@ pub struct SimplifierSpec {
     pub tips: TipsMode,
     /// 是否继承原候选的注释。
     pub inherit_comment: bool,
+    /// 转换候选的**权重比**（默认 0.95，必须 < 1）。
+    ///
+    /// 转换出来的是"另一个写法"，不该比原候选更靠前，所以这个值必须 < 1。
+    /// 但它也不能太小：候选是**按权重降序排**的，而前端只显示前若干页
+    /// （默认每页 9 个）。0.95 意味着"掉 5% 的权重"——在 400 分一档的词库里
+    /// 足够掉出可见范围，于是**功能存在但用户看不见**。
+    /// emoji 这类"专门想要它出现"的转换要调大这个值（方案里写 `weight:`）。
+    pub weight: f64,
     /// 只对这些标签生效（空 = 全部）。
     pub tags: Vec<Tag>,
     /// 来源行号。
@@ -528,8 +536,7 @@ impl TranslatorKindSpec {
 ///
 /// 字段名**照抄 RIME**（`dictionary` / `enable_completion` / `initial_quality`…），
 /// 因为"用户手上的方案文件能直接用"比"我们的字段名更好听"重要得多。
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct TranslatorSpec {
     /// 零件名（`script_translator` / `table_translator`）。
     pub component: String,
@@ -563,7 +570,6 @@ pub struct TranslatorSpec {
     /// 来源行号。
     pub at: At,
 }
-
 
 impl TranslatorSpec {
     /// 词条补全的默认值：**关**。
@@ -940,10 +946,7 @@ mod tests {
 
         // 声明里没写的修饰键不影响匹配：`Return` 不该要求"恰好没按 Shift"。
         let ret = KeyChord::new(KeyCode::Named(NamedKey::Enter), Modifiers::NONE);
-        let shift_ret = Key::press(
-            KeyCode::Named(NamedKey::Enter),
-            Modifiers::SHIFT,
-        );
+        let shift_ret = Key::press(KeyCode::Named(NamedKey::Enter), Modifiers::SHIFT);
         assert!(ret.matches(&shift_ret));
     }
 
@@ -958,7 +961,10 @@ mod tests {
 
     #[test]
     fn alias_splitting_has_exactly_one_definition() {
-        assert_eq!(split_alias("table_translator@melt_eng"), ("table_translator", Some("melt_eng")));
+        assert_eq!(
+            split_alias("table_translator@melt_eng"),
+            ("table_translator", Some("melt_eng"))
+        );
         assert_eq!(split_alias("speller"), ("speller", None));
         // 空别名当作没有别名（`translator@` 这种写法是笔误，不是实例）。
         assert_eq!(split_alias("speller@"), ("speller@", None));

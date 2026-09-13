@@ -271,7 +271,8 @@ impl SchemeDef {
         // 方案声明了配置、却没有任何东西会用到它 —— 这是一处
         // **永远不生效的配置**，必须在装载期报出来（PLAN D17 的反面教材
         // 正是"写错的字段被默默忽略"）。
-        diagnostics.extend(self.check_declared_components());
+        let (component_errors, degradations) = self.check_declared_components();
+        diagnostics.extend(component_errors);
 
         if !diagnostics.is_empty() {
             return Err(SchemaError::Invalid {
@@ -303,6 +304,7 @@ impl SchemeDef {
             input_alphabet: self.input_alphabet.clone(),
             page_size: self.page_size,
             external_data: self.external_data.clone(),
+            degradations,
         })
     }
 
@@ -318,12 +320,14 @@ impl SchemeDef {
     /// 3. **开关没声明**：`punctuator` 要 `full_shape`、`simplifier` 要
     ///    `emoji`。开关没声明时 `Options::set` 返回 `false`（**不会被静默
     ///    创建**），于是那个功能永远关着。
-    fn check_declared_components(&self) -> Vec<stele_core::Diagnostic> {
+    fn check_declared_components(&self) -> (Vec<stele_core::Diagnostic>, Vec<String>) {
         use crate::registry::Availability;
         let path = format!("scheme:{}", self.info.schema_id);
         let mut out = Vec::new();
+        // 降级项：方案照跑，但这些零件不会生效。见 `LoadedScheme::degradations`。
+        let mut degraded = Vec::new();
         if !self.engine.is_declared() {
-            return out;
+            return (out, degraded);
         }
 
         let names: Vec<String> = self
@@ -352,13 +356,19 @@ impl SchemeDef {
                     format!("零件 `{component}` 尚未实现，声明了它也用不上"),
                     note.to_owned(),
                 ),
-                Availability::NeedsData => (
-                    format!("零件 `{component}` 需要外部数据，而这份方案没有提供它"),
-                    format!(
-                        "{note}（实例 `{name}` 的数据没找到：内联表、\
-                         或它指向的文件）"
-                    ),
-                ),
+                // **数据缺失 = 降级，不是错误**（D26）。
+                //
+                // 理由：方案里挂着 `simplifier@emoji` 而数据没取回来，
+                // 是"这个功能用不了"，不是"这个方案是坏的"。若在这里
+                // 拒绝装载，用户会连打字都打不了——而"打字去修配置"
+                // 恰恰是输入法唯一的自救手段。
+                Availability::NeedsData => {
+                    degraded.push(format!(
+                        "零件 `{component}`（实例 `{name}`）没有生效：\
+                         它需要外部数据，而这份方案没有提供它（{note}）"
+                    ));
+                    continue;
+                }
                 // "不适用"与"需外部资源"都不拦装载：
                 // 前者在方案里留着无害（`force_gc`），后者是使用者那边的
                 // 事（给数据或换零件）。注册表已经把情况记清楚了。
@@ -395,7 +405,11 @@ impl SchemeDef {
             required.push("ascii_mode");
         }
         if self.engine.processors.iter().any(|n| n == "punctuator")
-            || self.engine.segmentors.iter().any(|n| n.starts_with("punct"))
+            || self
+                .engine
+                .segmentors
+                .iter()
+                .any(|n| n.starts_with("punct"))
         {
             required.push("full_shape");
         }
@@ -421,7 +435,7 @@ impl SchemeDef {
             }
         }
 
-        out
+        (out, degraded)
     }
 }
 
@@ -461,9 +475,23 @@ pub struct LoadedScheme {
     /// 它只在 `compile` 期用来"出声"，装完之后留着供 `--dump-config`
     /// 回答"这个实例的数据到底找到了没有"——那正是使用者最想问的问题。
     external_data: Vec<crate::registry::ExternalData<'static>>,
+    /// **降级说明**：方案能跑，但有东西没生效（最典型的是外部数据缺失）。
+    ///
+    /// 与 `SchemaError` 分开是 D26 的直接要求：输入法的失败是**自锁**的，
+    /// 缺一张 `OpenCC` 表不该让用户连打字都打不了。这类问题在这里被记下来、
+    /// 由前端/CLI **打印成一行警告**，而不是拒绝启动。
+    degradations: Vec<String>,
 }
 
 impl LoadedScheme {
+    /// 方案**降级**运行的地方（空 = 一切按声明生效）。
+    ///
+    /// 每一项都是一句人话，说清"哪个零件没生效、为什么"。
+    #[must_use]
+    pub fn degradations(&self) -> &[String] {
+        &self.degradations
+    }
+
     /// 信息。
     #[must_use]
     pub fn info(&self) -> &SchemaInfo {
@@ -621,9 +649,7 @@ impl LoadedScheme {
                         if let Some((_, spec)) = self.affixes.iter().find(|(k, _)| k == a) {
                             let all = seg::affix_all_tags(spec, &mut tags, self.tag);
                             produced.extend(all.iter().copied());
-                            out.push(Box::new(seg::AffixSegmentor::new(
-                                spec, &mut tags, abc_tag,
-                            )));
+                            out.push(Box::new(seg::AffixSegmentor::new(spec, &mut tags, abc_tag)));
                         }
                     }
                 }
@@ -725,9 +751,9 @@ impl LoadedSchema for LoadedScheme {
                     processors.push(Box::new(Editor::new(self.editor_bindings.clone())));
                 }
                 "selector" => processors.push(Box::new(Selector)),
-                "ascii_composer" => processors.push(Box::new(AsciiComposer::new(Some(
-                    "ascii_mode".to_owned(),
-                )))),
+                "ascii_composer" => {
+                    processors.push(Box::new(AsciiComposer::new(Some("ascii_mode".to_owned()))));
+                }
                 "punctuator" => processors.push(Box::new(Punctuator::new(
                     &self.punctuator,
                     Some("full_shape".to_owned()),
@@ -735,10 +761,9 @@ impl LoadedSchema for LoadedScheme {
                 "key_binder" => {
                     processors.push(Box::new(KeyBinder::new(self.key_bindings.clone())));
                 }
-                "navigator" => processors.push(Box::new(Navigator::new(
-                    &self.navigator,
-                    self.page_size,
-                ))),
+                "navigator" => {
+                    processors.push(Box::new(Navigator::new(&self.navigator, self.page_size)));
+                }
                 // `recognizer` 是"扫描"而不是处理器（见 `segmentor.rs`），
                 // `select_character` 需要"以词定字"的数据，P3 未做。
                 _ => {}
@@ -825,11 +850,7 @@ impl LoadedSchema for LoadedScheme {
 
         // 标点翻译器：方案声明了 `punctuator`（处理器）或 `punct_segmentor`
         // 时自动挂上——它只对标点段生效，因此不会有副作用。
-        let has_punct = self
-            .engine
-            .processors
-            .iter()
-            .any(|n| n == "punctuator")
+        let has_punct = self.engine.processors.iter().any(|n| n == "punctuator")
             || self
                 .engine
                 .segmentors
@@ -855,9 +876,7 @@ impl LoadedSchema for LoadedScheme {
                 "uniquifier" => filters.push(Box::new(Uniquifier)),
                 "reverse_lookup_filter" => {
                     if let Some(a) = alias {
-                        if let Some((_, spec)) =
-                            self.reverse_lookups.iter().find(|(k, _)| k == a)
-                        {
+                        if let Some((_, spec)) = self.reverse_lookups.iter().find(|(k, _)| k == a) {
                             let fmt = crate::spelling::SpellingFormat::parse_all(
                                 &spec
                                     .comment_format
@@ -892,14 +911,12 @@ impl LoadedSchema for LoadedScheme {
                                 table.clone(),
                                 spec.option_name.clone(),
                                 spec.inherit_comment,
+                                spec.weight,
                             ));
                             if spec.tags.is_empty() {
                                 filters.push(inner);
                             } else {
-                                filters.push(Box::new(TaggedFilter::new(
-                                    inner,
-                                    spec.tags.clone(),
-                                )));
+                                filters.push(Box::new(TaggedFilter::new(inner, spec.tags.clone())));
                             }
                         }
                     }
@@ -998,8 +1015,6 @@ fn rule_to_spec(r: &crate::spelling::Rule) -> String {
         _ => String::new(),
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
