@@ -94,9 +94,16 @@ stele/
 │   └── stele-bench/    # 称重台：内存与延迟测量
 ├── schemes/            # 方案资产（与内核解耦）
 │   └── stele-default/  # 默认方案：pinyin（拼写图族）/ shape（精确编码族）+ 词库
+│       └── cn_dicts/generated.dict.yaml  # **生成的默认词库**（第三方 MIT/Apache 数据的派生物）
+├── tools/              # 部署期工装（词库生成、上游对照、探针）
+│   ├── sources.lock    # 源数据的固定 revision + sha256（已跟踪的可复现输入）
+│   └── fetch-sources.sh
+├── licenses/           # 第三方许可证文本（MIT × 3、BSD-3-Clause）
 ├── docs/
-│   └── engine-design.md   # 引擎设计的权威定义
+│   ├── engine-design.md   # 引擎设计的权威定义
+│   └── privacy-model.md   # 隐私边界（数据分类、权限、禁学、清除）
 ├── reference/          # 调研资料（RIME 官方文档对比、librime 内部机制、前端对接）
+├── THIRD_PARTY_NOTICES.md  # 第三方来源 / 版权 / 许可逐项清单
 └── PLAN.md             # 项目章程与决策记录（ADR）
 ```
 
@@ -168,14 +175,30 @@ my-schemes/
 
 ## 参与开发前请读
 
-- `PLAN.md` — 决策记录（D1–D31）、路线图、工程铁律
+- `PLAN.md` — 决策记录、路线图、工程铁律
 - `docs/engine-design.md` — 引擎抽象与数据结构的权威定义
 - `reference/` — RIME 官方设计文档的逐条对比（含"我们漏掉了什么"的诚实清单）
+- `docs/privacy-model.md` — 隐私模型（哪些是代码保证的、哪些依赖前端/OS）
+- `THIRD_PARTY_NOTICES.md` — 第三方来源、固定 revision、版权与许可
 
 ## 许可证
 
-MIT OR Apache-2.0（见 `LICENSE-MIT` / `LICENSE-APACHE`）。
+本项目自身：**MIT OR Apache-2.0**（见 `LICENSE-MIT` / `LICENSE-APACHE`）。
 
-**本仓库不包含第三方词典数据或模型**：rime-ice 为 GPL-3.0，
-且其内部词源混合了多种限制性许可。方案与数据由使用者自行获取并在本地编译。
-理由与逐项许可清单见 `PLAN.md` §10。
+**本仓库分发第三方内容，不是"没有"**（旧版本此处写"不包含第三方词典数据"
+与事实不符）：
+
+- `schemes/stele-default/cn_dicts/generated.dict.yaml` 是 pinyin-data /
+  THUOCL / jieba（MIT）与 OpenCC（Apache-2.0）的**派生产物**；
+- `tools/librime-probe/probe.c` 含逐字段抄自 librime（BSD-3-Clause）的 ABI 声明；
+- `reference/wiki-*.md` 是 Rime 官方 wiki 两页的**逐字副本**
+  （许可状态未确定，见 `THIRD_PARTY_NOTICES.md` §5.3）。
+
+**本仓库不分发** rime-ice 的词典（GPL-3.0-only，且内部词源含限制性许可）、
+librime 与 Rime wiki 的源码副本。运行时源数据由使用者用
+`tools/fetch-sources.sh` 在**自己机器上**取回，落在 `.gitignore` 的 `build/`。
+
+**逐项的 artifact / 上游 URL / 固定 revision / 版权 / 许可 / 是否修改**，
+以及 MIT / Apache-2.0 / BSD-3-Clause 的许可文本，见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 `licenses/`。
+理由见 `PLAN.md` §10。

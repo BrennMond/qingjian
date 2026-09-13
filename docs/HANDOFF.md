@@ -6,7 +6,7 @@
 > 就能接着干，不必回溯对话。
 >
 > 最后更新：**P4b（本地下一词预测）完成**、**P5 的本地向量偏好记忆第一版落地（默认关）**——
-> P4b：`Lane::Predict` 通道打通、对比集 15 条端到端全过、按键路径仍零磁盘 I/O；
+> P4b：`Lane::Predict` 通道打通、对比集 15 条端到端全过、**用户记忆的**按键路径仍零磁盘 I/O（词库查询仍走 `read_at`，见 §0 的读法）；
 > P5：`stele-embed`（零依赖、无模型、无网络），把本地历史的共现计数投影成
 > `i16` 向量，在 `Lane::Input` 上加有界偏好分；**默认关闭**（D46），
 > 向量表实测 **2.44 MiB @ 4 万词**、延迟无可测变化。
@@ -26,8 +26,14 @@
 ## 0. 一分钟速览
 
 **Stele-IME（石经）**：用 Rust 从原理重写的输入法引擎。
-存在的理由：商业输入法占 300–400 MB 且隐私不完善；RIME 依赖重、关键行为寄生在 Lua 上，
-而且**RIME 从未承诺过隐私与离线**（其官方文档 NOT FOUND，作者计划里写着"添加網絡功能"）。
+存在的理由：商业输入法占 300–400 MB；RIME（librime）成熟但依赖重、
+**部分**方案把关键行为放进 Lua 插件（基础 `script_translator` 的造句/补全**不**依赖 Lua）。
+上游文档没有把隐私写成承诺、早期计划里出现"添加網絡功能"——这只能说明
+**"上游没把它当承诺"**，**不能**推断"librime 会联网或不保护隐私"（审计 §3.1）；
+Stele 要做的，是把自己的离线与隐私做成一条**可核对**的承诺（`docs/privacy-model.md`）。
+
+> **合规与隐私入口**：第三方来源 / 固定 revision / 许可见
+> `THIRD_PARTY_NOTICES.md`；隐私边界见 `docs/privacy-model.md`。
 
 **红线**：常驻内存 < 30 MB、部署峰值 < 150 MB、按键 P50 < 1 ms、P99 < 10 ms、
 产物/源 < 3×。
@@ -372,7 +378,7 @@ python3 tools/compare-librime.py            # 6 条用例
 ### P4a 已完成（用户记忆：频率 + 时间衰减）
 
 **验收标准**（`PLAN.md` §3 的 P4a 行 + §7.6.0 的五条）：**打过的词下次优先；
-按键时零磁盘 I/O**。
+用户记忆的按键路径零磁盘 I/O**（不是"整条按键路径零 I/O"：词库查询仍按需 `read_at`，见 §0）。
 
 | 交付 | 内容 | 证据 |
 | --- | --- | --- |
@@ -389,7 +395,7 @@ python3 tools/compare-librime.py            # 6 条用例
 | # | 验收 | 怎么证的 |
 | --- | --- | --- |
 | 1 | 打过的词下次优先 | 端到端：自建方案（甲 10000 / 乙 1，同码），把「乙」选 4 次 → 它升到第 1；**打 1 次时断言它还没升**（分界点两侧都钉住）。另有**跨拼法**两条：简拼学的全拼吃得到、全拼学的简拼吃得到；以及"落库的键不是拼写而是编码" |
-| 2 | **按键时零磁盘 I/O**（红线） | `crates/stele-memory/tests/no_disk_io_on_keypath.rs` 读 `/proc/self/io`：`syscr`/`syscw` 与 `read_bytes`/`write_bytes` 在 1000 次按键后**一个都没涨** |
+| 2 | **用户记忆的按键路径零磁盘 I/O**（红线） | `crates/stele-memory/tests/no_disk_io_on_keypath.rs` 读 `/proc/self/io`：`syscr`/`syscw` 与 `read_bytes`/`write_bytes` 在 1000 次按键后**一个都没涨**。范围是记忆/预测/向量这条路径；**词典查询（`TableLexicon`）仍走 `read_at`** |
 | 3 | 重启后学到的词还在 | 落盘 → 新引擎 + 新 store → 顺序仍然是学过的那个 |
 | 4 | 内存增量可量化且不超预算 | `stele-bench --seed-memory=N`：3 万条 + 真实词库 = **17.8 MiB**（一次运行里新学则 19.4 MiB） |
 | 5 | 坏文件 = 降级 + 警告 | 写入垃圾 → 警告一行、引擎照常打字、**且不覆盖那个文件** |
@@ -598,7 +604,7 @@ cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
 
 # ── 下一词预测（P4b）── **默认关**，要 `--userdb` + `--predict` 两个一起给 ──
 cargo test -p stele-memory --test predict_next       # 对比集 15 条端到端（验收线）
-cargo test -p stele-memory --test no_disk_io_on_keypath   # 按键路径零磁盘 I/O（含预测）
+cargo test -p stele-memory --test no_disk_io_on_keypath   # 用户记忆按键路径零磁盘 I/O（含预测；词典查询仍有 read_at）
 cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
     --userdb /tmp/u.mem --predict --commit-seq=jintian,tianqi,jintian
     # 连续上屏「今天 天气 今天」→ 最后一行 `[预测] 接下来可能打：天气`
@@ -646,10 +652,11 @@ bash scripts/verify-*.sh                               # 四条门禁（含依�
 # ── 与 librime / 上游 Lua 对照 ─────────────────────────────────────
 python3 tools/compare-librime.py                       # 结构对照（6 条）
 cd tools/librime-probe && ./build.sh && ./probe --help  # 驱动真实 librime
-cargo test -p stele-engine --test number_oracle         # 与上游 Lua 逐字节对照
+cargo test -p stele-engine --test number_oracle         # 与上游输出记录逐字节对照
 cargo test -p stele-engine --test calc_oracle           #   （42 + 74 条）
-# 重新生成对照数据（需要 luajit；见 tools/oracle/README.md）：
-luajit tools/oracle/calc_translator/calc.lua > tools/oracle/calc_translator/calc.expected.txt
+# 对照数据是上游程序跑出来的 .expected.txt 存档；
+# **上游 Lua 源码已不随仓库分发**（GPL-3.0-only，审计 J2.3）——
+# 需要重新生成时的取回配方见 tools/oracle/README.md
 cargo run -p stele-cli -- --scheme-dir <目录> --list    # 装载自建方案
 ```
 
@@ -662,8 +669,8 @@ rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 ## 7. 下一步建议
 
 **P4a / P4b 均已完成**（见 §4）——用户记忆（频率 + 时间衰减）与本地下一词预测
-（`Lane::Predict`）都已落地，按键路径仍零磁盘 I/O、延迟无可测变化；
-实测数字在 §0，对比集在 `tools/predict/`。
+（`Lane::Predict`）都已落地，**用户记忆这条路径**仍零磁盘 I/O、延迟无可测变化
+（词库查询仍走 `read_at`）；实测数字在 §0，对比集在 `tools/predict/`。
 
 **阶段 A 的装配缺口已经关掉**（§5 第 36、38 条）：10 个内联零件**全部装配**、
 配置可读、15 条端到端断言守着；"零件名有没有装配分支"现在有可执行的答案
@@ -723,8 +730,11 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 `base` 16.2 MB 是几种来源的混合、`google-10000-english` 作者
 自己写"不建议商用"）。"来源不明"比 GPL 难处理——GPL 至少有规则可循。
 
-`tools/oracle/*.lua` 是上游函数的副本，**只用于测试对照、不参与构建**；
-想彻底避开 GPL 就删掉它们，保留 `.expected.txt`（那是输出事实，不是代码）。
+`tools/oracle/*.lua`（从 rime-ice 复制/改写的纯计算副本）**已在阶段 4 移除**
+（审计 J2.3）：把它们与 MIT/Apache 作品一起分发会把整份分发拖入 GPL。
+保留的是 `.expected.txt` 输出记录（事实，不是代码），对照测试照常工作；
+需要重新生成时的上游 URL + 固定 revision 留在 `tools/oracle/README.md`。
+逐项许可与版权见 `THIRD_PARTY_NOTICES.md`。
 
 ---
 
@@ -764,7 +774,7 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 | **目标** | 频率 + 时间衰减的用户记忆 |
 | **交付物** | 新 crate `stele-memory`（`MemoryStore` 的实现）+ 引擎侧接线 + CLI 开关 |
 | **验收 1** | **打过的词下次优先**：同一个词连续上屏过 N 次后，它排到同码候选之前 |
-| **验收 2** | **按键时零磁盘 I/O**（红线）：按键路径上一次 `read`/`write` 系统调用都不能有 |
+| **验收 2** | **用户记忆的按键路径零磁盘 I/O**（红线）：这条路径上一次 `read`/`write` 系统调用都不能有（词典查询 `TableLexicon` 不在范围内，它按需 `read_at`） |
 | **验收 3** | 进程重启后学到的词还在（持久化可用） |
 | **验收 4** | 内存增量可量化，且不超 §0.2 预算（见 7.6.1 ③） |
 | **验收 5** | 记忆文件坏了 = **降级成"没有记忆"并打印警告**，绝不阻止启动（D26） |
@@ -895,7 +905,7 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 | # | 坑 | 为什么 |
 | --- | --- | --- |
 | 1 | **G10**：拿派生拼写当主键 | 记录**永远检索不到**；症状是"学过的词有时出现有时不出现"。见 7.6.1 ② |
-| 2 | **在按键路径上落盘** | 红线是零磁盘 I/O；RIME 的 P99 36 ms 最大单点瓶颈就是 LevelDB 的磁盘读 |
+| 2 | **在按键路径上落盘** | 红线是**用户记忆这条路径**零磁盘 I/O（词库查询仍 `read_at`）；RIME 的 P99 36 ms 最大单点瓶颈据称是 LevelDB 的磁盘读 |
 | 3 | **衰减用浮点** | 它影响排序 ⇒ 必须可复现（D13）。`MemoryEntry::bonus` 已是定点，别半路引入 `f32` |
 | 4 | **淘汰规则不确定** | 按容器遍历顺序淘汰 ⇒ 同一份数据两次运行淘汰不同条目，违反"可复现" |
 | 5 | **忘了接 `Learned` 事件** | 不报错、只是"学了没记住"。P3 有四个 bug 是这种"接线在、但没被走到"的形状 |
@@ -1034,7 +1044,7 @@ P3.5 已经证明过：许可不明的数据（雾凇那两块）比 GPL 更难�
 | 2 | **两套键空间混进一张表** | 编码键（D42）与上下文键会互相污染，症状是"有时查到奇怪的东西" |
 | 3 | **淘汰规则不确定** | 按容器遍历顺序淘汰 ⇒ 同一份数据两次运行结果不同（与 §5 第 38 条同类的教训） |
 | 4 | **忘了接 `Learned` 事件** | 不报错、只是"学了没记住"——P4a 的头号坑，这里会重演 |
-| 5 | **在按键路径上落盘** | 红线是零磁盘 I/O（P4a 已有一条 `/proc/self/io` 的证伪测试，**扩展它**） |
+| 5 | **在按键路径上落盘** | 红线是**用户记忆路径**零磁盘 I/O（P4a 已有一条 `/proc/self/io` 的证伪测试，**扩展它**；词库查询仍 `read_at`） |
 | 6 | **预测候选没进"猜测"标记** | G12：UI 要能区分"你的习惯"与"通用搭配"（`PredictionOrigin` 已预留） |
 
 ### 7.7.5 明确**不做**的事

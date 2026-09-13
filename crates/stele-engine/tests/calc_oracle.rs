@@ -10,11 +10,13 @@
 //!
 //! 这份测试拿上游当 oracle，逐条比对结果文本。
 //!
-//! ```bash
-//! # 想重新生成对照数据（需要 luajit）：
-//! luajit tools/oracle/calc_translator/calc.lua \
-//!   > tools/oracle/calc_translator/calc.expected.txt
-//! ```
+//! # 上游脚本**不在仓库里**（一轮许可整改的结果）
+//!
+//! 早先这里放着 `calc.lua`（上游脚本副本），它是从 rime-ice 复制/改写的，
+//! 而 rime-ice 是 **GPL-3.0-only**：与本项目一起分发会把整份分发拖进 GPL。
+//! 源码已移除，上游 URL 与固定 revision 记在 `tools/oracle/README.md` 与
+//! `THIRD_PARTY_NOTICES.md`；保留的 `calc.expected.txt` 是**输出事实**，
+//! 对照测试照常工作。
 //!
 //! # 已知的、**有意**的不一致
 //!

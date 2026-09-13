@@ -176,7 +176,31 @@ boost:
 
 #[test]
 fn a_missing_feature_is_reported_not_silently_ignored() {
-    // ① 实例独立词库（审计 §2.G3）：当前不支持 ⇒ 必须有一条降级说明。
+    // ① 拼音族的 `enable_sentence`：上游同款没有这个开关 ⇒ 必须说出来。
+    //
+    // （曾经的另一个例子是"实例独立词库"，它已经实现了——见
+    //   `instance_dictionaries.rs`。这条测试因此只剩这一个例子，
+    //   而"实现之后就不再报"由那条测试的反面断言守着。）
+    let d = Dir::new(
+        "diag-sentence",
+        &schema_with_translator("  enable_sentence: true\n"),
+    );
+    let engine = d.engine();
+    let all: String = engine
+        .degradations()
+        .iter()
+        .map(|(_, n)| (*n).to_owned())
+        .collect();
+    assert!(
+        all.contains("enable_sentence"),
+        "拼音族的 enable_sentence 会被忽略，必须说出来：{all}"
+    );
+}
+
+#[test]
+fn a_parsed_instance_dictionary_is_no_longer_a_degradation() {
+    // 与上一条配对：**实现了的能力不该再报"不生效"**。
+    // 一条与事实相反的警告比没有警告更糟。
     let schema = "\
 schema:
   schema_id: cfg
@@ -194,7 +218,7 @@ translator:
 other:
   dictionary: cfg
 ";
-    let d = Dir::new("diag-dict", schema);
+    let d = Dir::new("diag-dict-ok", schema);
     let engine = d.engine();
     let all: String = engine
         .degradations()
@@ -202,24 +226,8 @@ other:
         .map(|(_, n)| (*n).to_owned())
         .collect();
     assert!(
-        all.contains("other") && all.contains("独立词库"),
-        "实例独立词库还没有实现，必须**说出来**：{all}"
-    );
-
-    // ② 拼音族的 `enable_sentence`：上游同款没有这个开关 ⇒ 也要说。
-    let d = Dir::new(
-        "diag-sentence",
-        &schema_with_translator("  enable_sentence: true\n"),
-    );
-    let engine = d.engine();
-    let all: String = engine
-        .degradations()
-        .iter()
-        .map(|(_, n)| (*n).to_owned())
-        .collect();
-    assert!(
-        all.contains("enable_sentence"),
-        "拼音族的 enable_sentence 会被忽略，必须说出来：{all}"
+        !all.contains("独立词库"),
+        "实例词库已经装配上了，不该再报「不生效」：{all}"
     );
 }
 

@@ -20,9 +20,10 @@
 2. RIME 是目前唯一可用的替代，但**依赖重**（Boost + LevelDB + marisa + OpenCC + yaml-cpp + glog）、构建复杂，且关键行为大量寄生在 Lua 插件上。
 3. 因此：**做一个更小、更快、更可配置的引擎**，而不是"又一个 RIME 前端"。
 4. **第三根支柱：离线与隐私的明确承诺。**
-   - 经查证，**RIME 的官方设计文档中找不到任何关于隐私、离线或数据本地化的承诺**（三份独立对比报告一致确认 NOT FOUND）；相反，作者 2009 年的开发计划第三期写的是「**添加網絡功能**」。
-   - 所以"离线 + 隐私"**不是 RIME 的既有卖点，而是 Stele 可以立起来的新旗帜**（§5.5 铁律）。
-   - **不记录按键日志、不做遥测、不发网络请求**——这三条要写进面向用户的承诺里，而不只是内部约定。
+   - 经查证，**RIME 的官方设计文档中找不到任何关于隐私、离线或数据本地化的承诺**（三份独立对比报告一致确认 NOT FOUND）；作者 2009 年的开发计划第三期出现「**添加網絡功能**」。
+   - **但这不能反推"librime 必不保护隐私"**：librime 本身是 BSD-3-Clause，"是否联网"取决于具体前端、部署、插件与用户配置，需逐项审计（审计 §3.1）。以上只是"上游文档没把隐私写成承诺"这一**事实**。
+   - 所以"离线 + 隐私"**不是 RIME 的既有卖点，而是 Stele 自己可以立起来、并且必须自己兑现的旗帜**（§5.5 铁律）。
+   - **不记录按键日志、不做遥测、不发网络请求**——这三条要写进面向用户的承诺里，而不只是内部约定；边界与"什么只是合同、什么已被代码核实"见 `docs/privacy-model.md`。
 
 ### 0.2 硬指标（不可退让的红线）
 
@@ -55,7 +56,7 @@
 | D7 | ~~AI = 本地轻量 embedding，只做偏好重排~~ | 方向保留，**优先级下调**：见 D19 | **已修订** |
 | D8 | 开发环境 **WSL2 Ubuntu**，仓库放 ext4 | 最快的内核迭代循环 | 已定 |
 | D9 | 核心 crate **零第三方依赖优先** | 供应链安全、可审计。**限定为 `stele-core` / `stele-engine`**；周边 crate 允许受审依赖 | **已修订** |
-| D10 | **词典数据与模型不随项目分发** | rime-ice 为 GPL-3.0，且内部词源含 LDC 限制条款；本地编译属个人使用，分发才产生义务 | 已定 |
+| D10 | **第三方的原始词典数据与模型不随项目分发**；由 MIT/Apache-2.0 来源**生成**的默认词库随仓库分发（逐项见 `THIRD_PARTY_NOTICES.md`） | rime-ice 为 GPL-3.0-only，且内部词源含限制性条款；本地取回与编译属个人使用，分发才产生义务。注意：`schemes/stele-default/cn_dicts/generated.dict.yaml` 是已跟踪的派生产物，**不适用**"什么都未分发"的说法 | 已定 |
 | D11 | 词典**格式**沿用 `.dict.yaml` 兼容写法，**数据自建/后置** | 格式是我们要长期支持的接口；自建数据可让权重可解释、无许可风险 | 已定 |
 | D12 | 引擎抽象拆为 **`Engine`（共享）+ `Session`（私有）** | 共享昂贵的词库，隔离廉价的会话状态；同时获得编译期的线程安全保证 | 已定 |
 | D13 | 候选分数使用**对数域** | 概率连乘变连加，避免下溢；重排器可直接加减贡献 | **已定：对数域 + 定点整数 `Score(i32)`** |
@@ -215,8 +216,8 @@ stele/
 | **P2.5** | 词库编译器 | 流式编译 → 紧凑二进制 + mmap 加载 | 产物/源 < 3×；部署峰值 < 150 MB；`Lexicon` 实现可整体替换 |
 | **P3** | 方案行为复刻 | 零件集 + 配置校验 + **分层补丁与 `--dump-config`**；跑通 `others/no_lua_schema` | 与 librime 的对照测试通过（对照工装仅用于测试） |
 | **P3.5** ✅ | **默认方案（开箱即用）** | `schemes/stele-default`：自有方案 YAML + **41 万条**词库 + OpenCC 数据装载 | ✅ 装上就能打字（实测：`stele --scheme-dir schemes/stele-default nihao` → 你好）；**内核里没有任何它的痕迹**（门禁守） |
-| **P4a** ✅ | 用户记忆：频率 + 时间衰减 | `stele-memory`（**自写紧凑 KV**，零依赖 + 内存缓存）+ 引擎侧 `Services` 注入 + CLI `--userdb` | ✅ 打过的词下次优先（端到端：同码两个词，选中 4 次后反超）；✅ **按键时零磁盘 I/O**（`/proc/self/io` 的 `syscr`/`syscw` 与字节数在 1000 次按键后一个都没涨）；✅ 重启后还在；✅ 内存增量实测 3 万条 +5.8 MiB（真实词库 + 记忆 = 17.8 MiB < 30 MB）；✅ 坏文件降级成"没有记忆"+ 一行警告（D26） |
-| **P4b** ✅ | **本地下一词预测**（`Lane::Predict`） | `stele-memory` 的**预测表**（bigram + trigram，键 = **上下文**）+ 流水线插入 + CLI `--predict`（**默认关**） | ✅ 对比集 `tools/predict/collocations.tsv`（15 条常见搭配）**端到端全过**：学过之后期望词是预测通道的**第 1 位**（`cargo test -p stele-memory --test predict_next`）；✅ 内存增量实测约 **4.0 MiB**（默认 20 000 条 × ≈210 B/条）< 5 MB；✅ 按键延迟与无预测**无可测差异**（P50 约 48 µs / P99 约 104 µs，真实词库）；✅ **按键时零磁盘 I/O**（`/proc/self/io` 那条测试已扩展到预测）；神经模型**撞红线，暂缓**。执行书见 `docs/HANDOFF.md` §7.7 |
+| **P4a** ✅ | 用户记忆：频率 + 时间衰减 | `stele-memory`（**自写紧凑 KV**，零依赖 + 内存缓存）+ 引擎侧 `Services` 注入 + CLI `--userdb` | ✅ 打过的词下次优先（端到端：同码两个词，选中 4 次后反超）；✅ **用户记忆的按键路径零磁盘 I/O**（`/proc/self/io` 的 `syscr`/`syscw` 与字节数在 1000 次按键后一个都没涨；**注意这是记忆路径的性质，词库查询 `TableLexicon` 仍用 `read_at`**）；✅ 重启后还在；✅ 内存增量实测 3 万条 +5.8 MiB（真实词库 + 记忆 = 17.8 MiB < 30 MB）；✅ 坏文件降级成"没有记忆"+ 一行警告（D26） |
+| **P4b** ✅ | **本地下一词预测**（`Lane::Predict`） | `stele-memory` 的**预测表**（bigram + trigram，键 = **上下文**）+ 流水线插入 + CLI `--predict`（**默认关**） | ✅ 对比集 `tools/predict/collocations.tsv`（15 条常见搭配）**端到端全过**：学过之后期望词是预测通道的**第 1 位**（`cargo test -p stele-memory --test predict_next`）；✅ 内存增量实测约 **4.0 MiB**（默认 20 000 条 × ≈210 B/条）< 5 MB；✅ 按键延迟与无预测**无可测差异**（P50 约 48 µs / P99 约 104 µs，真实词库）；✅ **用户记忆与预测的按键路径零磁盘 I/O**（`/proc/self/io` 那条测试已扩展到预测；词库查询仍走 `read_at`）；神经模型**撞红线，暂缓**。执行书见 `docs/HANDOFF.md` §7.7 |
 | **P5** | 向量偏好重排（**第一版已落地，默认关**） | `stele-embed` + 量化 | **可行性评审 + 第一版**（2026-09）：`docs/embed-design.md`（执行书与实测）、`docs/p5-vector-feasibility.md`（评审）。**本地、无模型、零依赖**：把用户本地历史里的 `(上下文 → 下一个词)` 计数投影成 `i16` 向量，在 `Lane::Input` 上加有界偏好分（前 3 名、≤4000 毫对数）。**默认关闭**（D46 第①条）。实测：对比集 3/3（基线 1/3，无回归）、向量表 **2.44 MiB @ 4 万词**、装载峰值约 +9 MiB、按键延迟无可测变化。**收益证据仍然很小（3 条自造用例）**，下一步是所有者手写更大的对比集，并把两步共现/子词回退补上 |
 | **P6** | Windows 前端 | 引擎独立进程 + TSF 组件 | Windows 真机可打字 |
 | **P7** | Android 前端 | `InputMethodService` + JNI | 真机可打字；内存达标 |
@@ -827,7 +828,9 @@ tools/oracle/<零件>/
 
 - **文件大 ≠ 内存大**：词典用 mmap 按需分页，真正危险的是**部署峰值内存**与**产物体积**，不是稳态常驻。
 - **渲染可能比引擎慢两个数量级**：Weasel 仅把 Direct2D 渲染目标改为 SOFTWARE，首次输入延迟即从 260–820 ms 降到 42–98 ms（中位 73 ms），而引擎本身只要约 0.5 ms。**P6/P7 的候选窗渲染性能必须当作一等公民。**
-- **按键时零磁盘 I/O**：RIME 的 P99 高达 36 ms，最大的单点瓶颈是 LevelDB 的磁盘读取。P4a 必须把用户词库全量放内存，改动异步批量落盘。
+- **用户记忆的按键路径零磁盘 I/O**：RIME 的 P99 36 ms 里，最大的单点瓶颈据称是 LevelDB 的磁盘读取。P4a 把用户词库全量放内存、异步批量落盘。
+  **这不是"整条按键路径零 I/O"**：词库查询（`TableLexicon`）仍按需走 `read_at`，
+  冷页缓存下每次查询两次 `read_at`（§9 与 HANDOFF §0 的读法）。审计 §0.2 明确反对把它写成绝对承诺。
 
 ---
 
@@ -837,10 +840,12 @@ tools/oracle/<零件>/
 
 | 对象 | 许可 | 影响 |
 | --- | --- | --- |
-| **librime** | BSD-3-Clause | 引擎可放心参考（D4） |
-| **rime-ice 仓库** | **GPL-3.0-only** | 随项目分发其数据会触发传染 |
+| **librime** | BSD-3-Clause | 引擎可放心参考（D4）；`tools/librime-probe/probe.c` 逐字段抄了其 ABI 声明，按 BSD-3-Clause 保留声明（见 `licenses/BSD-3-Clause-librime.txt`） |
+| **rime-ice 仓库** | **GPL-3.0-only** | 随项目分发其数据会触发传染。其 `opencc/emoji.*` 也在 GPL 之下（旧脚本误标为 Apache-2.0，已纠正）——本仓库**不分发**它们 |
+| **Rime 官方 wiki** | **未声明**（UNVERIFIED） | `reference/wiki-*.md` 是逐字副本；许可状态未确定，见 `THIRD_PARTY_NOTICES.md` §5.3 |
 | radical_pinyin（拆字） | GPL-3.0 | 不可随 MIT / Apache 项目分发 |
 | THUOCL、pinyin-data | MIT | 可分发（需署名） |
+| jieba（`extra_dict/dict.txt.big`） | MIT | 可分发（需署名） |
 | rime-melt（melt_eng） | Apache-2.0 | 可分发（需署名） |
 | rime-essay-simp | LGPL-3.0 | 不可随 MIT / Apache 项目分发 |
 | google-10000-english（英文库） | **LDC 限制**：仅"教育及个人研究" | 商业用途需另行授权 |
@@ -854,6 +859,25 @@ tools/oracle/<零件>/
 3. 引擎先用手写小词库验证；**是否引入外部数据推迟到 P1 / P2 完成之后**，届时按上表逐项评估。
 4. **这个策略与性能目标方向一致**：RIME 本来就必须在部署期编译词典才能快，所以"本地编译"既是法律上最干净的做法，也是工程上最优的做法。
 
+**实际分发的内容（阶段 4 / 审计 J2 核实，2026-09）**
+
+上面讲的是"不分发什么"。**实际随仓库分发的第三方内容是这些**：
+
+1. `schemes/stele-default/cn_dicts/generated.dict.yaml` —— 41 万条，
+   由 pinyin-data / THUOCL / jieba（MIT）与 OpenCC `TSCharacters.txt`
+   （Apache-2.0）生成；`pinyin.schema.yaml` 的 `speller.alphabet` 段同源。
+2. `tools/librime-probe/probe.c` —— 含逐字段抄自 librime（BSD-3-Clause）的
+   结构体 / 宏声明。
+3. `reference/wiki-*.md` —— Rime 官方 wiki 两页的**逐字副本**，
+   **许可状态未确定**（`THIRD_PARTY_NOTICES.md` §5.3 已标为待决）。
+4. `tools/oracle/*/*.expected.txt`、`tools/librime-probe/samples/*` ——
+   上游程序跑出来的**输出记录**（数据 / 事实，不是上游源代码）。
+
+逐项的 artifact、上游 URL、**固定 revision**、版权、许可、是否修改与
+许可文本位置，全部在根目录 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；
+许可证文本在 `licenses/`；下载来源的固定 revision 与 sha256 在已跟踪的
+`tools/sources.lock`。**三处必须同步更新。**
+
 **P3.5 定下的三条边界**（与项目所有者共同确认，2026-09）
 
 1. **Stele 保持 MIT / Apache-2.0**。内核、零件、默认方案的数据都是自有代码。
@@ -862,6 +886,10 @@ tools/oracle/<零件>/
    这也顺带避开一个更细的坑：那些脚本带着 Lua 的痕迹
    （`yield` 流式产出、`env` 全局表、字符串 `gsub`），逐行翻译会把
    痕迹搬进 Rust，而类型系统本来能做得更好。
+   **阶段 4 补记（审计 J2.3）**：`tools/oracle/` 下曾有三份从 rime-ice
+   复制/改写的 `.lua`（`calc.lua`、`number_to_chinese.lua`、`calc_probe.lua`），
+   它们与这条边界冲突，**已移除**；只保留 `.expected.txt` 输出记录，
+   上游 URL 与固定 revision 留在 `tools/oracle/README.md`。
 3. **雾凇的词表不进仓库**，由用户部署时自取。理由不只是"GPL 要传染"：
    那 44 MB 里最大的两块（`tencent` 16.9 MB、`base` 16.2 MB）是
    **来源不明或明确限制**的，而"来源不明"比 GPL 更难处理——
@@ -925,7 +953,7 @@ tools/oracle/<零件>/
 - **最有价值的三个发现**：
   1. **`Source` 是有损的**——RIME 的拼写属性（模糊/缩略）是**可叠加的位集**，单选题表达不了。已拆为 `Origin` + `SpellingAttr`。
   2. **用户词主键必须是规范编码**——否则会变成"永远检索不到的无效数据"，症状是"学过的词有时出现有时不出现"。
-  3. **RIME 从未承诺隐私与离线**——官方文档 NOT FOUND，且作者第三期计划是「添加網絡功能」。**这是 Stele 能立的新旗帜**，已提升为 §0.1 的第三根支柱。
+  3. **RIME 的官方文档没有把隐私与离线写成承诺**——文档 NOT FOUND，且作者早期计划里出现「添加網絡功能」。**这是 Stele 可以立自己旗帜的地方**，已提升为 §0.1 的第三根支柱。**但不能由此推断"Rime 不隐私/会联网"**：librime 是 BSD-3-Clause，是否联网取决于前端、部署、插件与配置（审计 §3.1）。
 - **重写风险审计**（§14.2）又发现并修掉 4 个地基问题：`Engine` 与方案目录的角色冲突、缺 `switch_schema`、缺 `tick` 时序预留、公开枚举不可扩展。
 - 新增 **D29 方案切换**、**D30 审计修正**、**D31 项目命名**。
 

@@ -12,12 +12,19 @@
 
 ```bash
 # ① 取回源数据（一次网络访问；落进 schemes/stele-default/build/，该目录被 gitignore）
+#    下载地址固定到 commit SHA，清单是**已跟踪的** tools/sources.lock
 bash tools/fetch-sources.sh
 
 # ② 编成词库 + 同步方案的音节表
 cargo run --release --manifest-path tools/wordlist-gen/Cargo.toml -- \
     --sources schemes/stele-default/build --out schemes/stele-default
 ```
+
+**可复现来源（阶段 4 / 审计 J2.2）**：`tools/sources.lock` 是权威清单，
+每条记录含**固定到 commit SHA 的 URL**、revision、SPDX 许可、版权行、
+sha256 与说明。旧版用的是浮动 `main` / `master`，且 sha256 只记在
+`build/sources.lock`（gitignore 目录里，克隆的人看不到）——两者都已改正。
+`fetch-sources.sh` 取回后逐条校验 sha256，不一致就报错停下。
 
 产物落在 **`schemes/stele-default/cn_dicts/generated.dict.yaml`**，
 由主词典 `pinyin.dict.yaml`（一个**导入清单**）通过 `import_tables` 引用。
@@ -36,15 +43,22 @@ cargo run --release --manifest-path tools/wordlist-gen/Cargo.toml -- \
 | `jieba_dict.txt` | [`fxsjy/jieba`](https://github.com/fxsjy/jieba) 的 `extra_dict/dict.txt.big` | MIT | **通用**词表 58 万条（`词 词频 词性`） |
 | `THUOCL_*.txt` | [`thunlp/THUOCL`](https://github.com/thunlp/THUOCL) | MIT | 8 份分领域词表（IT / 法律 / 医学 / 汽车 / 饮食 / 历史名人 / 成语 / 诗词），带语料词频 |
 | `opencc/ST*.txt`、`TSCharacters.txt` | [`BYVoid/OpenCC`](https://github.com/BYVoid/OpenCC) | Apache-2.0 | 简繁转换表；`TSCharacters` 同时用于**滤掉繁体词条** |
-| `emoji/*` | [`iDvel/rime-ice`](https://github.com/iDvel/rime-ice) 的 `opencc/` | Apache-2.0 | 中文 → emoji 转换表 |
+| `emoji/*` | [`iDvel/rime-ice`](https://github.com/iDvel/rime-ice) 的 `opencc/` | **GPL-3.0-only** | 中文 → emoji 转换表（**不分发**；旧文档误标 Apache-2.0） |
 
-**为什么源数据不进仓库**：这九份都是可分发的（MIT / Apache-2.0），
+> 每条来源的固定 revision、版权行与 sha256 见 `tools/sources.lock`；
+> 逐项的 artifact / 版权 / 许可文本见根目录 `THIRD_PARTY_NOTICES.md`。
+
+**为什么源数据不进仓库**：其中大部分是可分发的（MIT / Apache-2.0），
 但"数据的来源与许可"是使用者要能**自己核对**的东西，所以 `build/`
 在 `.gitignore` 里，由 `fetch-sources.sh` 按需取回、并用 sha256 记录在
-`build/sources.lock`（上游改过数据时会报出来）。
+`tools/sources.lock`（上游改过数据时会报出来）。
+**`emoji/*` 是 GPL-3.0-only**：本仓库不分发它们，也不把它们的任何内容
+编译进已跟踪的产物；使用者若再分发自己 `build/` 下的副本，
+需自行满足 GPL-3.0 的义务。
 
-**生成的 `.dict.yaml` 进仓库**：它是 MIT 数据的产物，且"克隆下来就能打字"
-需要它。
+**生成的 `.dict.yaml` 进仓库**：它是 MIT / Apache-2.0 数据的派生产物，
+且"克隆下来就能打字"需要它。它**确实包含第三方派生数据**——
+不要再说"本仓库不包含第三方词典数据"（旧 README 的说法与事实不符）。
 
 **雾凇（rime-ice）那 44 MB 词表仍然不进仓库**：仓库许可是 GPL-3.0，
 而里面最大的两块（腾讯词向量、`base`）**来源不明或明确限制**——

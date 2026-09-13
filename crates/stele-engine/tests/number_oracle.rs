@@ -8,27 +8,20 @@
 //!
 //! 于是测试的做法是：
 //!
-//! 1. `tools/oracle/number_translator/number_to_chinese.lua` —— **上游那套函数的副本**
-//!    （只有纯计算部分，剥掉了 RIME 的 `env`/`yield` 接口）；
-//! 2. `tools/oracle/number_translator/number_to_chinese.expected.txt` —— 它的实际输出，
-//!    由 `luajit` 跑出来存档；
-//! 3. 本文件把 stele 的输出与那份存档逐条比对。
+//! 1. `tools/oracle/number_translator/number_to_chinese.expected.txt`
+//!    —— 上游实现的**实际输出存档**（当时用 `luajit` 跑出来）；
+//! 2. 本文件把 stele 的输出与那份存档逐条比对。
 //!
-//! ```bash
-//! # 想重新生成对照数据（需要 luajit）：
-//! luajit tools/oracle/number_translator/number_to_chinese.lua \
-//!   > tools/oracle/number_translator/number_to_chinese.expected.txt
-//! ```
+//! # 上游脚本**不在仓库里**（一轮许可整改的结果）
 //!
-//! # 为什么把 upstream 的副本放进仓库
+//! 早先这里放着 `number_to_chinese.lua`（上游函数副本）。它是从 rime-ice
+//! 复制/改写的，而 rime-ice 是 **GPL-3.0-only**；把它与 MIT/Apache 的
+//! 本项目一起分发会把整份分发拖进 GPL。**源码已移除**，
+//! 上游 URL 与固定 revision 记在 `tools/oracle/README.md` 与
+//! `THIRD_PARTY_NOTICES.md`。
 //!
-//! 这不是"把 GPL 代码抄进来"——那份 `.lua` **只用于测试对照**，
-//! 不参与构建、不进二进制（`build.rs` 与 `include!` 都没有用它）。
-//! 它是**实验记录**：没有它，"我们与上游一致"这句话就无法被复核。
-//!
-//! 如果你要彻底避开 GPL，删掉 `tools/oracle/*/*.lua` 与重新生成的说明，
-//! 保留 `.expected.txt`（那是**输出事实**，不是代码）——
-//! 对照测试照常工作。
+//! 保留下来的是 `.expected.txt`：那是**输出事实**，不是代码，
+//! 因此对照测试照常工作——"我们与上游一致"这句话仍然可被复核。
 //!
 //! # 它为什么不在本 crate 里
 //!

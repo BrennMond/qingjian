@@ -5,6 +5,6 @@ version: "1.0"
 sort: by_weight
 ...
 
-ni	你
-hao	好
-shi	十
+你	ni
+好	hao
+十	shi

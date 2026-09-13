@@ -42,7 +42,9 @@
 | 上游源码副本（librime、rime-ice、Rime wiki） | 否 | `.rime-wiki/`、`.rime-research/`（研究用，不入库） |
 | registry 第三方依赖 | **无** | `Cargo.lock` 只含 workspace 成员；见 §4 |
 
-`git ls-files` 共 181 个已跟踪文件；本文件逐项覆盖其中所有第三方来源或派生内容。
+`git ls-files` 在整改前（提交 `ad936c2`）共 181 个已跟踪文件；
+本文件逐项覆盖其中所有第三方来源或派生内容。整改新增的文件
+（`licenses/`、`tools/sources.lock`、本文等）与移除的文件在 §5 / §6 说明。
 
 ---
 
@@ -314,7 +316,7 @@ commit SHA 本身不可变，因此这个引用是稳定的、可复现的。
 ### 6.1 枚举已跟踪内容
 
 ```bash
-git ls-files | wc -l          # → 181
+git ls-files | wc -l          # → 181（整改前的基线；整改后含新增/删除，见 §5）
 git ls-files tools/ schemes/  # 逐条核对本文的路径
 ```
 

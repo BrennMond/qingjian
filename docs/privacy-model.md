@@ -159,7 +159,7 @@ opts.mode(0o600);   // #[cfg(unix)]
 
 ### 3.4 落盘时机：按键路径一次都不碰
 
-按键路径**零磁盘 I/O** 是红线，由
+**用户记忆这条路径**的按键**零磁盘 I/O** 是红线，由
 `crates/stele-memory/tests/no_disk_io_on_keypath.rs` 用 `/proc/self/io` 的
 `syscr`/`syscw` 守着。写盘只发生在 `flush()`——由前端在
 "空闲 debounce / `onStop` / `onTrimMemory` / 正常退出"时调用
@@ -371,7 +371,7 @@ pub fn apply_events_with_policy(
 | --- | --- |
 | 引擎不做网络请求、不发遥测 | §1.2 的符号搜索；`Cargo.lock` 0 个 registry 依赖 |
 | 用户记忆**默认关闭** | `crates/stele-cli/src/main.rs`（不给 `--userdb` 即无记忆） |
-| 按键路径零磁盘 I/O | `tests/no_disk_io_on_keypath.rs`（`/proc/self/io`） |
+| 用户记忆的按键路径零磁盘 I/O（词库查询仍 `read_at`） | `tests/no_disk_io_on_keypath.rs`（`/proc/self/io`） |
 | 记忆文件 Unix `0600` | `store.rs: write_private()`；`tests/persistence_failures.rs::the_memory_file_is_owner_only` |
 | 坏文件不自动覆盖 | `open_or_degrade` + `writable == false` |
 | 不记按键日志 | §2：只存**提交过的词**、编码、上下文与计数/时间 |

@@ -790,14 +790,59 @@ fn load_from_root(
             components::read_translator(t, "script_translator", None),
         ));
     }
+    let mut extra_lexicons: Vec<(String, stele_engine::scheme::DictSource)> = Vec::new();
     for name in &engine_spec.translators {
         let (component, alias) = stele_engine::spec::split_alias(name);
         let Some(a) = alias else { continue };
         if let Some(block) = root.get(a) {
-            translator_specs.push((
-                a.to_owned(),
-                components::read_translator(block, component, Some(a)),
-            ));
+            let spec = components::read_translator(block, component, Some(a));
+            translator_specs.push((a.to_owned(), spec.clone()));
+
+            // **每个实例的独立词库**（审计 §2.G3）。
+            //
+            // 这是审计的点名复现：构造两个 `script_translator`，主词库含「甲」、
+            // `script_translator@other` 的词库含「乙」，输入同码只得到「甲」
+            // ——装配路径持续使用主词库，`TranslatorSpec.dictionary` 被丢掉。
+            //
+            // 装载策略与主词库**完全一致**（内联读表 / 部署编译），
+            // 因为"实例词库"与"主词库"没有任何语义差别。
+            if let Some(dict_name) = spec.dictionary.as_deref().filter(|d| !d.is_empty()) {
+                let loaded: Result<stele_engine::scheme::DictSource, Diagnostic> = match *mode {
+                    DictMode::Inline => {
+                        match dict::load_with_imports(dicts, dict_name, dict_name) {
+                            Ok(l) => Ok(stele_engine::scheme::DictSource::Inline(
+                                l.entries
+                                    .iter()
+                                    .map(|e| entry(&e.units(), &e.word, e.weight))
+                                    .collect(),
+                            )),
+                            Err(e) => Err(Diagnostic::new(
+                                path,
+                                format!("实例 `{a}` 的词库 `{dict_name}` 装载失败：{e}"),
+                            )
+                            .with_field(format!("{a}.dictionary"))),
+                        }
+                    }
+                    DictMode::Deployed(cache) => {
+                        deploy_dict(dicts, dict_name, &alphabet_ids, cache)
+                            .map(stele_engine::scheme::DictSource::External)
+                            .map_err(|d| {
+                                Diagnostic::new(
+                                    path,
+                                    format!(
+                                        "实例 `{a}` 的词库 `{dict_name}` 部署失败：{}",
+                                        d.message
+                                    ),
+                                )
+                                .with_field(format!("{a}.dictionary"))
+                            })
+                    }
+                };
+                match loaded {
+                    Ok(src) => extra_lexicons.push((a.to_owned(), src)),
+                    Err(d) => diags.push(d),
+                }
+            }
         }
     }
 
@@ -886,6 +931,7 @@ fn load_from_root(
             reverse_lookups,
             converters,
             translator_specs,
+            extra_lexicons,
             input_alphabet,
             page_size,
             inline,

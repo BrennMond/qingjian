@@ -24,7 +24,11 @@ converters:
   - name: emoji
     config: build/emoji/emoji.json
     source: rime-ice 的 opencc/emoji.json + emoji.txt + others.txt
-    license: Apache-2.0
+    # ⚠️ **不是 Apache-2.0**：rime-ice 是 GPL-3.0-only（`tools/sources.lock`
+    # 里逐条记着 revision 与许可）。这里此前写成 Apache-2.0，是错的。
+    # 该数据**不随本仓库分发**（只在本地 `tools/fetch-sources.sh` 取回），
+    # 因此不构成分发；但方案资产里的标注必须与事实一致。
+    license: GPL-3.0-only
     purpose: 把「微笑」这类词转成 emoji 候选（开关 emoji）
 
   - name: traditionalize

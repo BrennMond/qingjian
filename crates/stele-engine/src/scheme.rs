@@ -146,6 +146,16 @@ pub struct SchemeDef {
     )>,
     /// 表驱动翻译器（按别名索引）。
     pub translator_specs: Vec<(String, crate::spec::TranslatorSpec)>,
+    /// **每个 `@别名` 翻译器实例的独立词库**（审计 §2.G3）。
+    ///
+    /// # 为什么它是独立的字段，而不是从 `translator_specs` 里推
+    ///
+    /// `translator_specs` 存的是**配置**（`dictionary: other`），而引擎需要
+    /// 的是**已经造好的词库**。装载器负责把名字变成词库（内联读表 /
+    /// 部署编译），引擎负责按别名取用——这条分工与主词库完全一致。
+    ///
+    /// 别名不在这个列表里的实例，落到主词库（`dictionary`）。
+    pub extra_lexicons: Vec<(String, DictSource)>,
     /// `speller.alphabet` 里声明的字符（用于限制输入）。
     pub input_alphabet: Vec<char>,
     /// 每页候选数（显示参数）。
@@ -297,6 +307,27 @@ impl SchemeDef {
             DictSource::External(l) => Arc::clone(l),
         };
 
+        // **每个实例的独立词库**（审计 §2.G3）：与主词库走同一条物化路径。
+        let mut extra_lexicons: Vec<(String, Arc<dyn stele_core::Lexicon>)> =
+            Vec::with_capacity(self.extra_lexicons.len());
+        for (alias, src) in &self.extra_lexicons {
+            let lex: Arc<dyn stele_core::Lexicon> = match src {
+                DictSource::Inline(v) => {
+                    Arc::new(InMemoryLexicon::from_entries(alphabet.clone(), v).map_err(
+                        |e: LexiconError| SchemaError::Invalid {
+                            schema_id: self.info.schema_id.clone(),
+                            diagnostics: vec![stele_core::Diagnostic::new(
+                                format!("scheme:{}/{}", self.info.schema_id, alias),
+                                e.to_string(),
+                            )],
+                        },
+                    )?)
+                }
+                DictSource::External(l) => Arc::clone(l),
+            };
+            extra_lexicons.push((alias.clone(), lex));
+        }
+
         let spelling = match self.translator {
             TranslatorKind::ExactCode => None,
             TranslatorKind::SpellingGraph => Some(Arc::new(SpellingTable::compile(
@@ -343,6 +374,7 @@ impl SchemeDef {
             reverse_lookups: self.reverse_lookups.clone(),
             converters: self.converters.clone(),
             translator_specs: self.translator_specs.clone(),
+            extra_lexicons,
             input_alphabet: self.input_alphabet.clone(),
             page_size: self.page_size,
             external_data: self.external_data.clone(),
@@ -364,12 +396,17 @@ impl SchemeDef {
     fn check_translator_specs(&self, degraded: &mut Vec<String>) {
         for (alias, spec) in &self.translator_specs {
             // ① 实例独立词库（审计 §2.G3）。
-            if !alias.is_empty() {
-                if let Some(d) = &spec.dictionary {
+            //
+            // **只在词库真的没装配上时才出声**：`extra_lexicons` 里有这个
+            // 别名（装载器已经把它造好了）就不该再报"不生效"——那会变成
+            // 一条与事实相反的警告，比没有警告更糟。
+            if !alias.is_empty() && spec.dictionary.is_some() {
+                let assembled = self.extra_lexicons.iter().any(|(a, _)| a == alias);
+                if !assembled {
+                    let d = spec.dictionary.as_deref().unwrap_or_default();
                     degraded.push(format!(
-                        "翻译器实例 `{alias}` 声明了独立词库 `{d}`，但引擎当前只有一份词库\
-                         （`SchemeDef::dictionary`）——该实例查的是**主词库**。\
-                         这是本项目的缺口（审计 §2.G3），不是方案写错了。"
+                        "翻译器实例 `{alias}` 声明了独立词库 `{d}`，但装载器没有把它造出来\
+                         ——该实例会退回主词库。请看装载期的诊断（通常是词库文件缺失或编码非法）。"
                     ));
                 }
             }
@@ -577,6 +614,8 @@ pub struct LoadedScheme {
         crate::spec::SimplifierSpec,
     )>,
     translator_specs: Vec<(String, crate::spec::TranslatorSpec)>,
+    /// 每个 `@别名` 实例的独立词库（见 [`SchemeDef::extra_lexicons`]）。
+    extra_lexicons: Vec<(String, Arc<dyn stele_core::Lexicon>)>,
     input_alphabet: Vec<char>,
     page_size: usize,
     /// 内联零件的配置（见 [`SchemeDef::inline`]）。
@@ -663,6 +702,20 @@ impl LoadedScheme {
             .iter()
             .find(|e| e.alias == alias)
             .map(|e| e.present)
+    }
+
+    /// 某个翻译器实例该用哪本词库（审计 §2.G3）。
+    ///
+    /// 别名没有独立词库时**落到主词库**——这是 RIME 的默认行为
+    /// （实例不写 `dictionary` 就继承方案级的那本）。
+    #[must_use]
+    pub fn lexicon_for(&self, alias: &str) -> Arc<dyn stele_core::Lexicon> {
+        if !alias.is_empty() {
+            if let Some((_, lex)) = self.extra_lexicons.iter().find(|(a, _)| a == alias) {
+                return Arc::clone(lex);
+            }
+        }
+        Arc::clone(&self.lexicon)
     }
 
     /// 某个翻译器实例的配置（`alias` 为空 = 方案级的默认那份）。
@@ -986,6 +1039,9 @@ impl LoadedSchema for LoadedScheme {
                     continue;
                 };
                 let spec = transl(alias.unwrap_or(""));
+                // **按实例选词库**（审计 §2.G3）：`script_translator@other`
+                // 查的是它自己那本，不是主词库。
+                let instance_lexicon = self.lexicon_for(alias.unwrap_or(""));
                 // 带前缀的实例交给词缀切分器剥前缀，翻译器只看正文。
                 let Some(prefix_tag) = self
                     .affixes
@@ -999,7 +1055,7 @@ impl LoadedSchema for LoadedScheme {
                         kind,
                         &spec,
                         &self.alphabet,
-                        &self.lexicon,
+                        &instance_lexicon,
                         self.spelling.as_ref(),
                     ));
                     continue;
@@ -1011,7 +1067,7 @@ impl LoadedSchema for LoadedScheme {
                             kind,
                             &spec,
                             &self.alphabet,
-                            &self.lexicon,
+                            &instance_lexicon,
                             self.spelling.as_ref(),
                         ),
                         vec![prefix_tag],
