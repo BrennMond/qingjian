@@ -97,8 +97,8 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "select_character",
         slot: Slot::Processor,
-        availability: Availability::NeedsData,
-        note: "以词定字",
+        availability: Availability::Implemented,
+        note: "以词定字（用标点/数字从候选里定字）",
     },
     Entry {
         name: "selector",
@@ -121,32 +121,32 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "ascii_composer",
         slot: Slot::Processor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "中英切换、Shift/Caps 处理",
     },
     Entry {
         name: "navigator",
         slot: Slot::Processor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "翻页键",
     },
     Entry {
         name: "punctuator",
         slot: Slot::Processor,
-        availability: Availability::NotYet,
-        note: "标点直出",
+        availability: Availability::Implemented,
+        note: "标点直出与符号表",
     },
     Entry {
         name: "key_binder",
         slot: Slot::Processor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "按键重绑定",
     },
     Entry {
         name: "recognizer",
         slot: Slot::Processor,
-        availability: Availability::NotYet,
-        note: "前缀模式（uU / R / N / cC / v）",
+        availability: Availability::Implemented,
+        note: "前缀模式扫描（认出 → 打标签）",
     },
     Entry {
         name: "chord_composer",
@@ -157,7 +157,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "affix_segmentor",
         slot: Slot::Segmentor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "带前缀/后缀的切分（拆字辅码用）",
     },
     // ── 切分器 ──
@@ -176,13 +176,13 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "matcher",
         slot: Slot::Segmentor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "按 recognizer 的模式切分",
     },
     Entry {
         name: "punct_segmentor",
         slot: Slot::Segmentor,
-        availability: Availability::NotYet,
+        availability: Availability::Implemented,
         note: "标点段",
     },
     Entry {
@@ -207,8 +207,8 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "punct_translator",
         slot: Slot::Translator,
-        availability: Availability::NotYet,
-        note: "标点候选",
+        availability: Availability::Implemented,
+        note: "标点候选（含符号表）",
     },
     Entry {
         name: "echo_translator",
@@ -238,8 +238,8 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "reverse_lookup_filter",
         slot: Slot::Filter,
-        availability: Availability::NeedsData,
-        note: "反查提示（需反查词典）",
+        availability: Availability::Implemented,
+        note: "反查提示（数据由装载器提供）",
     },
     Entry {
         name: "charset_filter",
@@ -253,20 +253,62 @@ const ENTRIES: &[Entry] = &[
         availability: Availability::NotYet,
         note: "只留单字",
     },
-    // ── 别的方案里可能出现的 ──
-    Entry {
-        name: "abc_segmentor",
-        slot: Slot::Segmentor,
-        availability: Availability::Implemented,
-        note: "",
-    },
-    Entry {
-        name: "punct_translator",
-        slot: Slot::Translator,
-        availability: Availability::NotYet,
-        note: "",
-    },
 ];
+
+/// 一个零件实例的外部数据**是否已经就位**。
+///
+/// # 为什么装载器必须回答这个问题，而不是注册表
+///
+/// 注册表能回答的只有"**我们**能不能提供这个零件"。而方案作者要问的是
+/// 另一个问题："**我这份方案**缺不缺东西"。两者不是同一个问题：
+///
+/// - `simplifier@fanti` 机制齐全，而方案里带了一张内联转换表 → **不缺**
+/// - `simplifier@emoji` 机制齐全，而 `emoji.json` 找不到 → **缺**
+///
+/// 把它放在 `stele-engine` 而不是 `stele-schemes` 的理由：这是
+/// **判据**，而判据属于引擎；"去哪读文件、读不读得到"才是装载器的事。
+/// 装载器把答案算好（它才知道文件在不在）填进这个表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalData<'a> {
+    /// 实例名（`table_translator@melt_eng` 里的 `melt_eng`）。
+    pub alias: &'a str,
+    /// 数据是否就位。
+    pub present: bool,
+}
+
+/// 给出"这些实例的数据已经就位"的判据，据此检查一组零件名。
+///
+/// # Errors / 返回
+///
+/// 返回 `(Availability, 说明)` 的列表，只含**真正有问题的**那些：
+/// 尚未实现的、以及**数据没到位**的。已经就位的不出现在结果里。
+#[must_use]
+pub fn unmet_requirements(
+    names: &[String],
+    external: &[ExternalData<'_>],
+) -> Vec<(String, Availability, &'static str)> {
+    let mut out = Vec::new();
+    for n in names {
+        let (availability, _slot, note) = lookup(n);
+        match availability {
+            Availability::Implemented => {}
+            Availability::NotYet | Availability::Unknown => {
+                out.push((n.clone(), availability, note));
+            }
+            Availability::NeedsData => {
+                // 数据到位了就不算缺 —— 判据只看"这个实例有没有数据"。
+                let (_, alias) = crate::spec::split_alias(n);
+                let present = alias.is_some_and(|a| {
+                    external.iter().any(|e| e.alias == a && e.present)
+                });
+                if !present {
+                    out.push((n.clone(), availability, note));
+                }
+            }
+        }
+    }
+    out
+}
 
 /// 查一个零件名（**不含 `@alias`**）。
 ///
@@ -280,10 +322,19 @@ pub fn lookup(name: &str) -> (Availability, Slot, &'static str) {
     }
 }
 
+/// 这个名字认不认识（不管实没实现）。
+///
+/// 与 `lookup(..).0 != Unknown` 是同一件事，但**意图更清楚**：
+/// 调用方常常只是想问"这是不是一个认识的零件名"。
+#[must_use]
+pub fn is_known(name: &str) -> bool {
+    let base = name.split('@').next().unwrap_or(name);
+    ENTRIES.iter().any(|e| e.name == base)
+}
+
 /// 已实现的零件名（有序、去重）。
 #[must_use]
-pub fn implemented_names() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = ENTRIES
+pub fn implemented_names() -> Vec<&'static str> {    let mut v: Vec<&'static str> = ENTRIES
         .iter()
         .filter(|e| e.availability == Availability::Implemented)
         .map(|e| e.name)
@@ -393,9 +444,11 @@ mod tests {
             Availability::Implemented
         );
         assert_eq!(lookup("simplifier@emoji").0, Availability::NeedsData);
+        // P3 之后反查滤镜**机制已实现**：它需要的是"反查数据"，
+        // 而数据由装载器注入——所以它不再是"我们缺代码"。
         assert_eq!(
             lookup("reverse_lookup_filter@radical_reverse_lookup").0,
-            Availability::NeedsData
+            Availability::Implemented
         );
     }
 
@@ -403,7 +456,7 @@ mod tests {
     fn needs_data_and_not_yet_are_distinguished() {
         // 这两者的区别对使用者是有意义的：一个是"你缺数据"，一个是"我们缺代码"。
         assert_eq!(lookup("simplifier").0, Availability::NeedsData);
-        assert_eq!(lookup("ascii_composer").0, Availability::NotYet);
+        assert_eq!(lookup("chord_composer").0, Availability::NotYet);
         assert_ne!(Availability::NeedsData.note(), Availability::NotYet.note());
     }
 
@@ -414,6 +467,10 @@ mod tests {
 
     #[test]
     fn coverage_report_on_no_lua_schema_names() {
+        // P3 收尾时更新过：`no_lua_schema` 的 24 个名字里，剩下的缺口
+        // **只有"需要外部数据"的那些**（Emoji / 简繁的 OpenCC 表、
+        // 拆字词典、自定义短语表）。"尚未实现"已经清零——
+        // 这条断言就是那句话的可执行版本。
         // rime-ice 的 `others/no_lua_schema` 用到的全部名字。
         let names: Vec<String> = [
             "ascii_composer",
@@ -447,19 +504,44 @@ mod tests {
 
         let r = CoverageReport::of(&names);
         assert_eq!(r.required.len(), 24);
+        // 还不完整——但**缺的是数据，不是代码**。
         assert!(!r.is_complete());
-        // 我们确实有一批现成的。
-        assert!(r.implemented.contains(&"speller".to_owned()));
-        assert!(r.implemented.contains(&"script_translator".to_owned()));
-        assert!(r.implemented.contains(&"uniquifier".to_owned()));
-        // 缺口被分类，而不是笼统一句"不支持"。
-        assert!(r.not_yet.contains(&"ascii_composer".to_owned()));
-        assert!(r.needs_data.contains(&"simplifier@emoji".to_owned()));
+        assert!(
+            r.not_yet.is_empty(),
+            "P3 收尾后不该还有「我们缺代码」的零件：{:?}",
+            r.not_yet
+        );
         assert!(
             r.unknown.is_empty(),
             "这 24 个名字我们都认识：{:?}",
             r.unknown
         );
+        // 绝大多数零件已经能用了。
+        assert!(r.implemented.contains(&"speller".to_owned()));
+        assert!(r.implemented.contains(&"script_translator".to_owned()));
+        assert!(r.implemented.contains(&"uniquifier".to_owned()));
+        assert!(r.implemented.contains(&"ascii_composer".to_owned()));
+        assert!(r.implemented.contains(&"punctuator".to_owned()));
+        assert!(r.implemented.contains(&"key_binder".to_owned()));
+        assert!(r.implemented.contains(&"recognizer".to_owned()));
+        assert!(r.implemented.contains(&"matcher".to_owned()));
+        assert!(
+            r.implemented
+                .contains(&"affix_segmentor@radical_lookup".to_owned())
+        );
+        // 缺口**逐个列出**（不是笼统一句"不支持"），且只剩"要数据"这一类。
+        for n in ["simplifier@emoji", "simplifier@traditionalize"] {
+            assert!(r.needs_data.contains(&n.to_owned()), "{n} 应当缺数据");
+        }
+        // 表驱动翻译器：**机制已实现**——它们要的"英文词库 / 自定义短语表 /
+        // 拆字词典"由装载器注入，注入不了才算缺数据。
+        for n in [
+            "table_translator@melt_eng",
+            "table_translator@cn_en",
+            "table_translator@radical_lookup",
+        ] {
+            assert!(r.implemented.contains(&n.to_owned()), "{n} 机制已实现");
+        }
         assert!(r.summary().contains("24"), "{}", r.summary());
     }
 

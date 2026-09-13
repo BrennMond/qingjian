@@ -128,6 +128,11 @@ pub enum RuleError {
         /// 底层错误。
         error: RegexError,
     },
+    /// 这条规则不能用在格式化里。
+    ///
+    /// `comment_format` / `preedit_format` 只接受 `xform` 与 `xlit`——
+    /// 其余运算子会产生**多个**结果，而一段注释只能显示成一种样子。
+    NotAFormatRule,
 }
 
 impl std::fmt::Display for RuleError {
@@ -148,6 +153,14 @@ impl std::fmt::Display for RuleError {
                 "`xlit` 两侧字母表长度必须相同（左 {left} 个、右 {right} 个字符）"
             ),
             Self::BadRegex { op, error } => write!(f, "运算子 `{op}` 的正则有问题：{error}"),
+            Self::NotAFormatRule => write!(
+                f,
+                "这个运算子不能用在 comment_format / preedit_format 里：\
+                 格式化只接受 `xform`（改写）与 `xlit`（逐字符转写）。\
+                 `derive` / `fuzz` / `abbrev` 会产生**多个**结果，\
+                 而一段注释只能显示成一种样子；`erase` 是「整串消除」的语义，\
+                 在注释上应当写成 `xform/^.*$//`"
+            ),
         }
     }
 }
@@ -255,6 +268,9 @@ impl Rule {
     ///
     /// 等价于 RIME 的 `abbrev/^([a-z]{take}).+$/$1/`，只是写起来短。
     ///
+    /// `cost` 是**毫对数**的代价（`Score` 本身就是那个域），
+    /// 因此调用方若要写"打五折"，应当传 `Score::from_weight(0.5)`。
+    ///
     /// # Errors
     ///
     /// 生成的正则若编译失败（`take` 为 0）时返回 [`RuleError`]。
@@ -291,6 +307,140 @@ impl Rule {
             pairs: pairs.to_vec(),
             cost,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 格式化规则（comment_format / preedit_format）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一条**纯文本**改写规则。
+///
+/// # 它为什么与 [`Rule`] 是两个东西
+///
+/// 两者写法一样（`xform/^([jqxy])v/$1u/`），但**语义方向相反**：
+///
+/// | | [`Rule`]（拼写代数） | [`FormatRule`]（格式化） |
+/// | --- | --- | --- |
+/// | 作用对象 | 拼写（"用户能敲什么"） | 一段要显示的文本 |
+/// | 结果 | **一族**可能的编码 | **一个**字符串 |
+/// | 可用的运算子 | xlit/xform/erase/derive/fuzz/abbrev | 只有 xlit/xform |
+///
+/// 把 `derive` 用在 `comment_format` 上是配置错误：注释只能显示成一种样子，
+/// "派生两种写法"没有意义。**所以装载期要报错**，而不是随便挑一种。
+#[derive(Clone, Debug)]
+pub struct FormatRule {
+    /// 模式。
+    pattern: Regex,
+    /// 替换式（可用 `$1`）。`None` = 纯删字符的 `xlit`。
+    repl: String,
+    /// `xlit` 的逐字符映射（`Some` 时按字符替换，不用正则）。
+    xlit: Option<(Vec<char>, Vec<char>)>,
+}
+
+impl FormatRule {
+    /// 从一条拼写运算规则里取出它的**文本变换**形态。
+    ///
+    /// # Errors
+    ///
+    /// 传入的规则不是 `xform` / `xlit` 时返回 [`RuleError::NotAFormatRule`]。
+    /// 这条错误是**有意的**：静默挑一种语义会让 `comment_format` 出问题时
+    /// 表现为"注释偶尔不对"，那是最难查的一类 bug。
+    pub fn from_rule(rule: &Rule) -> Result<Self, RuleError> {
+        match rule {
+            Rule::Xform { pattern, repl } => Ok(Self {
+                pattern: pattern.clone(),
+                repl: repl.clone(),
+                xlit: None,
+            }),
+            Rule::Xlit { from, to } => Ok(Self {
+                pattern: Regex::compile(".").map_err(|e| RuleError::BadRegex {
+                    op: "xlit".into(),
+                    error: e,
+                })?,
+                repl: String::new(),
+                xlit: Some((from.clone(), to.clone())),
+            }),
+            _ => Err(RuleError::NotAFormatRule),
+        }
+    }
+
+    /// 解析 RIME 的写法。
+    ///
+    /// # Errors
+    ///
+    /// 写法不合法、或用了不可用于格式化的运算子时返回 [`RuleError`]。
+    pub fn parse(spec: &str) -> Result<Self, RuleError> {
+        Self::from_rule(&Rule::parse(spec)?)
+    }
+
+    /// 对一段文本施加这条改写。
+    #[must_use]
+    pub fn apply_text(&self, text: &str) -> String {
+        if let Some((from, to)) = &self.xlit {
+            let mut out = String::with_capacity(text.len());
+            for c in text.chars() {
+                match from.iter().position(|f| *f == c) {
+                    Some(i) => out.push(*to.get(i).unwrap_or(&c)),
+                    None => out.push(c),
+                }
+            }
+            return out;
+        }
+        self.pattern.replace_all(text, &self.repl)
+    }
+}
+
+/// 一串格式化规则。
+///
+/// 与 [`SpellingTable`] 分开的理由见 [`FormatRule`]：**它们的方向相反**。
+/// 放在一起会让人以为"`comment_format` 里写了 `derive` 也能用"。
+#[derive(Clone, Debug, Default)]
+pub struct SpellingFormat {
+    rules: Vec<FormatRule>,
+}
+
+impl SpellingFormat {
+    /// 由一串已解析的规则构造。
+    #[must_use]
+    pub fn new(rules: Vec<FormatRule>) -> Self {
+        Self { rules }
+    }
+
+    /// 解析 RIME 的写法列表（`comment_format:` 下面那几行）。
+    ///
+    /// # Errors
+    ///
+    /// 任一条不合法时返回 [`RuleError`]——**一次只报第一条**，
+    /// 因为这里没有行号可用；装载器会把它包成带行号的诊断。
+    pub fn parse_all(specs: &[String]) -> Result<Self, RuleError> {
+        let mut rules = Vec::with_capacity(specs.len());
+        for s in specs {
+            rules.push(FormatRule::parse(s)?);
+        }
+        Ok(Self { rules })
+    }
+
+    /// 依次施加全部规则。
+    #[must_use]
+    pub fn apply(&self, text: &str) -> String {
+        let mut cur = text.to_owned();
+        for r in &self.rules {
+            cur = r.apply_text(&cur);
+        }
+        cur
+    }
+
+    /// 规则条数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
+
+    /// 是否没有规则。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
     }
 }
 
@@ -504,11 +654,23 @@ impl SpellingTable {
             }
         }
 
-        // 代价高的在前（代价是对数域的扣分，0 最好，负数更差）；
-        // 代价相同则按编码字典序，保证确定性。
+        // 排序：**代价降序 → 编码单元数升序 → 编码字典序 → 属性**。
+        //
+        // # "编码单元数升序"这一条是实测加上的
+        //
+        // 它对应"**最长匹配优先**"这条输入法常识：同一个拼写能被切成
+        // `[ni][ha][ao]` 与 `[ni][hao]` 时，后者才是人想要的。
+        // 少了这一条时，两者代价相同（同一批边的组合），于是退化成
+        // 按编码编号排序——**预编辑串会显示 `ni ha ao`**，
+        // 而候选中却有正确的词。端到端测试抓到了它
+        // （`the_input_is_cut_into_labelled_segments`）。
+        //
+        // 注意它只是**并列时的次序**：真正决定优劣的仍然是代价，
+        // 因为代价是方案数据说了算的东西（简拼该罚多少是方案的判断）。
         done.sort_by(|a, b| {
             b.cost
                 .cmp(&a.cost)
+                .then_with(|| a.code.len().cmp(&b.code.len()))
                 .then_with(|| a.code.cmp(&b.code))
                 .then_with(|| a.attr.bits().cmp(&b.attr.bits()))
         });

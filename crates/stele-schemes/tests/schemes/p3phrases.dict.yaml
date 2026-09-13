@@ -1,0 +1,9 @@
+# 自定义短语表：精确编码，权重极高（RIME 里 initial_quality: 99）。
+---
+name: p3phrases
+version: "1.0"
+sort: by_weight
+...
+
+dz	石经输入法
+yx	电子邮箱

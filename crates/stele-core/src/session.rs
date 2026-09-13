@@ -29,7 +29,7 @@ use crate::segment::Composition;
 use std::sync::Arc;
 
 /// 一个方案的元数据。**列出方案不应触发装载**（D29）。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SchemaInfo {
     /// 方案 id，例如 `stele-default`。
     pub schema_id: String,
@@ -230,6 +230,27 @@ pub struct SessionState {
     /// 处理器请求的上屏；由**会话**在按键处理结束后兑现成
     /// [`crate::Commit`]（见 [`crate::PendingCommit`]）。
     pub pending_commit: Option<crate::commit::PendingCommit>,
+    /// 处理器**改动了开关**时记在这里，由会话转成 [`crate::Event::OptionChanged`]。
+    ///
+    /// 为什么不让处理器直接发事件：处理器拿不到事件队列（那是会话的东西），
+    /// 而"中英切换"这类动作**必须**让前端知道（状态栏要变）。
+    /// 用 `Vec` 而不是单个值：一次按键可能切好几个开关，而**丢弃**其中
+    /// 任何一个都会让状态栏与实际状态不一致。
+    pub option_events: Vec<(String, bool)>,
+    /// 处理器要求"换成这些按键**再派发一遍**"（`key_binder` 的 `send`）。
+    ///
+    /// 由流水线在**同一次按键内**取走并重新派发。用 `Vec` 而不是单个值：
+    /// 一条链上可能连续换两次键（`Shift+space` → `space` → …）。
+    ///
+    /// **不会无限循环**：流水线只重派发有限轮（见 `REBIND_ROUNDS`），
+    /// 且被重派发的按键不再经过绑定它的那个处理器。
+    pub sent_keys: Vec<Key>,
+    /// 候选总数（由流水线在 `compose` 后写回，供 `navigator` 与 `when: has_menu` 判断）。
+    pub candidate_count: usize,
+    /// 候选可以翻几页（由流水线写回）。
+    pub candidate_pages: usize,
+    /// 当前页（由 `navigator` 写回，流水线据此裁剪可见候选）。
+    pub candidate_page: usize,
 }
 
 impl SessionState {
@@ -241,7 +262,33 @@ impl SessionState {
             options,
             context,
             pending_commit: None,
+            option_events: Vec::new(),
+            sent_keys: Vec::new(),
+            candidate_count: 0,
+            candidate_pages: 0,
+            candidate_page: 0,
         }
+    }
+
+    /// 切换一个开关，并**记下这次改动**。
+    ///
+    /// 返回 `false` 表示该开关未声明（拼错名字不会被静默创建）。
+    pub fn toggle_option(&mut self, name: &str) -> bool {
+        if !self.options.toggle(name) {
+            return false;
+        }
+        let on = self.options.get(name);
+        self.option_events.push((name.to_owned(), on));
+        true
+    }
+
+    /// 设置一个开关，并**记下这次改动**。
+    pub fn set_option(&mut self, name: &str, on: bool) -> bool {
+        if !self.options.set(name, on) {
+            return false;
+        }
+        self.option_events.push((name.to_owned(), on));
+        true
     }
 
     /// 构造一个只读查询视图。
@@ -253,6 +300,7 @@ impl SessionState {
             options: &self.options,
             context: &self.context,
             composition: &self.composition,
+            segment_text: &self.composition.input,
         }
     }
 }

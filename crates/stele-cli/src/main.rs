@@ -37,7 +37,8 @@ Stele-IME（石经）命令行调试前端
       --scheme-dir <p>  从目录装载方案（不指定则用内嵌的默认方案）
       --candidates      打印候选列表，而不只是上屏结果
       --check           运行内核自检（不变式）
-      --dump-config     打印合并后的完整方案（P2/P3 实现）
+      --dump-config     打印合并后的完整方案，并标注每个值的来源
+      --components      打印零件注册表（认识了什么、缺什么）
 
 示例：
   stele nihao                   拼音：上屏「你好」
@@ -65,6 +66,9 @@ fn main() -> ExitCode {
     if args.iter().any(|a| a == "--check") {
         return self_check();
     }
+    if args.iter().any(|a| a == "--components") {
+        return list_components();
+    }
 
     // 方案来源：`--scheme-dir` 指定的目录，否则是**内嵌的 YAML**
     // （单一数据来源，因此两种路径走的都是同一个解析器）。
@@ -73,22 +77,26 @@ fn main() -> ExitCode {
         .position(|a| a == "--scheme-dir")
         .and_then(|i| args.get(i + 1))
         .cloned();
-    let defs = match &scheme_dir {
+    //
+    // 两条路都返回**连同来源表**的结果：`--dump-config` 要回答
+    // "这个值来自哪一层"，而那个信息只在装载期存在。
+    let loaded: Result<Vec<stele_schemes::Loaded>, _> = match &scheme_dir {
         // 目录装载走**部署路径**：词库编译成紧凑产物，按需分页地读。
         // 内嵌方案只有几十条词，用内存表更快，所以两条路各走各的。
         Some(dir) => {
             let root = std::path::Path::new(dir);
-            stele_schemes::load_dir_deployed(root, &root.join(".stele-cache"))
+            stele_schemes::load_dir_deployed_layered(root, &root.join(".stele-cache"))
         }
-        None => stele_schemes::all(),
+        None => stele_schemes::all_layered(),
     };
-    let defs = match defs {
+    let loaded = match loaded {
         Ok(d) => d,
         Err(e) => {
             eprintln!("装载方案失败：{e}");
             return ExitCode::FAILURE;
         }
     };
+    let defs: Vec<_> = loaded.iter().map(|l| l.def.for_engine()).collect();
     let engine = match stele_engine::EngineImpl::new(&defs) {
         Ok(e) => e,
         Err(e) => {
@@ -130,7 +138,7 @@ fn main() -> ExitCode {
         .collect();
 
     if args.iter().any(|a| a == "--dump-config") {
-        return dump_config(&engine, schema_id.as_deref());
+        return dump_config(&engine, &loaded, schema_id.as_deref());
     }
 
     let mut session = engine.create_session();
@@ -215,10 +223,30 @@ fn main() -> ExitCode {
 
 /// `--dump-config`：打印**合并后**的方案，并标注每个值的来源。
 ///
-/// PLAN D25 要求「打印出来的每一行都能被用户补丁覆盖」。
-/// 现在只有一层（方案文件本身），所以来源那一列还看不出差别——
-/// **但接口的形状已经对了**，加用户补丁层时只需在这里多打一列。
-fn dump_config(engine: &stele_engine::EngineImpl, schema_id: Option<&str>) -> ExitCode {
+/// # 它兑现的是 D25 的一句话
+///
+/// > 打印出来的每一行都能被用户补丁覆盖，且标注它来自哪一层。
+///
+/// 因此这个命令做三件事，缺一不可：
+///
+/// 1. **列出层**（内置 / 方案 / 用户补丁）——用户得知道自己在跟谁较劲。
+/// 2. **每个值后面缀上来源**（第几层、哪个文件、第几行）。RIME 用户
+///    最熟悉的动作就是翻 `*.custom.yaml`，而这里直接告诉他去哪一行。
+/// 3. **打印可粘贴的补丁片段**——这是"每一行都能被覆盖"的**可执行证明**：
+///    复制走、改一个值、存成 `<schema_id>.custom.yaml`，再跑一次
+///    就会看到来源那一列变了。空口说"可覆盖"是没有意义的。
+///
+/// # 与引擎的关系
+///
+/// 这些数字**全部来自装载期**（[`stele_schemes::Resolution`]），
+/// 引擎一行都没参与。`--dump-config` 打印的是"装载器读到了什么"，
+/// 而不是"引擎打算怎么跑"——两者分开，才能让用户看出
+/// "我写的东西有没有被读进去"。
+fn dump_config(
+    engine: &stele_engine::EngineImpl,
+    loaded: &[stele_schemes::Loaded],
+    schema_id: Option<&str>,
+) -> ExitCode {
     use stele_core::Engine;
 
     let id = if let Some(i) = schema_id {
@@ -229,18 +257,38 @@ fn dump_config(engine: &stele_engine::EngineImpl, schema_id: Option<&str>) -> Ex
         eprintln!("没有已装载的方案");
         return ExitCode::FAILURE;
     };
-    let scheme = match engine.schemas().acquire(&id) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("装载方案 {id} 失败：{e}");
-            return ExitCode::FAILURE;
-        }
+    let Some(entry) = loaded.iter().find(|l| l.def.info.schema_id == id) else {
+        eprintln!(
+            "找不到方案 {id} 的装载记录（只有通过目录或内嵌方案装载的才有）"
+        );
+        return ExitCode::FAILURE;
     };
+    // 确认引擎真的能装载它 —— `--dump-config` 打印的东西必须是
+    // **引擎真的在用的那一份**，而不是"装载器以为引擎会用的"。
+    if let Err(e) = engine.schemas().acquire(&id) {
+        eprintln!("装载方案 {id} 失败：{e}");
+        return ExitCode::FAILURE;
+    }
+    let scheme = &entry.def;
+    let res = &entry.resolution;
+    let o = |p: &str| res.origin_note(p);
 
-    let info = scheme.info();
+    let info = &scheme.info;
     println!("# 合并后的方案：{}", info.schema_id);
-    println!("# 来源    : 方案文件（叠加用户补丁后此处会多出层级）");
+    println!("#");
+    println!("# 层（先列的在下面，后列的在上面）：");
+    for (i, l) in res.layers.iter().enumerate() {
+        println!("#   [{}] {:<8} {}  —— {}", i, l.name, l.file, l.note);
+    }
+    println!(
+        "# 本层贡献的生效值：{}",
+        (0..res.layers.len())
+            .map(|i| format!("[{}] {} 项", i, res.count_of_layer(i)))
+            .collect::<Vec<_>>()
+            .join("，")
+    );
     println!();
+
     println!("schema:");
     println!("  schema_id: {}", info.schema_id);
     println!("  name: {}", info.name);
@@ -249,21 +297,116 @@ fn dump_config(engine: &stele_engine::EngineImpl, schema_id: Option<&str>) -> Ex
     if let Some(f) = &info.family {
         println!("  family: {f}");
     }
+    println!("  {}", o("schema.family"));
+
     println!();
     println!("switches:");
-    for (name, sw) in scheme.options().iter() {
+    for (i, sw) in scheme.switches.iter().enumerate() {
         let states = sw
             .states
             .as_ref()
             .map_or_else(|| "-".to_owned(), |s| format!("[{}, {}]", s[0], s[1]));
         println!(
-            "  - name: {name}   reset: {}   states: {states}",
-            u8::from(sw.on)
+            "  - name: {:<22} reset: {}   states: {states}   {}",
+            sw.name,
+            u8::from(sw.on),
+            o(&format!("switches.{i}"))
         );
     }
 
-    println!("# 说明：完整的零件覆盖报告在装载阶段以诊断形式给出；");
-    println!("#       运行 `stele --scheme-dir <目录> --list` 会打印它。");
+    println!();
+    println!("engine:");
+    let es = &scheme.engine;
+    for (slot, names) in [
+        ("processors", &es.processors),
+        ("segmentors", &es.segmentors),
+        ("translators", &es.translators),
+        ("filters", &es.filters),
+    ] {
+        if names.is_empty() {
+            println!("  {slot}: []   {}", o(&format!("engine.{slot}")));
+        } else {
+            println!("  {slot}:   {}", o(&format!("engine.{slot}")));
+            for n in names {
+                println!("    - {n}");
+            }
+        }
+    }
+
+    println!();
+    println!("# 引擎侧的实际装配（由上面的声明编译而来）：");
+    println!("#   主标签       {}", scheme.tag);
+    println!(
+        "#   翻译器族     {:?}{}",
+        scheme.translator,
+        if scheme.translator == stele_engine::TranslatorKind::ExactCode {
+            "（无拼写表：编码集合不可枚举）"
+        } else {
+            "（有拼写表）"
+        }
+    );
+    println!(
+        "#   开关         {} 个   {}",
+        scheme.switches.len(),
+        o("switches")
+    );
+    println!(
+        "#   拼写规则     {} 条   {}",
+        scheme.rules.len(),
+        // 两种写法都收：`speller.rules` 与 RIME 的 `speller.algebra`。
+        match res.origin_of("speller.algebra") {
+            Some(_) => o("speller.algebra"),
+            None => o("speller.rules"),
+        }
+    );
+    match entry.def.custom.get("component_coverage") {
+        Some(s) => println!("#   零件覆盖     {s}"),
+        None => println!("#   零件覆盖     （方案未声明 `engine:` 列表）"),
+    }
+    if let Some(n) = entry.def.custom.get("translator_kind_inferred") {
+        println!("#   装载提示     {n}");
+    }
+
+    println!();
+    println!("# ── 可粘贴的覆盖片段 ──");
+    println!("# 把它复制成一个名为 `<方案 id>.custom.yaml` 的文件放在方案目录里，");
+    println!("# 改掉任意一个值，再运行 `stele --scheme-dir <目录> --dump-config`：");
+    println!("# 上面「来源」那一列会变成 [1] 用户补丁。**这就是 D25 的证明方式。**");
+    println!("#");
+    println!("schema:");
+    println!("  name: 我改过的名字");
+    println!("menu:");
+    println!("  page_size: 9");
+    ExitCode::SUCCESS
+}
+
+/// `--components`：打印零件注册表——我们认识什么、实现了什么、缺什么。
+///
+/// **这张表是 P3 验收线的一部分。** "跑通 `no_lua_schema`"这句话，
+/// 落地就是"那张表里的 24 个零件，我们有几个能跑"——
+/// 而含糊其辞地回答没有意义，所以这里把它逐条列出来，
+/// 并把"你缺数据"与"我们缺代码"分成两类。
+fn list_components() -> ExitCode {
+    use stele_engine::registry::{implemented_names, missing_names, needs_data_names};
+    println!("# 零件注册表（RIME 的方案按名字引用它们）");
+    println!();
+    println!("已实现 {} 个：", implemented_names().len());
+    for n in implemented_names() {
+        let (_, slot, note) = stele_engine::registry::lookup(n);
+        println!("  {n:<28} {slot:?}   {note}");
+    }
+    println!();
+    println!("需要外部数据 {} 个（机制有，数据要给）：", needs_data_names().len());
+    for n in needs_data_names() {
+        let (_, slot, note) = stele_engine::registry::lookup(n);
+        println!("  {n:<28} {slot:?}   {note}");
+    }
+    println!();
+    println!("尚未实现 {} 个（这是本项目的缺口）：", missing_names().len());
+    for n in missing_names() {
+        let (_, slot, note) = stele_engine::registry::lookup(n);
+        println!("  {n:<28} {slot:?}   {note}");
+    }
     ExitCode::SUCCESS
 }
 

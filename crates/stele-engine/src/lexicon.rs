@@ -151,6 +151,120 @@ impl Lexicon for InMemoryLexicon {
             });
         }
     }
+
+    /// 内存词库**支持**前缀查询——这也是 `BTreeMap` 而非 `HashMap` 的兑现点
+    /// 之一（另一个是"同码词条顺序确定"，见类型文档）。
+    fn supports_prefix(&self) -> bool {
+        true
+    }
+
+    /// **补全：前缀区间扫描**。
+    ///
+    /// # 为什么 `BTreeMap` 恰好能做这件事
+    ///
+    /// `BTreeMap` 的键是**有序**的（`Vec<CodeUnitId>` 按字典序）。
+    /// 而"以 `P` 为前缀"的键在这样的序里**必然是连续的一段**：
+    /// 任何以 `P` 开头的键都落在 `P` 与 `P` 的下一个"更大前缀"之间。
+    /// 于是 `range` 两次定位就能圈出这一段，**不需要遍历整张表**。
+    ///
+    /// 这正是"编码已排序 ⇒ 前缀是连续区间"这句话的可执行版本。
+    ///
+    /// # 复杂度
+    ///
+    /// 定位是 `O(log n)`；被扫的是**命中区间的大小**，与表的总大小无关。
+    /// 一个两单元的前缀在 50 万词条的表里通常命中几十条。
+    fn prefix_lookup(
+        &self,
+        prefix: &[CodeUnitId],
+        exclude_exact: bool,
+        out: &mut CandidateSink<'_>,
+    ) {
+        if prefix.is_empty() {
+            return;
+        }
+        // 区间的右界：把前缀的最后一个单元加一 —— 于是区间恰好覆盖
+        // "以 prefix 开头、且比 prefix 本身更长"的全部键。
+        // 没有"加一"时（已是最大编号），直接扫到表尾。
+        let mut upper: Vec<CodeUnitId> = prefix.to_vec();
+        let last = upper.len() - 1;
+        let bumped = upper[last].0.checked_add(1).map(CodeUnitId);
+        if let Some(b) = bumped {
+            upper[last] = b;
+        }
+        let range = match bumped {
+            Some(_) => self.map.range(prefix.to_vec()..upper),
+            None => self.map.range(prefix.to_vec()..),
+        };
+        let span = Span::new(0, prefix.len());
+        for (code, entries) in range {
+            if exclude_exact && code.as_slice() == prefix {
+                continue;
+            }
+            for e in entries {
+                out.push(Candidate {
+                    text: e.text.clone(),
+                    comment: e.comment.clone(),
+                    score: e.score,
+                    origin: Origin::SystemWord,
+                    attr: SpellingAttr::COMPLETION,
+                    span,
+                    lane: stele_core::Lane::Input,
+                });
+            }
+        }
+    }
+}
+
+/// **按文本查编码**的索引（反查用）。
+///
+/// # 为什么它与 [`InMemoryLexicon`] 是两个类型
+///
+/// 方向相反：词库是"编码 → 词"，反查是"词 → 编码"。
+/// 把两个方向塞进一个类型会让每个实现都要维护两份索引，
+/// 而反查是**少数方案才要**的能力（见 `filter::ReverseLexicon`）。
+///
+/// 本类型现在还只是个空壳：它的数据要由**装载体**填（词库装载时
+/// 顺手建一份倒排表）。P3 只把接口与调用点接好，
+/// 真正的填充与内存计量放在反查数据真的入库时——
+/// **不假装它能查到东西**：`is_empty()` 会如实回答 `true`。
+#[derive(Debug, Default)]
+pub struct TextIndex {
+    /// 文本 → 编码序列（编码单元的**字面写法**，便于直接显示）。
+    map: BTreeMap<String, Vec<Vec<String>>>,
+}
+
+impl TextIndex {
+    /// 由"文本 → 编码"的条目构造。
+    #[must_use]
+    pub fn from_entries<S: AsRef<str>>(entries: &[(S, Vec<String>)]) -> Self {
+        let mut map: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+        for (text, code) in entries {
+            map.entry(text.as_ref().to_owned())
+                .or_default()
+                .push(code.clone());
+        }
+        Self { map }
+    }
+
+    /// 索引里有多少个不同的文本。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl crate::filter::ReverseLexicon for TextIndex {
+    fn lookup_text(&self, text: &str, out: &mut Vec<Vec<String>>) {
+        if let Some(v) = self.map.get(text) {
+            out.extend(v.iter().cloned());
+        }
+    }
 }
 
 #[cfg(test)]

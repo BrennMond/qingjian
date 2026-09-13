@@ -27,8 +27,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod components;
 pub mod file;
+pub mod provenance;
 pub mod minimal;
 
-pub use file::{load_dir, load_dir_deployed, load_scheme};
-pub use minimal::{all, embedded, uses_both_translator_families, EmbeddedSource, EMBEDDED};
+pub use file::{
+    load_dir, load_dir_deployed, load_dir_deployed_layered, load_dir_layered, load_scheme,
+    load_scheme_layered, Loaded,
+};
+pub use provenance::{Layer, Origin, Resolution};
+pub use minimal::{all, all_layered, embedded, uses_both_translator_families, EmbeddedSource, EMBEDDED};

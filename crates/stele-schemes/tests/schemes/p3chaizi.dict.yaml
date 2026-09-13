@@ -1,0 +1,10 @@
+# 拆字反查用的部件表：编码是**部件名**（字母），值是字。
+---
+name: p3chaizi
+version: "1.0"
+sort: by_weight
+...
+
+ni	你
+hao	好
+shi	十

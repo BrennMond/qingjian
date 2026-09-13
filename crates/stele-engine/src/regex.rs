@@ -196,6 +196,41 @@ impl Regex {
         None
     }
 
+    /// 从**开头**匹配；返回匹配结束的**字符**下标。
+    ///
+    /// `require_to_end = true` 时要求"恰好匹配到末尾"才算命中——
+    /// 这就是方案数据里那个 `$` 的意思（`^uU[a-z]+$` 要打到底才算认出）。
+    ///
+    /// # 为什么要有这个方法（而不是复用 `find` + 判断 `start == 0`）
+    ///
+    /// 因为两个需求撞在一起了：
+    ///
+    /// - **前缀模式**（`^uU[a-z]+$`）要"边打边认"：敲到 `uUn` 时就应该
+    ///   认出 `uUn` 这一段。用 `find` 做不到——它是整串匹配，
+    ///   `uUn` 匹配不上 `^uU[a-z]+$` 的末尾锚。
+    /// - **必须以某字符结尾的模式**（`^;.*;$`）要的恰好是整串匹配。
+    ///
+    /// 一个方法 + 一个布尔量把两者统一了。返回的是**字符**下标，
+    /// 调用方负责换算成字节（[`crate::segmentor`] 的认领按字节记）。
+    #[must_use]
+    pub fn match_prefix_len(&self, text: &str, require_to_end: bool) -> Option<usize> {
+        let chars: Vec<char> = text.chars().collect();
+        let mut caps = vec![None; self.groups + 1];
+        let mut end: Option<usize> = None;
+        let hit = match_node(&self.root, &chars, 0, &mut caps, &mut |pos, _caps| {
+            if require_to_end && pos != chars.len() {
+                return false;
+            }
+            end = Some(pos);
+            true
+        });
+        if hit {
+            end
+        } else {
+            None
+        }
+    }
+
     /// 全局替换。**没有匹配时返回原串。**
     #[must_use]
     pub fn replace_all(&self, text: &str, replacement: &str) -> String {

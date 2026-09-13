@@ -93,24 +93,69 @@ pub enum Outcome {
 ///
 /// 这也让"[`crate::SelectionSource`] 约束预测候选不被盲选"这条规则
 /// 有一个统一的执行点。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PendingCommit {
-    /// 选中**已渲染候选列表**中的第几个（全局序号，从 0 开始）。
-    pub index: usize,
-    /// 触发方式。
-    pub trigger: Trigger,
-    /// 选择的来源（键盘盲选 / 明确点选）。
-    pub source: SelectionSource,
+///
+/// # 两种意图（G15）
+///
+/// 上屏有两种来源，而它们**不是同一件事**：
+///
+/// | 变体 | 文本从哪来 | 谁需要它 |
+/// | --- | --- | --- |
+/// | [`Self::Select`] | 已渲染候选列表的第 `index` 项 | 选词键（空格 / 数字） |
+/// | [`Self::Literal`] | 处理器**自己带的**文本 | 标点直出、按键重绑定的"发送" |
+///
+/// 标点处理器不可能通过"选中第几个候选"来表达自己——它的文本**不在候选里**，
+/// 而且它上屏时**输入串根本还没被翻译**（RIME 的行为是标点立刻上屏、
+/// 不打断正在输入的编码）。把两者塞进一个结构体只会让"候选下标"这个字段
+/// 在两个变体里有不同含义。
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingCommit {
+    /// 选中已渲染候选列表中的某一项。
+    Select {
+        /// 全局序号（从 0 开始）。
+        index: usize,
+        /// 触发方式。
+        trigger: Trigger,
+        /// 选择的来源（键盘盲选 / 明确点选）。
+        source: SelectionSource,
+    },
+    /// **直接上屏一段文本**，不看候选列表。
+    Literal {
+        /// 要上屏的文本。
+        text: String,
+        /// 触发方式。
+        trigger: Trigger,
+    },
 }
 
 impl PendingCommit {
     /// 键盘盲选第 `index` 个。
     #[must_use]
     pub const fn keyboard(index: usize, trigger: Trigger) -> Self {
-        Self {
+        Self::Select {
             index,
             trigger,
             source: SelectionSource::Keyboard,
+        }
+    }
+
+    /// 直接上屏一段文本（标点、按键重绑定的"发送"）。
+    ///
+    /// 这样上屏的候选**不是猜的**：它的来源是 [`Origin::Literal`]——
+    /// "输入本身就是答案"。因此它不该被"精确优先"守卫当成猜测候选。
+    #[must_use]
+    pub fn literal(text: impl Into<String>, trigger: Trigger) -> Self {
+        Self::Literal {
+            text: text.into(),
+            trigger,
+        }
+    }
+
+    /// 触发方式（两个变体都有）。
+    #[must_use]
+    pub const fn trigger(&self) -> Trigger {
+        match self {
+            Self::Select { trigger, .. } | Self::Literal { trigger, .. } => *trigger,
         }
     }
 }
@@ -194,5 +239,27 @@ mod tests {
             Outcome::Committed(c) => assert_eq!(c.text, "你好"),
             _ => panic!("应当带上屏信息"),
         }
+    }
+
+    #[test]
+    fn pending_commit_expresses_two_different_intents() {
+        // 选词：文本来自候选列表，因此必须带**来源**（预测候选不许盲选）。
+        let sel = PendingCommit::keyboard(2, Trigger::Explicit);
+        assert!(matches!(
+            sel,
+            PendingCommit::Select {
+                index: 2,
+                source: SelectionSource::Keyboard,
+                ..
+            }
+        ));
+
+        // 直出：文本不在候选里，因此**没有**下标，也就无所谓来源。
+        let lit = PendingCommit::literal("，", Trigger::Punctuation);
+        match &lit {
+            PendingCommit::Literal { text, .. } => assert_eq!(text, "，"),
+            other => panic!("应当是直出意图，实际 {other:?}"),
+        }
+        assert_eq!(lit.trigger(), Trigger::Punctuation);
     }
 }

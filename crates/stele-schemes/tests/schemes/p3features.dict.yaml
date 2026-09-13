@@ -1,0 +1,20 @@
+# P3 特性验证用的最小词库。
+#
+# 编码是**真实的音节**（这样拼写代数才有意义），词条是编的。
+---
+name: p3features
+version: "1.0"
+sort: by_weight
+...
+
+你	ni	1000
+好	hao	900
+你好	ni hao	5000
+世界	shi jie	4000
+你好世界	ni hao shi jie	8000
+中国	zhong guo	6000
+城市	cheng shi	3000
+妳	ni	100
+虐	nve	500
+女	nv	400
+十	shi	2000

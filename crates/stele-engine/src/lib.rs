@@ -24,21 +24,37 @@ pub mod filter;
 pub mod lexicon;
 pub mod pipeline;
 pub mod processor;
+pub mod punctuator;
 pub mod regex;
 pub mod registry;
 pub mod scheme;
+pub mod segmentor;
+pub mod spec;
 pub mod spelling;
+pub mod tag;
 pub mod translator;
 
 pub use engine::{EngineImpl, SessionImpl};
-pub use filter::Uniquifier;
-pub use lexicon::{Entry, InMemoryLexicon, LexiconError};
-pub use pipeline::{PipelineImpl, CANDIDATE_CAP};
-pub use processor::{Editor, Selector, Speller};
+pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
+pub use lexicon::{Entry, InMemoryLexicon, LexiconError, TextIndex};
+pub use pipeline::{PipelineImpl, CANDIDATE_CAP, DEFAULT_PAGE_SIZE};
+pub use processor::{AsciiComposer, Editor, KeyBinder, Navigator, Selector, Speller};
+pub use punctuator::{PunctTranslator, Punctuator, literal_pending};
 pub use regex::{Regex, RegexError};
-pub use registry::{Availability, CoverageReport, Slot};
+pub use registry::{Availability, CoverageReport, ExternalData, Slot, unmet_requirements};
 pub use scheme::{LoadedScheme, SchemeDef, TranslatorKind, SCHEME_FORMAT_VERSION};
-pub use spelling::{Rule, SpellingTable};
+pub use segmentor::{
+    AffixSegmentor, CodingSegmentor, InputScan, Matcher, Recognizer, RecognizerError,
+    SymbolSegmentor,
+};
+pub use spec::{
+    AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, KeyChord, NavigatorSpec,
+    PunctuatorSpec, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
+    TranslatorKindSpec, TranslatorSpec, WhenPredicate, split_alias,
+};
+pub use spelling::{FormatRule, Rule, SpellingFormat, SpellingTable};
+pub use tag::TagTable;
 pub use translator::{
-    EchoTranslator, ExactCodeTranslator, SpellingGraphTranslator, TaggedTranslator, TRANSLATE_CAP,
+    COMPLETION_COST, EchoTranslator, ExactCodeTranslator, SpellingGraphTranslator, TaggedFilter,
+    TaggedTranslator, TRANSLATE_CAP,
 };

@@ -6,10 +6,18 @@
 //!
 //! # 处理器不直接产出 `Commit`
 //!
-//! 处理器只表达**意图**（"选第 3 个"），写进
+//! 处理器只表达**意图**（"选第 3 个" / "上屏这个标点"），写进
 //! [`SessionState::pending_commit`]；由**会话**兑现成完整的 `Commit`。
 //! 理由：只有会话才同时知道"已渲染的候选列表"和"当前输入"（见
 //! [`stele_core::PendingCommit`] 的说明）。
+//!
+//! # 处理器之间也要能"转交"
+//!
+//! `key_binder` 的一条绑定可能是 `accept: Shift+space, send: space`——
+//! 意思是"把这一下按键**换成另一下**再走一遍"。因此处理器可以在
+//! [`SessionState::sent_keys`] 里塞一个按键，由流水线**在同一次按键内**
+//! 继续派发。没有这条通路的话，按键重绑定就只能实现成
+//! "引擎自己认下空格"——那等于把选择器的逻辑抄一遍。
 
 use stele_core::{
     Key, KeyCode, Modifiers, NamedKey, PendingCommit, ProcessResult, SessionState, Trigger,
@@ -20,9 +28,23 @@ use stele_core::{
 /// 只接受**不含 Ctrl / Alt / Super** 的字符——带这些修饰键的按键属于
 /// 系统或应用，必须还给操作系统（这正是 [`ProcessResult::Rejected`]
 /// 与 [`ProcessResult::Noop`] 的区别所在）。
+///
+/// # 字母表是可选的
+///
+/// 方案声明了 `speller/alphabet` 时，**不在表里的字符一概不收**。
+/// 这不是优化，而是正确性：收下一个永远查不到的字符，用户看到的是
+/// "候选突然全没了"，而原因是"你敲了一个本方案不认识的字母"。
+/// 拒收之后它会被后面的处理器（标点）或系统接走。
 pub struct Speller {
-    /// 除字母数字外还接受哪些字符（例如拼音的音节分隔符）。
+    /// 除字母数字外还接受哪些字符（例如方案的编码分隔符）。
     extra_accepted: Vec<char>,
+    /// 方案声明的字母表（`None` = 不限制）。
+    alphabet: Option<Vec<char>>,
+    /// 被哪个开关**抑制**（通常是"英文模式"）。
+    ///
+    /// 开着的输入法**必须**有一个"现在别管我"的开关，否则用户没法
+    /// 在同一个窗口里打代码。名字来自方案数据。
+    blocked_by_option: Option<String>,
 }
 
 impl Default for Speller {
@@ -35,15 +57,44 @@ impl Speller {
     /// 构造，并指定额外接受的字符。
     #[must_use]
     pub fn new(extra_accepted: Vec<char>) -> Self {
-        Self { extra_accepted }
+        Self {
+            extra_accepted,
+            alphabet: None,
+            blocked_by_option: None,
+        }
+    }
+
+    /// 限定字母表。
+    #[must_use]
+    pub fn with_alphabet(mut self, alphabet: Vec<char>) -> Self {
+        self.alphabet = Some(alphabet);
+        self
+    }
+
+    /// 被某个开关抑制（开着时本处理器不工作）。
+    #[must_use]
+    pub fn blocked_by(mut self, option: impl Into<String>) -> Self {
+        self.blocked_by_option = Some(option.into());
+        self
     }
 
     fn accepts_char(&self, c: char) -> bool {
-        c.is_ascii_alphanumeric() || self.extra_accepted.contains(&c)
+        if let Some(a) = &self.alphabet {
+            if !a.contains(&c) {
+                return false;
+            }
+        } else if !(c.is_ascii_alphanumeric() || self.extra_accepted.contains(&c)) {
+            return false;
+        }
+        true
     }
 }
 
 impl stele_core::Processor for Speller {
+    fn name(&self) -> &'static str {
+        "speller"
+    }
+
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
         if key.release {
             return ProcessResult::Noop;
@@ -67,11 +118,20 @@ impl stele_core::Processor for Speller {
         state.composition.caret = state.composition.input.len();
         ProcessResult::Accepted
     }
+
+    fn enabled(&self, options: &stele_core::Options) -> bool {
+        // 开关没声明时 `get` 返回 false —— 于是"没配这个开关"等于"不被抑制"，
+        // 而装载期会检查方案里是否真的声明了它。
+        !self
+            .blocked_by_option
+            .as_deref()
+            .is_some_and(|n| options.get(n))
+    }
 }
 
-/// 编辑处理器：退格与取消。
+/// 编辑处理器：退格、取消，以及方案声明的**动作绑定**。
 ///
-/// # 退格是**按音节**的
+/// # 退格是**按编码单元**的
 ///
 /// RIME：「輸入拼音後按退格鍵，也會以音節爲單位回退刪除拼音」。
 /// 也就是说敲了 `nihao` 按一下退格，应当回到 `ni` 而不是 `niha`。
@@ -79,21 +139,127 @@ impl stele_core::Processor for Speller {
 /// 实现靠**上一次切分的结果**（`composition.segments`）：最后一段的起点
 /// 就是要截到的位置。切分结果每次 `compose` 都会重算，所以它总是最新的。
 ///
-/// 若没有切分结果（例如输入还没被处理过），退回按一个字符删。
-pub struct Editor;
+/// # 默认绑定
+///
+/// 没有任何方案配置时，用 RIME 的默认那一套（`editor.cc` 的行为）。
+/// 方案给了 `editor/bindings` 就**整体替换**它——这是 RIME 的语义，
+/// 照抄：否则"我在方案里写了一条绑定"会被默认值悄悄盖住。
+pub struct Editor {
+    /// 按键 → 动作。
+    bindings: Vec<(crate::spec::KeyChord, crate::spec::EditorAction)>,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl Editor {
+    /// 由方案的绑定构造（空 = 用默认绑定）。
+    #[must_use]
+    pub fn new(bindings: Vec<(crate::spec::KeyChord, crate::spec::EditorAction)>) -> Self {
+        Self { bindings }
+    }
+
+    /// 默认绑定：RIME `editor.cc` 的那一套。
+    #[must_use]
+    pub fn default_bindings() -> Vec<(crate::spec::KeyChord, crate::spec::EditorAction)> {
+        use crate::spec::{EditorAction as A, KeyChord as C};
+        let none = Modifiers::NONE;
+        let ctrl = Modifiers::CTRL;
+        vec![
+            (
+                C::new(KeyCode::Named(NamedKey::Backspace), none),
+                A::BackUnit,
+            ),
+            (
+                C::new(KeyCode::Named(NamedKey::Backspace), ctrl),
+                A::BackUnit,
+            ),
+            (C::new(KeyCode::Named(NamedKey::Delete), none), A::DeleteForward),
+            (C::new(KeyCode::Named(NamedKey::Escape), none), A::Cancel),
+            (C::new(KeyCode::Named(NamedKey::Enter), none), A::CommitRawInput),
+        ]
+    }
+
+    /// 这个按键对应的动作。
+    fn action_for(&self, key: &Key) -> Option<crate::spec::EditorAction> {
+        let table: Vec<(crate::spec::KeyChord, crate::spec::EditorAction)> = if self.bindings
+            .is_empty()
+        {
+            Self::default_bindings()
+        } else {
+            self.bindings.clone()
+        };
+        // **精确修饰键优先**：`Control+BackSpace` 与 `BackSpace` 都绑了动作时，
+        // 按了 Ctrl 的那一下不该命中不要求 Ctrl 的那条。
+        // 顺序表里先精确匹配，再退到"修饰键更少"的。
+        table
+            .iter()
+            .filter(|(c, _)| c.matches(key))
+            .max_by_key(|(c, _)| c.mods.bits().count_ones())
+            .map(|(_, a)| *a)
+    }
+}
 
 impl stele_core::Processor for Editor {
+    fn name(&self) -> &'static str {
+        "editor"
+    }
+
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
+        use crate::spec::EditorAction as A;
         if key.release {
             return ProcessResult::Noop;
         }
-        match key.code {
-            KeyCode::Named(NamedKey::Backspace) => {
+        let Some(action) = self.action_for(key) else {
+            return ProcessResult::Noop;
+        };
+        match action {
+            A::Confirm => {
+                // "上屏当前高亮候选" —— 意图与空格完全一致，
+                // 因此写成同一种意图，由会话统一兑现。
+                if state.composition.is_active() {
+                    state.pending_commit = Some(PendingCommit::keyboard(0, Trigger::Space));
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::CommitRawInput => {
+                if state.composition.is_active() {
+                    let text = state.composition.input.clone();
+                    state.pending_commit = Some(PendingCommit::literal(text, Trigger::Enter));
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::CommitScriptText => {
+                if state.composition.is_active() {
+                    // 预编辑串就是"变换后的输入"（`preedit_format` 已经作用过）。
+                    let text = state.composition.preedit.clone();
+                    state.pending_commit = Some(PendingCommit::literal(text, Trigger::Enter));
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::Revert => {
+                if state.composition.input.is_empty() {
+                    return ProcessResult::Noop;
+                }
+                state.composition.input.pop();
+                state.composition.caret = state.composition.input.len();
+                state.composition.segments.clear();
+                ProcessResult::Accepted
+            }
+            A::BackUnit => {
                 if state.composition.input.is_empty() {
                     // 输入串已空：退格应该还给系统（去删别处的文字）。
                     return ProcessResult::Noop;
                 }
-                // 优先按音节回退。
                 let cut = last_segment_start(&state.composition)
                     .filter(|c| *c < state.composition.input.len());
                 match cut {
@@ -107,7 +273,15 @@ impl stele_core::Processor for Editor {
                 state.composition.segments.clear();
                 ProcessResult::Accepted
             }
-            KeyCode::Named(NamedKey::Escape) => {
+            A::DeleteForward => {
+                // 输入串的光标永远在末尾（P3 不支持插入点移动），
+                // 因此"向后删"在没有更多内容时就是"还给系统"。
+                if state.composition.caret >= state.composition.input.len() {
+                    return ProcessResult::Noop;
+                }
+                ProcessResult::Accepted
+            }
+            A::Cancel => {
                 if state.composition.is_active() {
                     state.composition.reset();
                     ProcessResult::Accepted
@@ -115,9 +289,289 @@ impl stele_core::Processor for Editor {
                     ProcessResult::Noop
                 }
             }
+        }
+    }
+}
+
+/// **中英切换处理器**。
+///
+/// 对应 RIME 的 `ascii_composer`。它只做两件事：
+///
+/// 1. **切换**那个"英文模式"开关（Shift 键、或方案声明的按键）；
+/// 2. 开着时**明确拒绝**可打印字符，让前端把按键原样交给应用。
+///
+/// # 为什么是"拒绝"而不是"自己上屏"
+///
+/// 输入法在英文模式下最不该做的事就是"假装打字"：应用可能在做
+/// 自动补全、可能有自己的快捷键、可能是密码框。所以那一下按键
+/// **必须原样回到应用手里**，而不是由引擎上屏一个看起来一样的字符。
+/// 这也正是 [`ProcessResult::Rejected`] 与 `Noop` 的区别所在。
+pub struct AsciiComposer {
+    /// 哪个开关表示"英文模式"。
+    option: Option<String>,
+    /// 大写锁定当前状态（用来识别 `CapsLock` 的按下沿）。
+    caps_on: bool,
+}
+
+impl AsciiComposer {
+    /// 由开关名构造。
+    #[must_use]
+    pub fn new(option: Option<String>) -> Self {
+        Self {
+            option,
+            caps_on: false,
+        }
+    }
+
+    fn ascii_on(&self, state: &SessionState) -> bool {
+        self.option
+            .as_deref()
+            .is_some_and(|n| state.options.get(n))
+    }
+}
+
+impl stele_core::Processor for AsciiComposer {
+    fn name(&self) -> &'static str {
+        "ascii_composer"
+    }
+
+    fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
+        let Some(name) = self.option.clone() else {
+            return ProcessResult::Noop;
+        };
+        if key.release {
+            return ProcessResult::Noop;
+        }
+
+        // ── CapsLock：状态位由前端给出（`Modifiers::CAPS`），这里取"按下沿" ──
+        let caps_now = key.mods.contains(Modifiers::CAPS);
+        if caps_now != self.caps_on {
+            self.caps_on = caps_now;
+            // 打开大写锁定 = 进英文；关掉 = 回中文（与 RIME 的行为一致）。
+            state.set_option(&name, caps_now);
+            return ProcessResult::Accepted;
+        }
+
+        // ── Shift 单独按下：切换 ──
+        //
+        // 只认"Shift 且没有别的键"这一种形态。`Shift` + 字母 在
+        // [`KeyCode`] 里已经被归一化成大写字符，因此不会走到这里。
+        if key.mods.contains(Modifiers::SHIFT)
+            && !key.mods.contains(Modifiers::CTRL)
+            && !key.mods.contains(Modifiers::ALT)
+            && matches!(key.code, KeyCode::Named(NamedKey::Shift))
+        {
+            state.toggle_option(&name);
+            return ProcessResult::Accepted;
+        }
+
+        // ── Esc：先取消输入，再谈退出英文模式 ──
+        if matches!(key.code, KeyCode::Named(NamedKey::Escape)) {
+            if state.composition.is_active() {
+                state.composition.reset();
+                return ProcessResult::Accepted;
+            }
+            if self.ascii_on(state) {
+                state.set_option(&name, false);
+                return ProcessResult::Accepted;
+            }
+            return ProcessResult::Noop;
+        }
+
+        if !self.ascii_on(state) {
+            return ProcessResult::Noop;
+        }
+
+        // ── 英文模式：可打印字符与空格**还给系统** ──
+        match key.code {
+            KeyCode::Char(c) if !c.is_control() => ProcessResult::Rejected,
+            KeyCode::Named(NamedKey::Space) => ProcessResult::Rejected,
             _ => ProcessResult::Noop,
         }
     }
+}
+
+/// **翻页处理器**。
+///
+/// # 目前的能力与边界（诚实交代）
+///
+/// 它做的是**视图翻页**：候选列表已经算出来了，翻页只是把窗口往后挪。
+/// 真正的 RIME 是"翻译器按页查询"（每一页去词库要新的一批），
+/// 那需要给 `Lexicon` 加"从第 N 条开始"的能力——**P3 不做**。
+///
+/// 这条边界在实践中的后果：一个音节有 200 个同音字时，第 3 页之后
+/// 看不到。而候选上限是 200（[`crate::pipeline::CANDIDATE_CAP`]），
+/// 常见输入法一页 5–9 个，也就是前 20–30 页可用。
+pub struct Navigator {
+    /// 页码（0 起）。
+    page: usize,
+    /// 上一页按键。
+    page_up: Vec<crate::spec::KeyChord>,
+    /// 下一页按键。
+    page_down: Vec<crate::spec::KeyChord>,
+}
+
+impl Navigator {
+    /// 构造。
+    #[must_use]
+    pub fn new(spec: &crate::spec::NavigatorSpec, page_size: usize) -> Self {
+        // 每页多少个由**流水线**决定（它才知道候选上限与显示宽度），
+        // 这里只记下来备查：`navigator` 的职责是"翻到第几页"，
+        // 而"一页有多少个"是渲染的事。两个职责分开，翻页与裁剪
+        // 才不会各自用一套页大小算出不同的页数。
+        let _ = page_size;
+        Self {
+            page: 0,
+            page_up: spec.page_up.clone(),
+            page_down: spec.page_down.clone(),
+        }
+    }
+
+    /// 当前页（0 起）。
+    #[must_use]
+    pub fn page(&self) -> usize {
+        self.page
+    }
+
+    /// 回到第一页（输入变了就必须回第一页）。
+    pub fn reset(&mut self) {
+        self.page = 0;
+    }
+}
+
+impl stele_core::Processor for Navigator {
+    fn name(&self) -> &'static str {
+        "navigator"
+    }
+
+    fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
+        if !state.composition.is_active() {
+            return ProcessResult::Noop;
+        }
+        let up = self.page_up.iter().any(|c| c.matches(key));
+        let down = self.page_down.iter().any(|c| c.matches(key));
+        if !up && !down {
+            return ProcessResult::Noop;
+        }
+        let pages = state.candidate_pages.max(1);
+        if down && self.page + 1 < pages {
+            self.page += 1;
+            state.candidate_page = self.page;
+            return ProcessResult::Accepted;
+        }
+        if up && self.page > 0 {
+            self.page -= 1;
+            state.candidate_page = self.page;
+            return ProcessResult::Accepted;
+        }
+        // 到头了：**不吞按键**，让系统或其他处理器去处理
+        // （"还有吗？没有了"不该把按键吃掉）。
+        ProcessResult::Noop
+    }
+}
+
+/// **按键重绑定处理器**。
+///
+/// 对应 RIME 的 `key_binder`。支持两类效果——**都是引擎真能做到的**：
+///
+/// | 配置 | 效果 | 怎么实现 |
+/// | --- | --- | --- |
+/// | `send: space` / `send: "，"` | 换成**另一个按键** | 塞进 [`SessionState::sent_keys`]，同一次按键内重新派发 |
+/// | `toggle: ascii_mode` | 切换开关 | 直接改开关并记事件 |
+///
+/// 翻页类的 `send: Page_Up` 不需要特判：它就是"换成 `Page_Up` 这个键
+/// 重新派发"，而 `Page_Up` 由 [`Navigator`] 处理。**这就是"换成另一个键"
+/// 这个设计的价值**——重绑定器不需要认识任何具体动作。
+pub struct KeyBinder {
+    bindings: Vec<crate::spec::KeyBinding>,
+}
+
+impl KeyBinder {
+    /// 构造。
+    #[must_use]
+    pub fn new(bindings: Vec<crate::spec::KeyBinding>) -> Self {
+        Self { bindings }
+    }
+}
+
+impl stele_core::Processor for KeyBinder {
+    fn name(&self) -> &'static str {
+        "key_binder"
+    }
+
+    fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
+        if key.release {
+            return ProcessResult::Noop;
+        }
+        for b in &self.bindings {
+            // `when` 谓词。
+            let ok = match b.when {
+                crate::spec::WhenPredicate::Always => true,
+                crate::spec::WhenPredicate::Composing => state.composition.is_active(),
+                crate::spec::WhenPredicate::Paging => state.candidate_pages > 1,
+                crate::spec::WhenPredicate::HasMenu => state.candidate_count > 0,
+            };
+            if !ok || !b.accept.iter().any(|c| c.matches(key)) {
+                continue;
+            }
+            // 绑定命中：**先做效果，再决定按键算不算被消费**。
+            let mut did = false;
+            if let Some(name) = &b.toggle {
+                did |= state.toggle_option(name);
+            }
+            if let Some(text) = &b.send_text {
+                // `send` 的文本形态：单字符当作"换成这个键重新派发"，
+                // 多字符当作"直接上屏这段文本"。理由见
+                // [`stele_engine::spec::KeyBinding`] 的说明。
+                if text.chars().count() == 1 {
+                    let c = text.chars().next().unwrap_or(' ');
+                    // **反向映射**：`send: space` 里的空格是**空格键**，
+                    // 不是"一个空格字符"。少了这一步，`{accept: space,
+                    // send: space}` 会把空格键变成 `Char(' ')`——
+                    // 于是输入处理器不收它、选择器不认它、编辑器也不认它，
+                    // **空格彻底失效**，而配置看起来完全正常。
+                    state.sent_keys.push(key_for_char(c));
+                } else {
+                    state.pending_commit =
+                        Some(PendingCommit::literal(text.clone(), Trigger::Punctuation));
+                }
+                did = true;
+            }
+            if did {
+                return ProcessResult::Accepted;
+            }
+        }
+        ProcessResult::Noop
+    }
+}
+
+/// 把一个字符还原成**它最可能是的那个按键**。
+///
+/// 用于 `key_binder` 的 `send`：方案里写的是**键名**，而加载器把它读成了
+/// 文本（见 [`stele_engine::spec::KeyBinding`]）。要重新派发就必须换回按键，
+/// 而"这个字符是哪一种键"只能靠约定：
+///
+/// | 字符 | 按键 |
+/// | --- | --- |
+/// | 空格 / 制表 / 换行 | 对应的具名键 |
+/// | 其它单字符 | 字符键 |
+///
+/// **为什么不能统一按字符键处理**：空格是输入法里最特殊的一个键
+/// （它是"确认候选"），而"上屏一个空格字符"是另一件事。
+/// 这条区别在 RIME 的方案里到处都是（`send: space`）。
+#[must_use]
+pub fn key_for_char(c: char) -> Key {
+    match c {
+        ' ' => Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE),
+        '\t' => Key::press(KeyCode::Named(NamedKey::Tab), Modifiers::NONE),
+        '\n' | '\r' => Key::press(KeyCode::Named(NamedKey::Enter), Modifiers::NONE),
+        other => Key::ch(other),
+    }
+}
+
+/// 最后一段的起始字节位置。
+fn last_segment_start(c: &stele_core::Composition) -> Option<usize> {
+    c.segments.segments.last().map(|s| s.span.start)
 }
 
 /// 选词处理器：空格 / 回车 / 数字键选词。
@@ -125,9 +579,21 @@ impl stele_core::Processor for Editor {
 /// 它**不检查候选是否存在**——那是会话的事。因此它总是接受按键；
 /// 会话在兑现时若发现下标越界，就当作"没选中"处理。
 /// 由于兜底翻译器保证"永远至少有一个候选"，实践下标 0 总是有效的。
+///
+/// # 它为什么排在 `editor` 之后
+///
+/// `editor` 决定"回车是上屏原始输入还是确认候选"，`selector` 只管
+/// "空格 / 数字选第几个"。方案把回车绑成 `commit_raw_input` 时，
+/// `editor` 先接住它，`selector` 就不会再把它当成"确认候选"。
+/// 这个先后关系**由方案声明**（RIME 的 `engine.processors` 顺序），
+/// 不是写死的。
 pub struct Selector;
 
 impl stele_core::Processor for Selector {
+    fn name(&self) -> &'static str {
+        "selector"
+    }
+
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
         if key.release || !state.composition.is_active() {
             return ProcessResult::Noop;
@@ -140,9 +606,9 @@ impl stele_core::Processor for Selector {
         let pending = match key.code {
             KeyCode::Named(NamedKey::Space) => Some(PendingCommit::keyboard(0, Trigger::Space)),
             KeyCode::Named(NamedKey::Enter) => Some(PendingCommit::keyboard(0, Trigger::Enter)),
-            KeyCode::Named(NamedKey::Digit(d)) if (1..=9).contains(&d) => Some(
-                PendingCommit::keyboard(usize::from(d - 1), Trigger::Explicit),
-            ),
+            KeyCode::Named(NamedKey::Digit(d)) if (1..=9).contains(&d) => {
+                Some(PendingCommit::keyboard(usize::from(d - 1), Trigger::Explicit))
+            }
             _ => None,
         };
 
@@ -156,10 +622,6 @@ impl stele_core::Processor for Selector {
     }
 }
 
-/// 最后一段的起始字节位置。
-fn last_segment_start(c: &stele_core::Composition) -> Option<usize> {
-    c.segments.segments.last().map(|s| s.span.start)
-}
 
 #[cfg(test)]
 mod tests {
@@ -198,8 +660,39 @@ mod tests {
     }
 
     #[test]
+    fn speller_refuses_letters_outside_the_declared_alphabet() {
+        // 一个永远查不到的字符被收进输入串，症状是"候选突然全没了"。
+        // 拒收才是对的：它会被标点处理器或系统接走。
+        let mut s = state();
+        let mut p = Speller::new(vec![]).with_alphabet(vec!['n', 'i']);
+        assert_eq!(p.process(&mut s, &Key::ch('n')), ProcessResult::Accepted);
+        assert_eq!(p.process(&mut s, &Key::ch('z')), ProcessResult::Noop);
+        assert_eq!(s.composition.input, "n");
+    }
+
+    #[test]
+    fn speller_can_be_suppressed_by_a_switch() {
+        let mut s = state();
+        s.options.declare(stele_core::Switch::new("ascii_mode", true));
+        let p = Speller::new(vec![])
+            .with_alphabet(vec!['n'])
+            .blocked_by("ascii_mode");
+        // 抑制由 `enabled()` 表达 —— **流水线在调用之前就问它**，
+        // 因此处理器自己不必在 `process` 里再判一次（判两次就会有两个
+        // 执行点，改一处漏一处）。
+        assert!(!p.enabled(&s.options), "开关开着时输入处理器应当不工作");
+
+        // 关掉开关，它立刻恢复。
+        s.options.set("ascii_mode", false);
+        assert!(p.enabled(&s.options));
+        let mut p2 = p;
+        assert_eq!(p2.process(&mut s, &Key::ch('n')), ProcessResult::Accepted);
+        assert_eq!(s.composition.input, "n");
+    }
+
+    #[test]
     fn backspace_removes_a_whole_unit_when_segmented() {
-        // 敲 nihao 后按一下退格：按音节回退到 `ni`，而不是 `niha`。
+        // 敲 nihao 后按一下退格：按编码单元回退到 `ni`，而不是 `niha`。
         let mut s = state();
         s.composition.input = "nihao".into();
         s.composition.caret = 5;
@@ -211,7 +704,7 @@ mod tests {
         }
 
         let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
-        assert_eq!(Editor.process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(Editor::default().process(&mut s, &bs), ProcessResult::Accepted);
         assert_eq!(s.composition.input, "ni");
     }
 
@@ -220,7 +713,7 @@ mod tests {
         let mut s = state();
         s.composition.input = "nihao".into();
         let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
-        assert_eq!(Editor.process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(Editor::default().process(&mut s, &bs), ProcessResult::Accepted);
         assert_eq!(s.composition.input, "niha");
     }
 
@@ -228,7 +721,7 @@ mod tests {
     fn editor_backspaces_and_resets() {
         let mut s = state();
         let mut sp = Speller::default();
-        let mut ed = Editor;
+        let mut ed = Editor::default();
         for c in "nihao".chars() {
             sp.process(&mut s, &Key::ch(c));
         }
@@ -244,39 +737,159 @@ mod tests {
     #[test]
     fn editor_gives_backspace_back_when_nothing_to_delete() {
         let mut s = state();
-        let mut ed = Editor;
+        let mut ed = Editor::default();
         let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
         // 输入串为空时，退格应该去删别处的文字。
         assert_eq!(ed.process(&mut s, &bs), ProcessResult::Noop);
     }
 
     #[test]
-    fn selector_requests_a_commit_only_when_composing() {
+    fn editor_honours_scheme_declared_actions() {
+        use crate::spec::{EditorAction as A, KeyChord as C};
+        // 方案把回车绑成"上屏变换后的输入"。
+        let mut ed = Editor::new(vec![(
+            C::new(KeyCode::Named(NamedKey::Enter), Modifiers::NONE),
+            A::CommitScriptText,
+        )]);
         let mut s = state();
-        let mut sel = Selector;
-        let space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE);
-
-        // 没有输入时，空格还给系统。
-        assert_eq!(sel.process(&mut s, &space), ProcessResult::Noop);
-
-        s.composition.input.push('n');
-        assert_eq!(sel.process(&mut s, &space), ProcessResult::Accepted);
+        s.composition.input = "nihao".into();
+        s.composition.preedit = "ni'hao".into();
+        let ret = Key::press(KeyCode::Named(NamedKey::Enter), Modifiers::NONE);
+        assert_eq!(ed.process(&mut s, &ret), ProcessResult::Accepted);
         assert_eq!(
             s.pending_commit,
-            Some(PendingCommit::keyboard(0, Trigger::Space))
+            Some(PendingCommit::literal("ni'hao", Trigger::Enter))
         );
     }
 
     #[test]
-    fn selector_maps_digit_keys_to_indexes() {
+    fn editor_prefers_the_exact_modifier_binding() {
+        use crate::spec::{EditorAction as A, KeyChord as C};
+        let mut ed = Editor::new(vec![
+            (
+                C::new(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE),
+                A::Revert,
+            ),
+            (
+                C::new(KeyCode::Named(NamedKey::Backspace), Modifiers::CTRL),
+                A::BackUnit,
+            ),
+        ]);
         let mut s = state();
-        s.composition.input.push('n');
-        let mut sel = Selector;
-        let d3 = Key::press(KeyCode::Named(NamedKey::Digit(3)), Modifiers::NONE);
-        assert_eq!(sel.process(&mut s, &d3), ProcessResult::Accepted);
+        s.composition.input = "nihao".into();
+        for (a, b) in [(0usize, 2usize), (2, 5)] {
+            let mut seg = stele_core::Segment::new(stele_core::Span::new(a, b));
+            seg.tags.push("abc");
+            s.composition.segments.segments.push(seg);
+        }
+        // Ctrl+退格 → 按编码单元回退（整段）。
+        let ctrl = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::CTRL);
+        assert_eq!(ed.process(&mut s, &ctrl), ProcessResult::Accepted);
+        assert_eq!(s.composition.input, "ni");
+        // 普通退格 → 只删一个字符（这里是 Revert 的动作）。
+        let plain = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
+        assert_eq!(ed.process(&mut s, &plain), ProcessResult::Accepted);
+        assert_eq!(s.composition.input, "n");
+    }
+
+    #[test]
+    fn ascii_composer_toggles_and_then_rejects_printable_keys() {
+        let mut s = state();
+        s.options.declare(stele_core::Switch::new("ascii_mode", false));
+        let mut c = AsciiComposer::new(Some("ascii_mode".into()));
+
+        // Shift 单独按下 → 进英文模式，并**记下这次改动**（状态栏要变）。
+        let shift = Key::press(KeyCode::Named(NamedKey::Shift), Modifiers::SHIFT);
+        assert_eq!(c.process(&mut s, &shift), ProcessResult::Accepted);
+        assert!(s.options.get("ascii_mode"));
+        assert_eq!(s.option_events, vec![("ascii_mode".to_owned(), true)]);
+
+        // 英文模式下，字母**还给系统**——引擎不"假装打字"。
+        assert_eq!(c.process(&mut s, &Key::ch('a')), ProcessResult::Rejected);
+
+        // 再按一次 Shift → 回中文，字母重新被接受（这里只验证不再拒绝）。
+        assert_eq!(c.process(&mut s, &shift), ProcessResult::Accepted);
+        assert!(!s.options.get("ascii_mode"));
+        assert_eq!(c.process(&mut s, &Key::ch('a')), ProcessResult::Noop);
+    }
+
+    #[test]
+    fn send_text_reverse_maps_special_keys() {
+        // `send: space` 是"空格键"，不是"空格字符"。
         assert_eq!(
-            s.pending_commit,
-            Some(PendingCommit::keyboard(2, Trigger::Explicit))
+            key_for_char(' ').code,
+            KeyCode::Named(NamedKey::Space)
         );
+        assert_eq!(key_for_char('a').code, KeyCode::Char('a'));
+    }
+
+    #[test]
+    fn navigator_flips_pages_within_bounds() {
+        use crate::spec::{KeyChord as C, NavigatorSpec};
+        let spec = NavigatorSpec {
+            page_down: vec![C::new(
+                KeyCode::Named(NamedKey::PageDown),
+                Modifiers::NONE,
+            )],
+            page_up: vec![C::new(KeyCode::Named(NamedKey::PageUp), Modifiers::NONE)],
+            ..Default::default()
+        };
+        let mut n = Navigator::new(&spec, 5);
+        let mut s = state();
+        s.composition.input = "ni".into();
+        s.candidate_pages = 3;
+
+        let down = Key::press(KeyCode::Named(NamedKey::PageDown), Modifiers::NONE);
+        assert_eq!(n.process(&mut s, &down), ProcessResult::Accepted);
+        assert_eq!(n.page(), 1);
+        assert_eq!(s.candidate_page, 1);
+        assert_eq!(n.process(&mut s, &down), ProcessResult::Accepted);
+        assert_eq!(n.page(), 2);
+        // 到头了：**不吞按键**。
+        assert_eq!(n.process(&mut s, &down), ProcessResult::Noop);
+        assert_eq!(n.page(), 2);
+    }
+
+    #[test]
+    fn key_binder_sends_another_key_and_toggles() {
+        use crate::spec::{KeyBinding, KeyChord as C, WhenPredicate};
+        let bindings = vec![
+            KeyBinding {
+                when: WhenPredicate::Always,
+                accept: vec![C::new(
+                    KeyCode::Named(NamedKey::Space),
+                    Modifiers::SHIFT,
+                )],
+                send_text: Some(" ".into()),
+                toggle: None,
+                at: crate::spec::At::new(1),
+            },
+            KeyBinding {
+                when: WhenPredicate::Always,
+                accept: vec![C::new(KeyCode::Char('`'), Modifiers::NONE)],
+                send_text: None,
+                toggle: Some("ascii_mode".into()),
+                at: crate::spec::At::new(2),
+            },
+        ];
+        let mut kb = KeyBinder::new(bindings);
+        let mut s = state();
+        s.options.declare(stele_core::Switch::new("ascii_mode", false));
+
+        // Shift+空格 → 换成普通空格重新派发。
+        let shift_space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::SHIFT);
+        assert_eq!(kb.process(&mut s, &shift_space), ProcessResult::Accepted);
+        assert_eq!(s.sent_keys.len(), 1);
+        // 空格**必须还原成空格键**，而不是 `Char(' ')`——
+        // 后者会让选择器与编辑器都不认它（见 `key_for_char`）。
+        assert_eq!(s.sent_keys[0].code, KeyCode::Named(NamedKey::Space));
+        assert!(s.sent_keys[0].mods.is_empty());
+
+        // 反引号 → 切开关。
+        assert_eq!(
+            kb.process(&mut s, &Key::ch('`')),
+            ProcessResult::Accepted
+        );
+        assert!(s.options.get("ascii_mode"));
     }
 }

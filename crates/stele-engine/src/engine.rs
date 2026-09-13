@@ -154,32 +154,63 @@ impl SessionImpl {
 
     /// 把处理器的意图兑现成一次上屏。
     ///
-    /// 返回 `None` 表示"下标无效，什么都没发生"。
+    /// 返回 `None` 表示"什么都没发生"（下标无效 / 预测候选被键盘盲选）。
     fn realize_commit(
         &mut self,
         pending: PendingCommit,
         source: SelectionSource,
     ) -> Option<Commit> {
-        let c = self.candidates.get(pending.index)?;
+        // ── 意图一：选中候选列表里的某一项 ──
+        if let PendingCommit::Select {
+            index, trigger, ..
+        } = pending
+        {
+            let c = self.candidates.get(index)?;
 
-        // 规则 2：预测通道的候选默认不允许**键盘盲选**。
-        //
-        // 理由：用户会对输入通道形成肌肉记忆（"敲 nihao 然后按 1"）。
-        // 若预测候选也能被数字键选中、位置还会变，这套肌肉记忆就崩了。
-        if c.lane == Lane::Predict && source == SelectionSource::Keyboard {
-            return None;
+            // 规则 2：预测通道的候选默认不允许**键盘盲选**。
+            //
+            // 理由：用户会对输入通道形成肌肉记忆（"敲 nihao 然后按 1"）。
+            // 若预测候选也能被数字键选中、位置还会变，这套肌肉记忆就崩了。
+            if c.lane == Lane::Predict && source == SelectionSource::Keyboard {
+                return None;
+            }
+
+            let commit = Commit {
+                text: c.text.clone(),
+                input: self.state.composition.input.clone(),
+                context: self.state.context.recent().to_vec(),
+                origin: c.origin,
+                attr: c.attr,
+                lane: c.lane,
+                trigger,
+            };
+            return Some(self.finish_commit(commit));
         }
 
-        let commit = Commit {
-            text: c.text.clone(),
-            input: self.state.composition.input.clone(),
-            context: self.state.context.recent().to_vec(),
-            origin: c.origin,
-            attr: c.attr,
-            lane: c.lane,
-            trigger: pending.trigger,
+        // ── 意图二：直接上屏一段文本（标点、按键重绑定的"发送"） ──
+        //
+        // 注意这里**不看候选列表**：标点直出不依赖输入被翻译成什么，
+        // 所以即使候选为空、输入串为空，标点也照样上屏。
+        let PendingCommit::Literal { text, trigger } = pending else {
+            // `#[non_exhaustive]`（D30）：将来加变体会在此处编译失败。
+            return None;
         };
+        let commit = Commit {
+            text,
+            // 直出的文本不是"由这段输入打出来的"，故输入串为空——
+            // 与预测候选同样的约定（见 `Commit::input` 的说明）。
+            input: String::new(),
+            context: self.state.context.recent().to_vec(),
+            origin: stele_core::Origin::Literal,
+            attr: stele_core::SpellingAttr::NORMAL,
+            lane: Lane::Input,
+            trigger,
+        };
+        Some(self.finish_commit(commit))
+    }
 
+    /// 上屏的公共收尾：发学习事件、推上下文、清空输入与候选。
+    fn finish_commit(&mut self, commit: Commit) -> Commit {
         // 学习事件（P4a 的实现会消费它）。
         //
         // **注意传的是原始输入与属性**——接收方必须按 `attr` 把 `input`
@@ -192,12 +223,24 @@ impl SessionImpl {
             lane: commit.lane,
         });
 
-        self.state.context.push(commit.text.clone());
+        // RIME 的规则：**直出的标点不进上下文**（它不该参与下一词预测）。
+        // 判据用 `input` 为空 + 来源是原样上屏——这两条一起才成立，
+        // 因为"回车上屏原始输入"也是原样上屏，但那条**有**输入串。
+        let is_punctuation_like = commit.origin == stele_core::Origin::Literal
+            && commit.input.is_empty()
+            && commit.text.chars().all(|c| !c.is_alphanumeric());
+        if !is_punctuation_like {
+            self.state.context.push(commit.text.clone());
+        }
+
+        // 标点上屏**不打断**正在输入的编码（RIME 的行为：
+        // 敲 `ni` 再敲 `,` 会得到「你，」并把 `ni` 一起上屏）。
+        // 这里做不到那件事时，宁可把输入清掉，也不要留一段无主的输入。
         self.state.composition.reset();
         self.state.pending_commit = None;
         self.candidates.clear();
 
-        Some(commit)
+        commit
     }
 }
 
@@ -216,14 +259,35 @@ impl Session for SessionImpl {
             // 这里会**编译失败**而不是静默走错分支——这正是它的目的。
             _ => {
                 self.recompose();
+                // 处理器改过开关（中英切换、简繁…）→ 转成对外的**事件**。
+                // 前端靠它更新状态栏；丢掉了它，状态栏就会与实际状态不一致。
+                for (name, on) in self.state.option_events.drain(..) {
+                    self.events.push(Event::OptionChanged { name, on });
+                }
                 match self.state.pending_commit.take() {
-                    Some(p) => match self.realize_commit(p, p.source) {
-                        Some(c) => Outcome::Committed(c),
-                        // 下标无效 → 按键仍被消费（否则空格会漏给系统）。
-                        None => Outcome::Consumed,
-                    },
+                    // 来源（键盘盲选 / 明确点选）**只对"选中候选"这一意图有意义**：
+                    // 直出的文本不来自候选列表，也就无所谓盲选。
+                    Some(p) => {
+                        let source = match &p {
+                            PendingCommit::Select { source, .. } => *source,
+                            // 直出的意图没有"来源"；未知变体也走这条
+                            // （`#[non_exhaustive]`，D30）：保守当作键盘意图 ——
+                            // 预测候选的盲选约束仍然生效，那是更严格的一侧。
+                            PendingCommit::Literal { .. } | _ => SelectionSource::Keyboard,
+                        };
+                        match self.realize_commit(p, source) {
+                            Some(c) => Outcome::Committed(c),
+                            // 意图没能兑现（下标越界 / 预测候选被盲选）
+                            // → 按键仍被消费（否则空格会漏给系统）。
+                            None => {
+                                Outcome::Consumed
+                            }
+                        }
+                    }
                     // 没有请求上屏：按键被消费，只需重绘。
-                    None => Outcome::Consumed,
+                    None => {
+                        Outcome::Consumed
+                    }
                 }
             }
         }

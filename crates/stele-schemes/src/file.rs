@@ -21,6 +21,7 @@
 //!
 //! 所以本模块**先收集全部诊断再返回**，而不是遇到第一个就 `return`。
 
+use crate::components;
 use stele_config::{Node, Value};
 use stele_core::Score;
 use stele_core::{CodeAlphabet, Diagnostic, SchemaError, SchemaInfo, Switch};
@@ -58,7 +59,79 @@ pub fn load_scheme(
     path: &str,
     dicts: &dyn dict::Source,
 ) -> Result<SchemeDef, SchemaError> {
-    load_scheme_with(text, path, dicts, &DictMode::Inline)
+    load_scheme_with(text, path, dicts, &DictMode::Inline).map(|l| l.def)
+}
+
+/// 装载的结果：方案定义 + **它是怎么被合出来的**。
+///
+/// 分成两半是为了让 `--dump-config` 能回答 D25 那个问题
+/// （"这个值来自哪一层"），而引擎侧**完全不需要知道来源**——
+/// 它只拿 [`SchemeDef`]。这条分界线让 `stele-engine` 保持零配置概念。
+#[derive(Debug)]
+pub struct Loaded {
+    /// 编译前的方案声明。
+    pub def: SchemeDef,
+    /// 分层合并的结果与来源表。
+    pub resolution: crate::provenance::Resolution,
+}
+
+/// 装载一份方案，连**来源**一起给出。
+///
+/// `patch` 是用户补丁层（RIME 的 `*.custom.yaml`）。它是**可选**的：
+/// 没有补丁时来源表里就只有方案层，而 `--dump-config` 会如实这么说。
+///
+/// # Errors
+///
+/// 与 [`load_scheme`] 相同；另外补丁与方案类型冲突时也会报错，
+/// 并指出**是哪一层**与哪条路径。
+pub fn load_scheme_layered(
+    text: &str,
+    path: &str,
+    user_patch: Option<(&str, &str)>,
+    dicts: &dyn dict::Source,
+) -> Result<Loaded, SchemaError> {
+    let mut layers = vec![(
+        crate::provenance::Layer::new("方案", path, "方案文件本身（基础层）"),
+        parse_or_diag(text, path)?,
+    )];
+    if let Some((patch_text, patch_name)) = user_patch {
+        let node = parse_or_diag(patch_text, patch_name)?;
+        layers.push((
+            crate::provenance::Layer::new(
+                "用户补丁",
+                patch_name,
+                "你的改动层：它覆盖上面任何一层",
+            ),
+            node,
+        ));
+    }
+    let resolution = crate::provenance::Resolution::of(layers).map_err(|msg| {
+        SchemaError::Invalid {
+            schema_id: path.to_owned(),
+            diagnostics: vec![Diagnostic::new(path, msg)
+                .with_field("layers")
+                .with_entry("检查补丁里同一个键的类型是否与方案一致（映射可以合并，列表整体替换）")],
+        }
+    })?;
+    // **编译的是合并结果**，不是原始方案文件。
+    //
+    // 这一行是 P2 欠下的接线：`stele-config` 里的分层补丁早就实现并测过，
+    // 但装载路径一直只读方案文件本身——于是"用户补丁能覆盖一切"这句话
+    // 在 P2 是**假的**。现在它有一个端到端测试守着
+    // （`tests/p3_pipeline.rs` 的 `a_user_patch_is_merged_and_its_provenance_is_recorded`）。
+    let mut loaded = load_from_root(&resolution.root, path, dicts, &DictMode::Inline)?;
+    loaded.resolution = resolution;
+    Ok(loaded)
+}
+
+fn parse_or_diag(text: &str, path: &str) -> Result<Node, SchemaError> {
+    stele_config::parse(text).map_err(|e| SchemaError::Invalid {
+        schema_id: path.to_owned(),
+        diagnostics: vec![Diagnostic::new(
+            path,
+            format!("第 {} 行：{}", e.line, e.message),
+        )],
+    })
 }
 
 /// 词库怎么来。
@@ -74,7 +147,7 @@ fn load_scheme_with(
     path: &str,
     dicts: &dyn dict::Source,
     mode: &DictMode<'_>,
-) -> Result<SchemeDef, SchemaError> {
+) -> Result<Loaded, SchemaError> {
     let root = stele_config::parse(text).map_err(|e| SchemaError::Invalid {
         schema_id: path.to_owned(),
         diagnostics: vec![Diagnostic::new(
@@ -82,9 +155,30 @@ fn load_scheme_with(
             format!("第 {} 行：{}", e.line, e.message),
         )],
     })?;
+    // `patch` = 已经与方案合并好的配置（由 [`load_scheme_layered`] 给出）。
+    // 为 `None` 时就是方案文件本身。
+    load_from_root(&root, path, dicts, mode)
+}
+
+/// 从**已经合并好的**配置树编译方案。
+///
+/// `root` 是合并结果（方案文件 + 用户补丁），因此"用户改了什么"
+/// 不在这里判断——那是 [`crate::provenance::Resolution`] 的职责，
+/// 它逐路径记着每个值来自哪一层。
+fn load_from_root(
+    root: &Node,
+    path: &str,
+    dicts: &dyn dict::Source,
+    mode: &DictMode<'_>,
+) -> Result<Loaded, SchemaError> {
+
 
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut schema_id = String::new();
+    // 装载期发现的**提示**（不是错误）。它们会进 `custom`，由
+    // `--dump-config` 打印——"我配的东西为什么没生效"这类问题，
+    // 答案常常就在这些提示里。
+    let mut load_notes: Option<String> = None;
 
     // ── schema 段 ──
     let mut info = SchemaInfo {
@@ -133,16 +227,20 @@ fn load_scheme_with(
 
     // ── engine 段 ──
     let engine = root.get("engine");
+    // `engine.tag` 有两种给法：
+    //
+    // 1. 我们的短写法：`engine.tag: abc`
+    // 2. **RIME 方案根本没有这个字段**——标签来自切分器
+    //    （`abc_segmentor` 产出 `abc`、`affix_segmentor@x` 产出 `x`）。
+    //
+    // 因此它是**可选**的：没写就用 `abc`（RIME 世界里那个"普通编码段"的
+    // 既定名字），而真正的标签集合由切分器声明。要求每个 RIME 方案都写
+    // `engine.tag` 等于宣布"RIME 的方案文件不能直接用"——那与 P3 的
+    // 验收线（跑通 `others/no_lua_schema`）直接冲突。
     let tag_text = engine
         .and_then(|e| e.get("tag"))
         .and_then(Node::as_str)
-        .unwrap_or_default();
-    if tag_text.is_empty() {
-        diags.push(
-            Diagnostic::new(path, "缺少 `engine.tag`（分段标签，翻译器靠它绑定）")
-                .with_field("engine.tag"),
-        );
-    }
+        .unwrap_or_else(|| "abc".to_owned());
     let translator_text = engine
         .and_then(|e| e.get("translator"))
         .and_then(Node::as_str)
@@ -150,17 +248,10 @@ fn load_scheme_with(
     let mut translator = match translator_text.as_str() {
         TRANSLATOR_SPELLING_GRAPH => Some(TranslatorKind::SpellingGraph),
         TRANSLATOR_EXACT_CODE => Some(TranslatorKind::ExactCode),
-        "" => {
-            diags.push(
-                Diagnostic::new(path, "缺少 `engine.translator`")
-                    .with_field("engine.translator")
-                    .with_entry(format!(
-                        "取值只能是 `{TRANSLATOR_SPELLING_GRAPH}`（编码集合可枚举：拼音、双拼）\
-                         或 `{TRANSLATOR_EXACT_CODE}`（不可枚举：仓颉、五笔）"
-                    )),
-            );
-            None
-        }
+        // 没写短写法时**留空**：稍后从 `engine.translators` 列表推断
+        // （`script_translator` ⇒ 拼写图；`table_translator` ⇒ 精确编码）。
+        // 两者都没有才算缺——那时才报错。
+        "" => None,
         other => {
             diags.push(
                 Diagnostic::new(
@@ -183,16 +274,31 @@ fn load_scheme_with(
 
     // ── speller 段 ──
     let speller = root.get("speller");
-    let alphabet: Vec<String> = speller
-        .and_then(|s| s.get("alphabet"))
-        .and_then(Node::as_seq)
-        .map(|seq| seq.iter().filter_map(Node::as_str).collect())
-        .unwrap_or_default();
+    // 编码字母表有两种写法，**两种都必须收**：
+    //
+    // - **列表**（我们的写法）：每个元素是一个编码单元（`ni`、`hao`）。
+    //   这是"编码集合可枚举"那类输入法需要的形状。
+    // - **字符串**（RIME 的 `speller/alphabet: zyxw...a`）：**每个字符是
+    //   一个编码单元**。字形类方案（仓颉、五笔）与英文都这么写。
+    //
+    // 早先只收列表，于是"RIME 的方案文件能直接用"这句话对
+    // `speller.alphabet: abc` 这种最普通的写法**是假的**。
+    let alphabet: Vec<String> = match speller.and_then(|s| s.get("alphabet")) {
+        Some(n) => match &n.value {
+            Value::Seq(seq) => seq.iter().filter_map(Node::as_str).collect(),
+            Value::Str(s) => s.chars().map(|c| c.to_string()).collect(),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
     if alphabet.is_empty() {
         diags.push(
             Diagnostic::new(path, "缺少 `speller.alphabet`（编码字母表）")
                 .with_field("speller.alphabet")
-                .with_entry("拼音方案下它是音节表；字形方案下它是字母表"),
+                .with_entry(
+                    "列表写法：每个元素是一个编码单元（拼音方案写音节表；\
+                     字形方案写字母表）；字符串写法：每个字符是一个编码单元",
+                ),
         );
     }
 
@@ -221,6 +327,32 @@ fn load_scheme_with(
         .and_then(Node::as_str)
         .and_then(|d| d.chars().next());
 
+    // ── 从 `engine.translators` 推断翻译器族（没写短写法时） ──
+    //
+    // 这是 RIME 方案**唯一**的给法：它不写 `engine.translator`，
+    // 只列出零件名字。`script_translator` 与 `table_translator` 分属两族，
+    // 因此列表里出现哪一个，就决定了主翻译器走哪一族。
+    if translator.is_none() {
+        let names: Vec<String> = engine
+            .and_then(|e| e.get("translators"))
+            .and_then(Node::as_seq)
+            .map(|seq| seq.iter().filter_map(Node::as_str).collect())
+            .unwrap_or_default();
+        if names.iter().any(|n| n.starts_with("script_translator")) {
+            translator = Some(TranslatorKind::SpellingGraph);
+        } else if names.iter().any(|n| n.starts_with("table_translator")) {
+            translator = Some(TranslatorKind::ExactCode);
+        }
+        if let Some(k) = translator {
+            // 这是**提示**而不是错误：RIME 的方案本来就只列零件名。
+            // `Diagnostic` 目前只有"错误"一种语义，所以提示走 `custom`，
+            // 由 `--dump-config` 打印出来。
+            load_notes = Some(format!(
+                "`engine.translator` 未给出，已从 `engine.translators` 列表推断为 `{k:?}`"
+            ));
+        }
+    }
+
     // ── translator 段：取词典 ──
     let dict_name = root
         .get("translator")
@@ -231,9 +363,34 @@ fn load_scheme_with(
     let mut entries: Vec<(Vec<String>, String, f64)> = Vec::new();
     let mut external: Option<std::sync::Arc<dyn stele_core::Lexicon>> = None;
     match dict_name {
+        // **没有词典不是错误**：有些方案的主翻译器只靠别的零件出候选
+        // （纯转换方案、纯符号方案；RIME 里 `dictionary: ""` 也是合法写法）。
+        // 早先把它当必填，于是那类方案连装载都过不去。
+        //
+        // 但**要出声**：`custom_phrase` 这类实例的正规做法是
+        // `dictionary: ""` + `user_dict: xxx`，而"用户词库"我们还没有
+        // （P4a）。静默给一本空词库会让用户以为"我配了却没生效"。
         None => diags.push(
-            Diagnostic::new(path, "缺少 `translator.dictionary`（要挂载哪本词典）")
-                .with_field("translator.dictionary"),
+            Diagnostic::new(
+                path,
+                "`translator.dictionary` 为空：这个方案的主翻译器没有任何词库",
+            )
+            .with_field("translator.dictionary")
+            .with_entry(
+                "如果这是有意的（纯转换/纯符号方案），忽略本条；\
+                 如果你用的是 `user_dict`（用户词库），那是 P4a 的内容，尚未实现",
+            ),
+        ),
+        Some(name) if name.is_empty() => diags.push(
+            Diagnostic::new(
+                path,
+                "`translator.dictionary` 为空：这个方案的主翻译器没有任何词库",
+            )
+            .with_field("translator.dictionary")
+            .with_entry(
+                "如果这是有意的（纯转换/纯符号方案），忽略本条；\
+                 如果你用的是 `user_dict`（用户词库），那是 P4a 的内容，尚未实现",
+            ),
         ),
         Some(name) => match *mode {
             // 内联：读进内存。
@@ -280,30 +437,13 @@ fn load_scheme_with(
             custom_summary = Some(rep.summary());
             // 缺口逐条报出来，**按类分开**——"你缺数据"和"我们缺代码"
             // 对使用者意味着完全不同的下一步。
-            for n in &rep.needs_data {
-                diags.push(
-                    Diagnostic::new(path, format!("零件 `{n}` 需要外部数据"))
-                        .with_field("engine")
-                        .with_entry("机制已实现；请自行提供数据（例如 OpenCC 的转换表）"),
-                );
-            }
-            for n in &rep.not_yet {
-                diags.push(
-                    Diagnostic::new(path, format!("零件 `{n}` 尚未实现"))
-                        .with_field("engine")
-                        .with_entry("这是本项目的缺口，不是你的配置问题"),
-                );
-            }
-            for n in &rep.unknown {
-                diags.push(
-                    Diagnostic::new(path, format!("不认识的零件名 `{n}`"))
-                        .with_field("engine")
-                        .with_entry(format!(
-                            "已知的零件：{}",
-                            stele_engine::registry::implemented_names().join("、")
-                        )),
-                );
-            }
+            // **这里只出报告，不出错误。**
+            //
+            // "缺不缺"要按**判据**判断，而判据（文件在不在、内联表给了没有）
+            // 由本模块下面的代码算出，最终由 `SchemeDef::compile` 里的
+            // `unmet_requirements` 出声。分开的理由：报告是**给人看的**，
+            // 而报错是**拦装载的**——两件事混在一起就会出现
+            // "明明数据齐了却被拦下来"（这个 bug 真发生过）。
             coverage = Some(rep.clone());
             // 没写短写法时，从列表里推断翻译器族。
             if translator.is_none() {
@@ -317,6 +457,131 @@ fn load_scheme_with(
     }
 
     let _ = coverage;
+
+    // ── 各零件的配置段（P3） ──
+    //
+    // 这一段把 RIME 方案里那些**按零件分节**的配置读进来。读法与上面
+    // 完全一致：不合法就报错并给行号，绝不"猜一个"。
+    let mut tags = stele_engine::tag::TagTable::new();
+    let mut engine_spec = stele_engine::spec::EngineSpec::default();
+    if let Some(eng) = root.get("engine") {
+        engine_spec = components::read_engine(eng);
+        engine_spec.tag = Some(tag_text.clone());
+    }
+
+    let recognizer = root
+        .get("recognizer")
+        .map(|n| components::read_recognizer(n, &mut diags, path))
+        .unwrap_or_default();
+
+    let punctuator = root
+        .get("punctuator")
+        .map(components::read_punctuator)
+        .unwrap_or_default();
+
+    let editor_bindings = root
+        .get("editor")
+        .map(|n| components::read_editor(n, &mut diags, path))
+        .unwrap_or_default();
+
+    let key_bindings = root
+        .get("key_binder")
+        .map(|n| components::read_key_bindings(n, &mut diags, path))
+        .unwrap_or_default();
+
+    let navigator = root
+        .get("navigator")
+        .map(components::read_navigator)
+        .unwrap_or_default();
+
+    // 带词缀的切分器 / 反查滤镜 / 转换滤镜：**按 `engine:` 里出现的别名**
+    // 去找对应的顶层段。找不到就是"声明了却没人配"——`compile` 会报。
+    let mut affixes: Vec<(String, stele_engine::spec::AffixSpec)> = Vec::new();
+    let mut reverse_lookups: Vec<(String, stele_engine::spec::ReverseLookupSpec)> = Vec::new();
+    let mut converters: Vec<(
+        String,
+        std::collections::BTreeMap<String, Vec<String>>,
+        stele_engine::spec::SimplifierSpec,
+    )> = Vec::new();
+    for name in engine_spec
+        .segmentors
+        .iter()
+        .chain(engine_spec.filters.iter())
+        .chain(engine_spec.translators.iter())
+    {
+        let (component, alias) = stele_engine::spec::split_alias(name);
+        let Some(a) = alias else { continue };
+        let Some(block) = root.get(a) else { continue };
+        match component {
+            "affix_segmentor" => {
+                affixes.push((a.to_owned(), components::read_affix(block, &mut tags)));
+            }
+            "reverse_lookup_filter" => {
+                reverse_lookups.push((
+                    a.to_owned(),
+                    components::read_reverse_lookup(block, &mut tags, &mut diags, path),
+                ));
+            }
+            "simplifier" => {
+                let mut spec = components::read_simplifier(block, &mut tags, &mut diags, path);
+                spec.tags = components::read_tags(block, &mut tags);
+                // 转换表：RIME 指 OpenCC 的 json。**我们不解析 OpenCC 格式**
+                // ——那是它自己的数据格式，属于"外部数据"。方案若想要
+                // 转换，就在这里直接给一张 `from: to` 表。
+                let mut table: std::collections::BTreeMap<String, Vec<String>> =
+                    std::collections::BTreeMap::new();
+                if let Some(t) = block.get("table").and_then(stele_config::Node::as_map) {
+                    for (k, v) in t {
+                        let to = v.as_str().unwrap_or_default();
+                        table.insert(k.clone(), vec![to]);
+                    }
+                }
+                converters.push((a.to_owned(), table, spec));
+            }
+            _ => {}
+        }
+    }
+
+    // 翻译器实例：方案级的 `translator:` 段是"没有别名的那一个"。
+    let mut translator_specs: Vec<(String, stele_engine::spec::TranslatorSpec)> = Vec::new();
+    if let Some(t) = root.get("translator") {
+        translator_specs.push((
+            String::new(),
+            components::read_translator(t, "script_translator", None),
+        ));
+    }
+    for name in &engine_spec.translators {
+        let (component, alias) = stele_engine::spec::split_alias(name);
+        let Some(a) = alias else { continue };
+        if let Some(block) = root.get(a) {
+            translator_specs.push((
+                a.to_owned(),
+                components::read_translator(block, component, Some(a)),
+            ));
+        }
+    }
+
+    // `speller.alphabet` 被写成**字符串**（RIME）时，每个字符是一个输入字符。
+    // 注意这与 `speller.alphabet` 的**列表**写法不同：列表是编码字母表
+    // （可以是多字符的单元），字符串是"允许敲哪些字符"。
+    let input_alphabet: Vec<char> = speller
+        .and_then(|s| s.get("input_alphabet"))
+        .and_then(Node::as_str)
+        .map(|s| s.chars().collect())
+        .or_else(|| {
+            root.get("ascii_composer")
+                .and_then(|n| n.get("good_old_caps_lock"))
+                .and_then(Node::as_str)
+                .map(|s| s.chars().collect())
+        })
+        .unwrap_or_default();
+
+    let page_size = root
+        .get("menu")
+        .and_then(|m| m.get("page_size"))
+        .and_then(Node::as_int)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(stele_engine::pipeline::DEFAULT_PAGE_SIZE);
 
     // ── 汇总 ──
     if !diags.is_empty() {
@@ -333,7 +598,8 @@ fn load_scheme_with(
     // 每份方案只会泄漏一个短字符串，进程生命周期内可忽略。
     let tag: stele_core::Tag = Box::leak(tag_text.into_boxed_str());
 
-    Ok(SchemeDef {
+    Ok(Loaded {
+        def: SchemeDef {
         info,
         switches,
         tag,
@@ -346,14 +612,99 @@ fn load_scheme_with(
         translator: translator.expect("已在上面校验过"),
         candidate_cap,
         preedit_delimiter,
-        custom: custom_summary
-            .map(|s| {
-                let mut m = std::collections::BTreeMap::new();
+        engine: engine_spec.clone(),
+        recognizer,
+        punctuator,
+        editor_bindings,
+        key_bindings,
+        navigator,
+        affixes,
+        reverse_lookups,
+        converters,
+        translator_specs,
+        input_alphabet,
+        page_size,
+        external_data: external_data_facts(root, path, &engine_spec),
+        custom: {
+            let mut m = std::collections::BTreeMap::new();
+            if let Some(s) = custom_summary {
                 m.insert("component_coverage".to_owned(), s);
-                m
-            })
-            .unwrap_or_default(),
+            }
+            if let Some(n) = load_notes {
+                m.insert("translator_kind_inferred".to_owned(), n);
+            }
+            m
+        },
+        },
+        // 逐条装载路径（`load_scheme` 等）只知道方案文件这一层；
+        // 用户补丁层由 `load_scheme_layered` 补上。
+        resolution: crate::provenance::Resolution::of(vec![(
+            crate::provenance::Layer::new("方案", path, "方案文件本身（基础层）"),
+            root.clone(),
+        )])
+        .expect("单层合并不可能失败"),
     })
+}
+
+/// 算出"每个实例的外部数据到底在不在"。
+///
+/// **这是装载器才能回答的问题**（只有它知道文件在不在），算好之后作为
+/// **判据**交给引擎，由引擎的 `unmet_requirements` 决定要不要出声。
+/// 判据与事实分开，是"注册表说需要数据"与"这份方案缺不缺"
+/// 能分别验证的前提。
+///
+/// 判据的细则：
+///
+/// | 零件 | 数据在哪 | 怎么算"在" |
+/// | --- | --- | --- |
+/// | `simplifier@x` | 内联 `table:` | 段里有 `table` |
+/// | `simplifier@x` | OpenCC 的 json | `opencc_config` 指的文件**存在** |
+/// | `table_translator@x` | 一本词库 | 段里有 `dictionary`（它的装载错误在别处报） |
+/// | `reverse_lookup_filter@x` | 一本反查词库 | 同上 |
+fn external_data_facts(
+    root: &Node,
+    path: &str,
+    engine: &stele_engine::spec::EngineSpec,
+) -> Vec<stele_engine::registry::ExternalData<'static>> {
+    let dir = std::path::Path::new(path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty());
+    let mut out = Vec::new();
+    for name in engine
+        .translators
+        .iter()
+        .chain(engine.filters.iter())
+    {
+        let (component, alias) = stele_engine::spec::split_alias(name);
+        let Some(a) = alias else { continue };
+        let present = match root.get(a) {
+            None => false,
+            Some(block) => match component {
+                "simplifier" => {
+                    block.get("table").is_some()
+                        || block
+                            .get("opencc_config")
+                            .and_then(Node::as_str)
+                            .is_some_and(|cfg| {
+                                dir.is_some_and(|d| d.join(&cfg).is_file())
+                            })
+                }
+                "table_translator" | "reverse_lookup_translator"
+                | "reverse_lookup_filter" => block.get("dictionary").is_some(),
+                _ => false,
+            },
+        };
+        // 泄漏一次是**有意**的：`ExternalData` 借用实例名，而
+        // `SchemeDef` 要活到进程结束（方案装载一次）。与标签 intern
+        // 是同一个取舍——用一点点常驻内存换"没有生命周期参数污染
+        // 整个方案数据结构"。
+        let alias_static: &'static str = Box::leak(a.to_owned().into_boxed_str());
+        out.push(stele_engine::registry::ExternalData {
+            alias: alias_static,
+            present,
+        });
+    }
+    out
 }
 
 fn req_str(node: &Node, key: &str, path: &str, diags: &mut Vec<Diagnostic>) -> Option<String> {
@@ -431,15 +782,40 @@ fn read_rule(item: &Node, path: &str, idx: usize) -> Result<Rule, Diagnostic> {
         .with_field(format!("speller.rules[{idx}]")));
     }
     let (name, arg) = &map[0];
+    // 边的代价有**两种单位**，而它们的名字必须不同：
+    //
+    // | 写法 | 单位 | 含义 |
+    // | --- | --- | --- |
+    // | `cost: -3000` | 毫对数 | 这条边的**分数增量**（对数域，D13） |
+    // | `weight: 0.5` | 线性权重比 | "命中它的概率是规范拼写的 0.5 倍" |
+    //
+    // 两者的关系是 `cost = ln(weight) × 1000`（装载期算一次，热路径没有浮点）。
+    //
+    // **为什么要分成两个名字**：我第一版只有一个 `cost`，却按权重解释它
+    // （`Score::from_weight`）。于是：
+    //
+    // - 方案里写 `cost: 0.5` → 被当成权重 0.5 → -693ml（碰巧"看起来对"）
+    // - 方案里写 `cost: -3000` → 被当成**权重为负** → 直接掉到下界 `FLOOR`，
+    //   于是所有边代价相同，切分退化成"谁先被找到算谁"——
+    //   症状是预编辑串变成 `ni ha ao` 而不是 `ni hao`，而候选却是对的。
+    //
+    // 一个字段两种解读是 bug 的温床；两个名字就没有歧义。
     let cost = |n: &Node| -> Score {
+        if let Some(w) = n.get("weight").and_then(Node::as_f64) {
+            return Score::from_weight(w);
+        }
         n.get("cost")
             .and_then(Node::as_f64)
-            .map_or(Score::ZERO, Score::from_weight)
+            .map_or(Score::ZERO, |v| {
+                #[allow(clippy::cast_possible_truncation)]
+                Score::from_milli_log(v.round() as i32)
+            })
     };
 
     match name.as_str() {
         "abbrev" => {
-            // 允许 `abbrev: 1`（只给长度）或 `abbrev: { take: 1, cost: 0.5 }`。
+            // 允许 `abbrev: 1`（只给长度）、`abbrev: { take: 1, weight: 0.5 }`
+            // 或 `abbrev: { take: 1, cost: -693 }`。
             let (take, c) = match &arg.value {
                 Value::Int(t) => (usize::try_from(*t).unwrap_or(1), Score::ZERO),
                 Value::Map(_) => (
@@ -452,7 +828,8 @@ fn read_rule(item: &Node, path: &str, idx: usize) -> Result<Rule, Diagnostic> {
                 _ => {
                     return Err(Diagnostic::new(
                         path,
-                        "`abbrev` 的参数应是整数（保留前几个字符）或 `{ take, cost }`",
+                        "`abbrev` 的参数应是整数（保留前几个字符）\
+                         或 `{ take, weight }` / `{ take, cost }`",
                     )
                     .with_field(format!("speller.rules[{idx}].abbrev")));
                 }
@@ -533,6 +910,19 @@ fn read_pairs(node: &Node, path: &str, idx: usize) -> Result<Vec<(char, char)>, 
 ///
 /// 不会 panic。
 pub fn load_dir(root: &std::path::Path) -> Result<Vec<SchemeDef>, SchemaError> {
+    Ok(load_dir_layered(root)?.into_iter().map(|l| l.def).collect())
+}
+
+/// 从目录装载，**连每一份方案的来源表一起给出**（供 `--dump-config`）。
+///
+/// 用户补丁层按 RIME 的约定找：`<schema_id>.custom.yaml`。找到就叠上去，
+/// 找不到就**只有方案层**——而 `--dump-config` 会如实说"没有用户补丁"，
+/// 不会假装有一层空的。
+///
+/// # Errors
+///
+/// 目录读不了、没有方案文件、任一方案或补丁有错时返回 [`SchemaError`]。
+pub fn load_dir_layered(root: &std::path::Path) -> Result<Vec<Loaded>, SchemaError> {
     let entries = std::fs::read_dir(root).map_err(|e| SchemaError::Invalid {
         schema_id: root.display().to_string(),
         diagnostics: vec![Diagnostic::new(
@@ -573,7 +963,53 @@ pub fn load_dir(root: &std::path::Path) -> Result<Vec<SchemeDef>, SchemaError> {
             schema_id: name.to_owned(),
             diagnostics: vec![Diagnostic::new(name, format!("读不了文件：{e}"))],
         })?;
-        out.push(load_scheme(&text, name, &src)?);
+        // 用户补丁：`<schema_id>.custom.yaml`（RIME 的约定）。
+        // `schema_id` 通常等于文件名去掉扩展名，但**以文件里写的为准**——
+        // 先装载一次拿到 id，再按 id 找补丁。
+        let mut loaded = load_scheme_with(&text, name, &src, &DictMode::Inline)?;
+        let id = loaded.def.info.schema_id.clone();
+        let custom = root.join(format!("{id}.custom.yaml"));
+        if custom.is_file() {
+            if let Ok(patch_text) = std::fs::read_to_string(&custom) {
+                let patch_name = custom
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("custom.yaml")
+                    .to_owned();
+                let mut layers = vec![(
+                    crate::provenance::Layer::new("方案", name, "方案文件本身（基础层）"),
+                    stele_config::parse(&text).map_err(|e| SchemaError::Invalid {
+                        schema_id: name.to_owned(),
+                        diagnostics: vec![Diagnostic::new(
+                            name,
+                            format!("第 {} 行：{}", e.line, e.message),
+                        )],
+                    })?,
+                )];
+                layers.push((
+                    crate::provenance::Layer::new(
+                        "用户补丁",
+                        &patch_name,
+                        "你的改动层：它覆盖上面任何一层",
+                    ),
+                    stele_config::parse(&patch_text).map_err(|e| SchemaError::Invalid {
+                        schema_id: patch_name.clone(),
+                        diagnostics: vec![Diagnostic::new(
+                            patch_name.clone(),
+                            format!("第 {} 行：{}", e.line, e.message),
+                        )],
+                    })?,
+                ));
+                loaded.resolution =
+                    crate::provenance::Resolution::of(layers).map_err(|msg| {
+                        SchemaError::Invalid {
+                            schema_id: patch_name.clone(),
+                            diagnostics: vec![Diagnostic::new(patch_name.clone(), msg)],
+                        }
+                    })?;
+            }
+        }
+        out.push(loaded);
     }
     Ok(out)
 }
@@ -610,6 +1046,22 @@ pub fn load_dir_deployed(
     root: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<Vec<SchemeDef>, SchemaError> {
+    Ok(load_dir_deployed_layered(root, cache_dir)?
+        .into_iter()
+        .map(|l| l.def)
+        .collect())
+}
+
+/// 部署路径的"连同来源表"版本。语义与 [`load_dir_layered`] 相同，
+/// 只是词库走紧凑产物（不读进内存）。
+///
+/// # Errors
+///
+/// 同 [`load_dir_deployed`]。
+pub fn load_dir_deployed_layered(
+    root: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<Vec<Loaded>, SchemaError> {
     let src = dict::DirSource::new(root);
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     let entries = std::fs::read_dir(root).map_err(|e| SchemaError::Invalid {
@@ -649,12 +1101,50 @@ pub fn load_dir_deployed(
             schema_id: name.clone(),
             diagnostics: vec![Diagnostic::new(&name, format!("读不了文件：{e}"))],
         })?;
-        out.push(load_scheme_with(
-            &text,
-            &name,
-            &src,
-            &DictMode::Deployed(cache_dir),
-        )?);
+        let mut loaded = load_scheme_with(&text, &name, &src, &DictMode::Deployed(cache_dir))?;
+        let id = loaded.def.info.schema_id.clone();
+        let custom = root.join(format!("{id}.custom.yaml"));
+        if custom.is_file() {
+            if let Ok(patch_text) = std::fs::read_to_string(&custom) {
+                let patch_name = custom
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("custom.yaml")
+                    .to_owned();
+                let mut layers = vec![(
+                    crate::provenance::Layer::new("方案", &name, "方案文件本身（基础层）"),
+                    stele_config::parse(&text).map_err(|e| SchemaError::Invalid {
+                        schema_id: name.clone(),
+                        diagnostics: vec![Diagnostic::new(
+                            &name,
+                            format!("第 {} 行：{}", e.line, e.message),
+                        )],
+                    })?,
+                )];
+                layers.push((
+                    crate::provenance::Layer::new(
+                        "用户补丁",
+                        &patch_name,
+                        "你的改动层：它覆盖上面任何一层",
+                    ),
+                    stele_config::parse(&patch_text).map_err(|e| SchemaError::Invalid {
+                        schema_id: patch_name.clone(),
+                        diagnostics: vec![Diagnostic::new(
+                            patch_name.clone(),
+                            format!("第 {} 行：{}", e.line, e.message),
+                        )],
+                    })?,
+                ));
+                loaded.resolution =
+                    crate::provenance::Resolution::of(layers).map_err(|msg| {
+                        SchemaError::Invalid {
+                            schema_id: patch_name.clone(),
+                            diagnostics: vec![Diagnostic::new(patch_name.clone(), msg)],
+                        }
+                    })?;
+            }
+        }
+        out.push(loaded);
     }
     Ok(out)
 }

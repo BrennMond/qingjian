@@ -78,6 +78,46 @@ impl CodeAlphabet {
 pub trait Lexicon: Send + Sync {
     /// 查一个编码序列对应的词条。
     fn lookup(&self, code: &[CodeUnitId], out: &mut CandidateSink<'_>);
+
+    /// 查**以 `prefix` 开头**的全部编码（词条补全）。
+    ///
+    /// # 为什么它是 trait 上的一个方法，而不是"翻译器自己扫"
+    ///
+    /// 因为"前缀是一段连续区间"这件事**只有词库实现自己知道**：
+    /// 内存表靠有序 map 的 `range`，紧凑表靠编码段的偏移数组，
+    /// 未来的 mmap 实现靠页索引。翻译器如果自己去遍历，就等于
+    /// 假定"词库能被顺序扫描"——而那是**存储格式的细节**，
+    /// 正是 `Lexicon` 这个 trait 要挡住的东西（P2.5 的兑现点）。
+    ///
+    /// # 默认实现：**什么都不返回**
+    ///
+    /// 这条默认值是刻意的：补全是**可选能力**（RIME 的
+    /// `enable_word_completion` 默认就是关的）。不支持前缀查询的
+    /// 词库退回"查不到"是正确行为——**比"假装支持"好得多**：
+    /// 后者会让用户看到"有的词能补全、有的不能"，而那无法排查。
+    ///
+    /// # Arguments / 参数
+    /// * `prefix` — 编码前缀。
+    /// * `exclude_exact` — 是否跳过**恰好等于**前缀的那些词条。
+    ///   翻译器已经精确查过一次了，补全只该给出"更长"的那些。
+    /// * `out` — 候选写这里。属性的 `COMPLETION` 位由**实现方**负责打上
+    ///   （它知道这些候选是补出来的）。
+    fn prefix_lookup(
+        &self,
+        prefix: &[CodeUnitId],
+        exclude_exact: bool,
+        out: &mut CandidateSink<'_>,
+    ) {
+        let _ = (prefix, exclude_exact, out);
+    }
+
+    /// 本词库是否支持[前缀查询](Lexicon::prefix_lookup)。
+    ///
+    /// 翻译器用它决定要不要尝试补全——省掉一次必然落空的调用，
+    /// 也让 `--dump-config` 能如实报告"这个方案开了补全，但词库不支持"。
+    fn supports_prefix(&self) -> bool {
+        false
+    }
 }
 
 /// 一条展开出来的编码切分：编码 + 代价 + 属性。

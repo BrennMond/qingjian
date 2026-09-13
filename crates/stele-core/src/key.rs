@@ -12,7 +12,7 @@
 /// 修饰键的位集合。
 ///
 /// 手写而非用 `bitflags` crate——本 crate 零依赖（PLAN D9）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
 pub struct Modifiers(u8);
 
 impl Modifiers {
@@ -63,8 +63,11 @@ impl core::ops::BitOr for Modifiers {
 }
 
 /// 具名功能键。
+///
+/// **有序**（`PartialOrd` / `Ord`）：按键要能被放进方案数据里的绑定表的键，
+/// 也要能在诊断信息里稳定排序。加这两个 derive 是纯加法，不影响任何调用方。
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum NamedKey {
     /// 退格。
     Backspace,
@@ -96,11 +99,25 @@ pub enum NamedKey {
     PageDown,
     /// 顶部数字键 0–9，用于选词。
     Digit(u8),
+    /// Shift 键**单独按下**（没有配合别的键）。
+    ///
+    /// # 为什么需要它
+    ///
+    /// `Shift` + `a` 在前端就被归一化成字符 `'A'` 了（见 [`KeyCode::Char`]），
+    /// 因此"Shift 按下"只在一处有意义：用户想**切换中英模式**时那一下
+    /// 单独的 Shift。RIME 里这一下由前端合成 keysym 表达，我们显式给它一个
+    /// 变体——否则 `ascii_composer` 就没有任何办法看到它。
+    Shift,
+    /// 大写锁定键**按下**（当前是否开启由 [`Modifiers::CAPS`] 给出）。
+    CapsLock,
 }
 
 /// 按键的"是什么"。
+///
+/// **有序**，理由同 [`NamedKey`]：按键要能当绑定表的键，也要能稳定排序。
+/// 顺序是"可打印字符在前、具名键在后"——这**不是**语义，只是为了确定性。
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum KeyCode {
     /// 可打印字符。**已归一化**：`Shift` + `a` 在这里就是 `'A'`。
     Char(char),

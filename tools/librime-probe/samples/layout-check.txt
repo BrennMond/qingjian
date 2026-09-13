@@ -1,0 +1,19 @@
+sizeof(RimeTraits)  = 96
+sizeof(RimeCommit)  = 16
+sizeof(RimeContext) = 88
+sizeof(RimeStatus)  = 56
+sizeof(RimeApi)     = 792
+offsetof(RimeContext, composition)        = 8
+offsetof(RimeContext, menu)               = 32
+offsetof(RimeContext, commit_text_preview)= 72
+offsetof(RimeContext, select_labels)      = 80
+offsetof(RimeApi, process_key)            = 152
+offsetof(RimeApi, get_context)            = 192
+offsetof(RimeApi, select_schema)          = 280
+offsetof(RimeApi, change_page)            = 784
+RimeContext.data_size after RIME_STRUCT_INIT = 84
+HAS_MEMBER(ctx, select_labels)               = 1
+HAS_MEMBER(traits, staging_dir)              = 1
+库返回的 RimeApi.data_size = 788（本文件期望 788）
+库版本: 1.16.1
+布局自检: 通过

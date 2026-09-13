@@ -1,0 +1,212 @@
+# RIME 风格的测试方案：P3 验收的形状
+#
+# 这份文件**不是**给人用的输入方案，而是把 P3 那批零件全部串起来跑一遍的
+# 最小样本。它刻意用 RIME 的**原生写法**（`engine:` 名字列表、
+# `recognizer/patterns`、`punctuator` 的映射表、`editor` 的动作绑定），
+# 因为"用户手上的方案文件能不能直接拿来用"是 P3 的验收问题之一。
+#
+# 与 rime-ice 的 `others/no_lua_schema` 的对应关系：
+#   它有什么                     这份文件里对应什么
+#   ---------------------------  ------------------------------------------
+#   ascii_composer               同名（中英切换）
+#   recognizer + patterns       同名（前缀模式）
+#   key_binder                   同名（按键重绑定）
+#   speller / alphabet / algebra 同名（含超级简拼与纠错规则）
+#   punctuator + symbols         同名（含 `v` 开头符号表）
+#   selector / navigator         同名
+#   express_editor + bindings    同名（含 Ctrl+退格按编码单元回退）
+#   ascii_segmentor / matcher    同名
+#   abc_segmentor                同名
+#   affix_segmentor@radical      `chaizi`（前缀 uU）
+#   punct_segmentor              同名
+#   fallback_segmentor           同名
+#   punct_translator             同名
+#   script_translator            同名
+#   table_translator@xxx         同名（自定义短语表）
+#   reverse_lookup_filter@xxx    `chaizi_hint`（给出候选的编码注音）
+#   simplifier@xxx               `fanti`（转换表内联给出）
+#   uniquifier                   同名
+
+schema:
+  schema_id: p3-features
+  name: 石经・P3 特性验证
+  version: "1.0"
+  description: |
+    把 P3 的全部零件串起来跑通的最小方案。数据是编的，形状是真的。
+  dependencies:
+    - shape
+
+switches:
+  - name: ascii_mode
+    states: [中, Ａ]
+  - name: ascii_punct
+    states: [¥, $]
+  - name: full_shape
+    states: [半角, 全角]
+  - name: fanti
+    states: [简, 繁]
+    reset: 0
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - affix_segmentor@chaizi
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+    - table_translator@phrase
+    - table_translator@chaizi
+  filters:
+    - reverse_lookup_filter@chaizi_hint
+    - simplifier@fanti
+    - uniquifier
+
+# ── 主翻译器 ──
+translator:
+  dictionary: p3features
+  enable_word_completion: true
+  initial_quality: 1.2
+  preedit_format:
+    - xform/([nl])ve$/$1ue/
+
+# ── 自定义短语表（精确编码族） ──
+phrase:
+  dictionary: p3phrases
+  enable_sentence: false
+  enable_completion: false
+  initial_quality: 99
+  comment_format:
+    - xform/^.+$/〔短语〕/
+
+# ── 拆字反查（带前缀的精确编码族） ──
+chaizi:
+  tag: chaizi
+  dictionary: p3chaizi
+  enable_user_dict: false
+  prefix: "uU"
+  tips: "  〔拆字〕"
+  comment_format:
+    - erase/^.*$//
+
+# ── 反查提示：给出候选的编码 ──
+chaizi_hint:
+  tags: [chaizi]
+  dictionary: p3features
+
+# ── 简繁（内联转换表，不依赖 OpenCC） ──
+fanti:
+  option_name: fanti
+  tips: none
+  tags: [abc]
+  table:
+    你: 妳
+    好: 好
+
+# ── 前缀模式 ──
+recognizer:
+  patterns:
+    punct: "^v([0-9]|10|[A-Za-z]+)$"
+    chaizi: "^uU[a-z]+$"
+
+# ── 按键重绑定 ──
+key_binder:
+  bindings:
+    - { when: always, accept: Control+Shift+1, toggle: ascii_mode }
+    - { when: composing, accept: space, send: space }
+    - { when: paging, accept: minus, send: Page_Up }
+    - { when: has_menu, accept: equal, send: Page_Down }
+
+# ── 编辑器动作 ──
+editor:
+  bindings:
+    space: confirm
+    Return: commit_raw_input
+    Control+Return: commit_script_text
+    BackSpace: back_syllable
+    Delete: delete
+    Control+BackSpace: back_syllable
+    Escape: cancel
+
+# ── 标点 ──
+punctuator:
+  half_shape:
+    ",": "，"
+    ".": "。"
+    "!": "！"
+    "?": "？"
+    ":": "："
+    ";": "；"
+  full_shape:
+    ",": "，"
+    ".": "。"
+  # 符号表：`symbols_prefix: "v"` 表示"敲 v 再敲下面的键"。
+  # 另一种 RIME 写法是键自带前缀（`"/hx": "㊕"`），两种都受支持——
+  # 区别只在 `symbols_prefix` 写不写。
+  symbols_prefix: "v"
+  symbols:
+    "1": "①"
+    "2": "②"
+    "hx": "㊕"
+
+# ── 拼写设定 ──
+speller:
+  # 编码单元（音节）表。RIME 的方案把它放在 `.dict.yaml` 的头部，
+  # 我们的方案文件把它显式列在这里 —— **两条路都要能走**：
+  # 字符串写法（`abcdefg…`，每个字符一个编码单元）用于字形类方案，
+  # 列表写法（多字符单元）用于拼音类方案。
+  alphabet:
+    - a
+    - ai
+    - an
+    - ang
+    - ao
+    - ba
+    - cheng
+    - chi
+    - guo
+    - ha
+    - hai
+    - han
+    - hang
+    - hao
+    - he
+    - hm
+    - ji
+    - jie
+    - ju
+    - lv
+    - n
+    - ne
+    - ni
+    - nu
+    - nv
+    - nve
+    - qi
+    - qu
+    - shi
+    - shui
+    - xi
+    - xu
+    - zhong
+  delimiter: " '"
+  algebra:
+    - erase/^hm$/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+    - derive/^([nl])ve$/$1ue/
+    - derive/^([jqxy])u/$1v/
+    - derive/([zcs])h(a|e|i|u|ai|ei|an|en|ou|uo|ua|un|ui|uan|uai|uang|ang|eng|ong)$/h$1$2/
+    - derive/([zcs])h([aeiu])$/$1$2h/

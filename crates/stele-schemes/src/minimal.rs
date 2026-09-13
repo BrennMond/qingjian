@@ -80,11 +80,40 @@ impl dict::Source for EmbeddedSource {
 
 /// 装载内嵌的默认方案。
 ///
+/// # Panics
+///
+/// 不会 panic。列出这一行是因为 `clippy::missing_panics_doc` 要求任何
+/// 返回 `Result` 的公开函数说明这件事——**"不会 panic"也是一条契约**。
+///
 /// # Errors
 ///
 /// 内嵌数据本身解析失败时返回 [`SchemaError`]。
 /// **这在实践中意味着"打包坏了"**——所以它必须在 CI 里被测试抓住
 /// （见本模块的测试），而不是留到运行时当可恢复错误处理。
+pub fn all_layered() -> Result<Vec<crate::file::Loaded>, SchemaError> {
+    let src = EmbeddedSource;
+    let mut out = Vec::new();
+    for name in EMBEDDED_SCHEMAS {
+        // **必须按 `EMBEDDED_SCHEMAS` 走，不能遍历 `EMBEDDED`**：
+        // 后者里有 `.dict.yaml`，而词典不是方案——把它当方案解析会得到
+        // 五条"缺少 schema/engine/speller"的报错。这个错误真发生过，
+        // 是"新写的 `all_layered()` 第一次运行"抓到的。
+        let text = EMBEDDED
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| *t)
+            .expect("EMBEDDED_SCHEMAS 里的每一项都必须在 EMBEDDED 里");
+        out.push(crate::file::load_scheme_layered(text, name, None, &src)?);
+    }
+    Ok(out)
+}
+
+/// 只给出方案定义（内嵌方案没有用户补丁层）。
+///
+/// # Errors
+///
+/// 内嵌方案数据有错时返回 [`SchemaError`]——那说明打包坏了，
+/// 应当在 CI 里就被抓住。
 pub fn all() -> Result<Vec<SchemeDef>, SchemaError> {
     let src = EmbeddedSource;
     EMBEDDED_SCHEMAS

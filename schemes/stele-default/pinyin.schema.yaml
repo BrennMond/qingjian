@@ -77,7 +77,7 @@ speller:
   # 下面这条就是"简拼"：每个音节取首字母，于是 `nh` 也能命中 `ni hao`。
   # 引擎不知道它叫简拼，只知道这些边带 ABBREV 属性、代价是 ln(0.5)。
   rules:
-    - abbrev: { take: 1, cost: 0.5 }
+    - abbrev: { take: 1, weight: 0.5 }
 
 translator:
   dictionary: pinyin

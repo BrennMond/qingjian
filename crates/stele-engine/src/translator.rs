@@ -20,8 +20,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use stele_core::{
-    Candidate, CandidateSink, CodeAlphabet, CodeUnitId, Lane, Lexicon, Origin, Query, Score, Span,
-    Spelling, SpellingAttr, Tag, Translator,
+    Candidate, CandidateSink, CodeAlphabet, CodeUnitId, Filter, Lane, Lexicon, Origin, Query, Score,
+    Span, Spelling, SpellingAttr, Tag, Translator,
 };
 
 /// 一次翻译最多产出多少候选（防止病态输入撑爆内存）。
@@ -37,6 +37,8 @@ pub struct ExactCodeTranslator {
     by_text: BTreeMap<String, CodeUnitId>,
     /// 单元文本按长度降序（贪心最长匹配）。
     texts_by_len: Vec<String>,
+    /// 词条补全（RIME 的 `enable_completion`）。
+    completion: bool,
 }
 
 impl ExactCodeTranslator {
@@ -59,7 +61,15 @@ impl ExactCodeTranslator {
             lexicon,
             by_text,
             texts_by_len,
+            completion: false,
         }
+    }
+
+    /// 打开词条补全。
+    #[must_use]
+    pub fn with_completion(mut self, on: bool) -> Self {
+        self.completion = on;
+        self
     }
 
     /// 把输入串切成编码单元（贪心最长匹配）。
@@ -84,13 +94,18 @@ impl ExactCodeTranslator {
 
 impl Translator for ExactCodeTranslator {
     fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>) {
-        let Some(code) = self.split(q.input) else {
+        let Some(code) = self.split(q.segment_text) else {
             return;
         };
         let mut raw: Vec<Candidate> = Vec::new();
         {
             let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
             self.lexicon.lookup(&code, &mut sink);
+            // 补全：编码集合不可枚举的方案（仓颉 / 英文）里，
+            // "打一半就出候选"同样是常见的期待——英文尤其如此。
+            if self.completion && self.lexicon.supports_prefix() {
+                self.lexicon.prefix_lookup(&code, true, &mut sink);
+            }
         }
         for mut c in raw {
             // 覆盖整段输入。
@@ -106,13 +121,26 @@ impl Translator for ExactCodeTranslator {
 pub struct SpellingGraphTranslator {
     spelling: Arc<dyn Spelling>,
     lexicon: Arc<dyn Lexicon>,
+    /// 词条补全（RIME 的 `enable_word_completion`）。
+    completion: bool,
 }
 
 impl SpellingGraphTranslator {
     /// 由拼写层与词库构造。
     #[must_use]
     pub fn new(spelling: Arc<dyn Spelling>, lexicon: Arc<dyn Lexicon>) -> Self {
-        Self { spelling, lexicon }
+        Self {
+            spelling,
+            lexicon,
+            completion: false,
+        }
+    }
+
+    /// 打开词条补全。
+    #[must_use]
+    pub fn with_completion(mut self, on: bool) -> Self {
+        self.completion = on;
+        self
     }
 }
 
@@ -121,22 +149,50 @@ impl Translator for SpellingGraphTranslator {
         let mut expansions = Vec::new();
         {
             let mut sink = stele_core::ExpansionSink::new(&mut expansions, 64);
-            self.spelling.expand(q.input, &mut sink);
+            self.spelling.expand(q.segment_text, &mut sink);
         }
+
+        // 这一次查询要不要补全：**只有当这段拼写是一条完整的切分时才做**。
+        //
+        // 为什么：`niha` 展开出的编码是 `[ni, ha]`，而 `ha` 不是一个合法的
+        // 编码单元——[`Spelling::expand`] 根本不会产出这条展开（短路的边
+        // 必须在表里）。**"补全"所以不是"前缀扫描一条编码"，而是
+        // "把最后那个编码单元之后可能接什么补出来"**——那需要知道
+        // 字母表里有哪些单元以它开头，而那正是前缀扫描能回答的问题。
+        let completion = self.completion && self.lexicon.supports_prefix();
 
         for exp in expansions {
             let mut raw: Vec<Candidate> = Vec::new();
             {
                 let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
                 self.lexicon.lookup(&exp.code, &mut sink);
+                if completion {
+                    // 补全只对**规范拼写**那条边做：简拼/纠错的边上再补全
+                    // 会让候选数量乘起来，而收益极小（用户敲简拼时本来就
+                    // 不指望看到完整词的补全）。
+                    if exp.attr == stele_core::SpellingAttr::NORMAL {
+                        self.lexicon.prefix_lookup(&exp.code, true, &mut sink);
+                    }
+                }
             }
             for mut c in raw {
                 // 候选的分数 = 词条分数 + 这条边的代价。
                 // **这就是"简拼天然排在精确匹配之后"的全部机制**：
                 // 缩写边的代价是负的，不需要任何额外规则。
                 c.score = c.score.saturating_add(exp.cost);
-                // 属性取并集：只要这条边经过了变形，候选就不是"精确"的。
-                c.attr = c.attr.union(exp.attr);
+                if completion && c.attr.contains(stele_core::SpellingAttr::COMPLETION) {
+                    // 补全出来的词**扣一次分**：它是"猜你要打这个",
+                    // 不该与真正打全的词平起平坐。
+                    //
+                    // 代价数值**属于方案数据**（RIME 的 `enable_word_completion`
+                    // 也有对应的权重扣减）。这里用一个与拼写代数里
+                    // `Completion` 边同量级的值（ln 0.05 ≈ -3.0，
+                    // 见 `docs/engine-design.md` §5.2 的表）。
+                    c.score = c.score.saturating_add(COMPLETION_COST);
+                } else {
+                    // 属性取并集：只要这条边经过了变形，候选就不是"精确"的。
+                    c.attr = c.attr.union(exp.attr);
+                }
                 c.span = span;
                 out.push(c);
             }
@@ -146,6 +202,14 @@ impl Translator for SpellingGraphTranslator {
         }
     }
 }
+
+/// 补全候选的代价（对数域，`ln(0.05) ≈ -3.0`）。
+///
+/// 取这个数的理由见 `docs/engine-design.md` §5.2 的边代价表：
+/// 它就是"补全"这一类边的标准代价。**放在这里而不是散在代码里**，
+/// 因为它是"补全排在精确匹配之后"的**唯一**机制——
+/// 没有它，补全出来的长词会凭词条权重压过用户真正打全的词。
+pub const COMPLETION_COST: Score = Score::from_milli_log(-2_996);
 
 /// **兜底翻译器**：保证"你敲的东西永远能上屏"（G4）。
 ///
@@ -196,26 +260,95 @@ impl Translator for EchoTranslator {
 ///
 /// **tag 是"切分器 → 翻译器"的绑定层**：一个方案可以挂多个翻译器，
 /// 它们不靠位置区分，靠 tag 区分。
+///
+/// # 包装层还要负责"换掉 `Query` 里那一段文本"（G15）
+///
+/// 带词缀的分段（`affix_segmentor`）里，要翻译的不是整串 `uUni`，
+/// 而是去掉前缀之后的 `ni`。这个"换文本"的动作**由包装层做**：
+/// 被包装的翻译器根本不知道词缀的存在——它只看到"一段要翻译的文本"。
+///
+/// 为什么不让每个翻译器自己处理前缀：那样"前缀"这个概念会渗透进
+/// 每一个翻译器，包括仓颉 / 英文这些**根本没有前缀概念**的方案。
+/// 包装层把它挡在外面，这正是它存在的意义。
 pub struct TaggedTranslator {
     inner: Box<dyn Translator>,
     tags: Vec<Tag>,
+    /// 被包装的翻译器是否要看到**去掉词缀之后**的正文。
+    ///
+    /// `false` 时它看到整串输入（例如"标点翻译器"要看到那个标点本身）。
+    strip_affix: bool,
 }
 
 impl TaggedTranslator {
     /// 包装一个翻译器，限定它只处理带这些 tag 的分段。
     #[must_use]
     pub fn new(inner: Box<dyn Translator>, tags: Vec<Tag>) -> Self {
-        Self { inner, tags }
+        Self {
+            inner,
+            tags,
+            strip_affix: true,
+        }
+    }
+
+    /// 让被包装的翻译器看到**整串输入**（不剥词缀）。
+    #[must_use]
+    pub fn without_affix_stripping(mut self) -> Self {
+        self.strip_affix = false;
+        self
     }
 }
 
 impl Translator for TaggedTranslator {
+    /// # 谁负责"剥掉词缀"
+    ///
+    /// **流水线负责**，不在这里。词缀的长度是**切分器的知识**
+    /// （它读方案里的 `prefix`），而这里只声明"我要的是正文"。
+    /// 早先这里自己想剥，但它拿不到前缀长度——于是反查翻译器
+    /// 收到的是 `uUni` 而不是 `ni`，**候选一个都不出**。
+    /// 现在流水线按 [`stele_core::Segmentor::body_start`] 填好正文，
+    /// 这里只把 `Query::segment_text` 原样交给被包装者。
     fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>) {
         self.inner.translate(q, span, out);
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        self.tags.iter().any(|t| tags.contains(t))
+        tags.iter().any(|t| self.tags.contains(t))
+    }
+
+    fn targets(&self) -> &[Tag] {
+        &self.tags
+    }
+}
+
+/// 一个只对特定 tag 生效的**滤镜**包装。
+///
+/// 与 [`TaggedTranslator`] 对称：`simplifier` 的 `tags: [abc]`、
+/// `reverse_lookup_filter` 的 `tags: [radical_lookup]` 都是这条约束。
+///
+/// **为什么它必须存在**：雾凇的简繁转换写着 `tags: [ abc ]`，
+/// 注释是「限制在对应 tag，不对其他如反查的内容做简繁转换」——
+/// 少了这层约束，拆字反查出来的部件字会被"顺手"转成繁体，
+/// 用户看到的反查结果与他敲的东西对不上。
+pub struct TaggedFilter {
+    inner: Box<dyn Filter>,
+    tags: Vec<Tag>,
+}
+
+impl TaggedFilter {
+    /// 包装一个滤镜，限定它只对带这些 tag 的分段生效。
+    #[must_use]
+    pub fn new(inner: Box<dyn Filter>, tags: Vec<Tag>) -> Self {
+        Self { inner, tags }
+    }
+}
+
+impl Filter for TaggedFilter {
+    fn apply(&self, q: &Query<'_>, span: Span, cands: &mut Vec<Candidate>) {
+        self.inner.apply(q, span, cands);
+    }
+
+    fn applies_to(&self, tags: &[Tag]) -> bool {
+        tags.iter().any(|t| self.tags.contains(t))
     }
 }
 
@@ -242,6 +375,7 @@ mod tests {
             options,
             context,
             composition,
+            segment_text: input,
         }
     }
 
