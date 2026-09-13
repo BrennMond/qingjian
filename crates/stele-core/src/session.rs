@@ -237,6 +237,16 @@ pub struct SessionState {
     /// 用 `Vec` 而不是单个值：一次按键可能切好几个开关，而**丢弃**其中
     /// 任何一个都会让状态栏与实际状态不一致。
     pub option_events: Vec<(String, bool)>,
+    /// **正在派发"被重绑定换来的"按键**。
+    ///
+    /// 这一段的历史值得留着：它现在是会话状态里的一个布尔量，因为
+    /// **只有 `key_binder` 该看它**，而"哪个处理器是 `key_binder`"是流水线
+    /// 装配时才知道的事——把下标记在流水线里（我第一版的做法）会让
+    /// "换来的按键跳过某个下标"与"重绑定器知道自己在重入"变成两件事，
+    /// 于是只改对一半。
+    ///
+    /// 与 `librime` 的 `KeyBinder::redirecting_` 一一对应。
+    pub redirecting: bool,
     /// 处理器要求"换成这些按键**再派发一遍**"（`key_binder` 的 `send`）。
     ///
     /// 由流水线在**同一次按键内**取走并重新派发。用 `Vec` 而不是单个值：
@@ -263,6 +273,7 @@ impl SessionState {
             context,
             pending_commit: None,
             option_events: Vec::new(),
+            redirecting: false,
             sent_keys: Vec::new(),
             candidate_count: 0,
             candidate_pages: 0,

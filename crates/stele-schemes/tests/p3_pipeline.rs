@@ -368,6 +368,106 @@ fn key_binder_turns_a_shifted_key_into_a_plain_one() {
 }
 
 #[test]
+fn a_rebound_key_is_seen_by_processors_before_the_binder() {
+    // 这是**唯一**能区分"从链头重派发"与"从 key_binder 之后重派发"的用例。
+    //
+    // 方案的绑定：`Control+Shift+2` → `send: Caps_Lock`。
+    // `CapsLock` 由 `ascii_composer` 处理，而它排在 `key_binder` **之前**。
+    // 只有整链重派发时，那一下才会翻转 `ascii_mode`。
+    //
+    // librime 的做法就是这个（`key_binder.cc` 的
+    // `engine_->ProcessKey(key_event)`，`engine.cc:99-122` 从
+    // `processors_.begin()` 开始）。我第一版从 key_binder 之后派发——
+    // 那种实现下这条绑定什么都不做，而**没有任何报错**。
+    let mut s = session();
+    assert!(!s.option("ascii_mode"));
+    let chord = Key::press(
+        KeyCode::Char('2'),
+        Modifiers::CTRL | Modifiers::SHIFT,
+    );
+    s.process_key(chord);
+    assert!(
+        s.option("ascii_mode"),
+        "换来的 Caps_Lock 必须被 key_binder **之前**的 ascii_composer 看到"
+    );
+}
+
+#[test]
+fn only_the_first_action_on_a_binding_takes_effect() {
+    // librime 的绑定是一条严格的选择链（`send` → … → `toggle` → …）。
+    // 方案里 `Control+Shift+3` 同时写了 `send: space` 与 `toggle: ascii_mode`，
+    // 因此**只有 send 生效**：开关不该被翻转。
+    // （装载器同时报一条诊断说明丢了哪个——静默只做一半最难查。）
+    let mut s = session();
+    assert!(!s.option("ascii_mode"));
+    let chord = Key::press(KeyCode::Char('3'), Modifiers::CTRL | Modifiers::SHIFT);
+    s.process_key(chord);
+    assert!(
+        !s.option("ascii_mode"),
+        "写了 send 就不该再走 toggle —— 那是两条不同的动作"
+    );
+}
+
+#[test]
+fn set_option_and_unset_option_are_not_toggle() {
+    // 与 `toggle` 的区别：这两个是**置位**，不是取反。
+    //
+    // # 这条测试为什么不能只靠按键走完全程
+    //
+    // 它想证的是"置位是幂等的"。但 `set_option` 一旦把英文模式打开，
+    // `ascii_composer` 就会把后面的可打印字符**还给系统**（包括带修饰键的），
+    // 于是第二下按键**到不了 key_binder**——那是**正确行为**，
+    // 英文模式下输入法不该继续吃掉按键。
+    //
+    // 所以这里把两件事分开验证：
+    //   1. 用按键验证"这一下确实置了位"；
+    //   2. 用 `Session::set_option` 造状态，验证**幂等**这条性质本身。
+    let mut s = session();
+    let set = Key::press(KeyCode::Char('4'), Modifiers::CTRL | Modifiers::SHIFT);
+    let unset = Key::press(KeyCode::Char('5'), Modifiers::CTRL | Modifiers::SHIFT);
+
+    // ① 从"关"开始：unset 之后再 set，置为开。
+    s.process_key(unset);
+    assert!(!s.option("ascii_mode"));
+    s.process_key(set);
+    assert!(s.option("ascii_mode"), "set_option 把它置为开");
+
+    // ② 幂等：连置两次开，仍然只可能是开（`toggle` 会翻回关）。
+    s.set_option("ascii_mode", false);
+    s.process_key(set);
+    s.set_option("ascii_mode", false);
+    s.process_key(set);
+    assert!(
+        s.option("ascii_mode"),
+        "两次 set 与一次 set 的结果相同 —— 这才叫置位"
+    );
+
+    // ③ 反方向同理：连按两次 unset，结果都是关（`toggle` 会翻回开）。
+    let mut t = session();
+    t.process_key(unset);
+    assert!(!t.option("ascii_mode"));
+    t.process_key(unset);
+    assert!(
+        !t.option("ascii_mode"),
+        "再 unset 一次还是关 —— 若它是 toggle，这里会被翻成开"
+    );
+}
+
+#[test]
+fn the_ascii_composer_rejects_command_chords_too() {
+    // 上面那条注释里的行为值得单独钉住：英文模式下**带修饰键的可打印字符
+    // 也被还给系统**。理由见 `AsciiComposer`：输入法在英文模式下最不该做的
+    // 事就是"假装打字"——应用可能在做自动补全、可能有自己的快捷键。
+    let mut s = session();
+    s.set_option("ascii_mode", true);
+    let cmd_chord = Key::press(KeyCode::Char('4'), Modifiers::CTRL | Modifiers::SHIFT);
+    assert!(
+        matches!(s.process_key(cmd_chord), Outcome::Rejected),
+        "英文模式下带修饰键的字符也该还给系统"
+    );
+}
+
+#[test]
 fn a_rebound_key_re_enters_the_whole_processor_chain() {
     // librime 的 `send` 语义：`engine_->ProcessKey(key_event)` 是**顶层入口**，
     // 因此换来的按键会被前面的处理器（中英切换、输入处理器）**再看到一次**。

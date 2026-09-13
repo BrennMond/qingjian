@@ -120,6 +120,10 @@ pub fn parse_key_name(name: &str) -> Option<KeyChord> {
         "end" => KeyCode::Named(NamedKey::End),
         "prior" | "page_up" => KeyCode::Named(NamedKey::PageUp),
         "next" | "page_down" => KeyCode::Named(NamedKey::PageDown),
+        // librime 的键名表里这两个是有名字的，而它们在方案里真的会被用到
+        // （`send: Caps_Lock` 是"把某个键换成中英切换"的常见写法）。
+        "caps_lock" | "capslock" => KeyCode::Named(NamedKey::CapsLock),
+        "shift" => KeyCode::Named(NamedKey::Shift),
         "minus" => KeyCode::Char('-'),
         "equal" => KeyCode::Char('='),
         "comma" => KeyCode::Char(','),
@@ -223,6 +227,13 @@ mod tests {
             Some(KeyChord::new(KeyCode::Char(','), Modifiers::NONE))
         );
         assert_eq!(parse_key_name("nonsense_key"), None);
+        assert_eq!(
+            parse_key_name("Caps_Lock"),
+            Some(KeyChord::new(
+                KeyCode::Named(NamedKey::CapsLock),
+                Modifiers::NONE
+            ))
+        );
     }
 
     #[test]

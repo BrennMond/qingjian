@@ -588,37 +588,86 @@ speller:
    （规范编码），运算子只改变**用户能敲什么**。这正是 RIME 的「拼寫 ≠ 編碼」，
    而我自己在写测试数据时犯了这个错。
 
-**P3 已补的三项**：
+**P3 收尾（本次交付）**
 
-- **零件注册表**（`stele-engine/src/registry.rs`）：按名字查零件，
-  并区分「已实现 / 需外部数据 / 尚未实现 / 不认识」——**后两者必须分开**，
-  因为一个是"你缺数据"、一个是"我们缺代码"。
-  现在能对 `no_lua_schema` 的 24 个名字出**精确的覆盖报告**：
-  已实现、需数据、尚未实现的各几个。
-- **`Formatter`**：预编辑串按最优切分渲染成 `ni'hao`（`speller.delimiter`）。
-- **按音节退格**：敲 `nihao` 按退格回到 `ni`。
-  它与预编辑串**共用同一份切分结果**——分开算就会出现"显示的边界与退格的边界不一致"。
-- **`--dump-config`**（最小版）：打印合并后的方案与来源标注。
+| 项 | 交付 | 实测 |
+| --- | --- | --- |
+| **零件集** | `recognizer` / `matcher` / `affix_segmentor` / `punct_segmentor` / `ascii_composer` / `navigator` / `key_binder` / `punctuator` / `punct_translator` / `reverse_lookup_filter` / `simplifier` | 注册表 24 个名字：**已实现 22、缺数据 2、缺代码 0** |
+| **词条补全** | `Lexicon::prefix_lookup`（默认空 = 不支持）+ `BTreeMap::range` 前缀区间扫描 | `nihao` 能出「你好世界」，且**排在精确匹配之后** |
+| **`--dump-config` 完整版** | 分层（内置/方案/用户补丁）+ 每个值的**来源**（层、文件、行号）+ 可粘贴的覆盖片段 | `switches` 逐项标到第 17/20/24 行 |
+| **分层补丁接线** | 用户补丁**真的进装载路径**了（`<schema_id>.custom.yaml`） | 端到端测试断言"补丁改的值真的进了引擎" |
+| **与 librime 的对照** | `tools/compare-librime.py` + `tools/librime-probe/`（无 `librime-dev` 时用 `rime_get_api()` 函数表驱动） | **6 条结构用例全过**，报告见 `tools/librime-probe/samples/compare-report.md` |
 
-**P3 尚未完成的部分**（诚实清单）：
+**零件覆盖报告的读法**（`stele --components`）：剩下的 2 个是
+`simplifier@emoji` 与 `simplifier@traditionalize`，缺的是 **OpenCC 的数据文件**
+（emoji.json / s2t.json），而机制已经实现并可用内联表验证——
+`crates/stele-schemes/tests/schemes/p3features.schema.yaml` 的 `fanti` 段就是。
 
-- `Formatter`（预编辑串的音节分隔显示）—— P1/P2/P3 都欠着
-- 按音节退格、词条补全
-- **零件注册表**：`no_lua_schema` 按名字引用 24 个零件，我们还没有 name→零件 的注册
-- `--dump-config` 与分层补丁接线（机制在 `stele-config` 里已实现并有测试）
-- **与 librime 的对照测试**：`librime-bin` 在 apt 里有（1.16.1），
-  但本机 `sudo` 不是免密的，**我无法安装它**。
-  工装需要你来跑一条命令才能生效：
-  `sudo apt install librime-bin librime-data-luna-pinyin`
+**"跑通 `no_lua_schema`"这句话现在的准确状态**：
+
+- **零件层面**：24 个名字里的 22 个我们有实现，另 2 个的机制也有
+  （只差数据文件）。缺的**具体数据**是：`emoji.json`、`s2t.json`、
+  `melt_eng.dict.yaml`、`radical_pinyin` 词典、`custom_phrase.txt`。
+- **配置层面**：RIME 的原生写法（`engine:` 名字列表、`recognizer.patterns`、
+  `punctuator` 的两张表与符号表、`editor.bindings`、`key_binder.bindings`、
+  `affix_segmentor` 的 `prefix`、`import_preset`）**都能读**，
+  且有 `p3features` 那份方案的 19 条端到端断言守着。
+- **诚实的一句**：我们**没有真的把那份文件跑起来**（拿不到它的词库与
+  OpenCC 数据）。跑通的是"同一种形状 + 全部零件"。
+
+### P3 过程中被源码证伪的四个实现（都由测试或调研抓到）
+
+| # | 我写的 | 事实 | 抓它的是 |
+| --- | --- | --- | --- |
+| 1 | 流水线每轮重算识别结果，**没告诉切分器** | 切分器一直用构造时的空扫描 → 整条"识别→切分→绑定"链静默断掉 | `the_symbol_table_expands_under_its_prefix` |
+| 2 | 标签 `punct` 有两处来源，一处没走 intern 表 | 同名两块内存 → `contains` 失效 → 标点整条链断 | 同上 |
+| 3 | `cost` 一个字段两种单位（毫对数/线性权重） | 写 `-3000` 被当成"权重为负"→ 掉到下界 → 切分退化成"谁先找到算谁" | `the_input_is_cut_into_labelled_segments` |
+| 4 | `prefix: "uU"` 读成"大小写二选一"；`send` 从 key_binder 之后重派发 | librime 是**字面串**；`send` 从**链头**重跑、防重入靠一个布尔（`affix_segmentor.cc` / `key_binder.cc`） | 源码调研（`reference/rime-*.md`） |
+
+前三条的症状完全一样：**配置看起来正常、某个功能就是不生效、没有任何报错**。
+第四条更值得记：我把它写进了**文档注释并称之为"RIME 约定"**——
+猜出来的约定写进文档，比写在代码里更危险。
+
+### 对照实验的一个直接收益
+
+`tools/compare-librime.py` 跑第一次就发现：默认拼音方案**没有声明
+`punctuator`**，于是 `,` 什么都打不出来，而 librime 出「，」。
+修法不是特判，而是给默认方案补上 RIME 形状的 `engine:` 零件清单，
+并给引擎加了**预设**机制（`import_preset`，见 `stele_engine::presets`）。
+
+### 性能（改动之后实测，release）
+
+| 指标 | P1 基线 | P3 之后 | 目标 |
+| --- | --- | --- | --- |
+| 按键路径 P50（拼音，零件齐全） | — | **542 ns** | < 1 ms ✅ |
+| 按键路径 P99 | — | **851 ns** | < 10 ms ✅ |
+| 按键路径 P50（字形码，零件少） | 301 ns | **180 ns** | — |
+| 常驻内存 | 3 MiB | **4 MiB** | < 30 MB ✅ |
+
+**一处值得记的数字**：加完零件后 P50 一度是 **1.55 µs**（5 倍回归）。
+原因不是零件本身，而是流水线为构造 `Query` **每键克隆三份会话状态**——
+而其中两份**全项目零个使用者**。删掉 `Query::composition` 之后回到 511 ns，
+再加"没有认领时整串一段"的快速路径，落到 542 ns。
+
+`stele-bench` 因此多了 `--schema=`：**延迟数字必须注明测的是哪个方案**
+（零件数差别很大，180 ns 与 542 ns 是同一套代码）。
 
 ### 下一步
 
-1. `Formatter`（预编辑串的音节分隔显示，例如 `ni'hao`）——P1/P2 都欠着它。
-2. 按音节退格（RIME：「以音節爲單位回退刪除拼音」）。
-3. 词条补全（`enable_word_completion`）。
-4. 完整拼写代数（`xform` / `derive` / `erase` 的正则语义），取代 P1 的简化规则集。
-5. `$ref` + 分层补丁接进方案装载路径（机制已在 `stele-config` 里实现并有测试）。
-6. 跑通 rime-ice 的 `others/no_lua_schema`（P3 的验收线）。
+上面那张清单（1–6）**全部做完了**。P3 的剩余项与 P4 的入口：
+
+1. **OpenCC 数据装载**（`simplifier` 的最后一块）：解析 `s2t.json` /
+   `emoji.json`，或定一个我们自己的转换表格式。做完之后注册表的
+   "缺数据 2 个"归零。
+2. **真的跑通 `no_lua_schema`**：需要 rime-ice 的词库与那几份数据文件。
+   工装已经就位（`--scheme-dir` + `compare-librime.py`）。
+3. **P3.5 默认方案**：`schemes/stele-default` 现在只有 30 条演示词
+   （见 §7 的路线图）。它才是"装上就能打字"那件事的载体。
+4. **`send_sequence` 与 `set_option` / `unset_option` / `select`**：
+   调研列出而我们尚未实现的四个按键动作（`reference/rime-key-binding-actions.md`
+   的第 6 节有完整差异表）。
+5. **中缀识别**：`recognizer` 目前只认**输入开头**的模式
+   （见 `docs/engine-design.md` 的说明与 `segmentor.rs` 的边界注释）。
 
 ---
 

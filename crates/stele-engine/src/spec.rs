@@ -204,9 +204,20 @@ pub struct RecogPattern {
     pub name: String,
     /// 正则的**字面前缀**（`^` 之后到第一个元字符之前的那些字符）。
     ///
-    /// 提前算出来是为了**快速排除**：绝大多数按键都不以任何一个模式的
-    /// 字面前缀开头，于是连正则都不用跑。RIME 也是这么做的（它把
-    /// `^abc...` 里的字面部分当作 `leading`）。
+    /// # 这是**我们的**优化，不是 RIME 的做法
+    ///
+    /// 提前算出来是为了快速排除：绝大多数按键都不以任何一个模式的
+    /// 字面前缀开头，于是连正则都不用跑。
+    ///
+    /// **我一度在这里写着"RIME 也是这么做的"——那是编的。**
+    /// 调研逐文件核对过 librime 全树：它的 `recognizer` **没有任何
+    /// leading-literal 缓存**，"literal" 只出现在配置编译器里。
+    ///
+    /// 而且这个优化本身有个前提要守住：`leading_literal()` 是**近似**
+    /// 抽取，它必须与"完整匹配"等价——取错一个字就会**错杀**匹配
+    /// （该认出来的输入认不出来）。因此它的实现是**保守**的：
+    /// 拿不准就返回空串（人人都匹配 → 走完整正则那条慢路）。
+    /// 对应的测试是 `leading_literal_stops_at_metacharacters`。
     pub leading: String,
     /// 完整正则的源码。
     pub regex: String,
@@ -240,7 +251,10 @@ pub struct RecognizerSpec {
 pub struct AffixSpec {
     /// 这个切分器产出的标签。
     pub tag: Option<Tag>,
-    /// 前缀（例如 `"uU"`；RIME 允许写两个字符表示大小写两种写法）。
+    /// 前缀，**字面字符串**（例如 `"uU"` 就是两个字符 `u`、`U`）。
+    ///
+    /// 见 [`crate::segmentor::expand_prefix`]：这一条曾经被我猜成
+    /// "大小写二选一"，被 librime 源码证伪。
     pub prefix: Option<String>,
     /// 后缀（可空）。
     pub suffix: Option<String>,
@@ -304,8 +318,43 @@ pub struct KeyBinding {
     pub send_keys: Option<Vec<String>>,
     /// 切换这个开关（`toggle`）。
     pub toggle: Option<String>,
+    /// 把这个开关**置为开**（`set_option`）。
+    pub set_option: Option<String>,
+    /// 把这个开关**置为关**（`unset_option`）。
+    pub unset_option: Option<String>,
     /// 来源行号。
     pub at: At,
+}
+
+impl KeyBinding {
+    /// 这条绑定实际上会做什么。
+    ///
+    /// # 只有一件事会发生（librime 的 `if / else if` 链）
+    ///
+    /// `key_binder.cc` 的 `LoadBindings` 是一条严格的选择链：
+    ///
+    /// ```text
+    /// send → send_sequence → toggle → set_option → unset_option → select
+    /// ```
+    ///
+    /// **一个都不匹配就丢弃该条并打 WARNING**（`:218-223`）。
+    /// 所以"同时写了 `send` 和 `toggle`"时只有 `send` 生效——
+    /// 我们的装载器会为此**报一条诊断**（写明丢了哪个），
+    /// 因为静默只做一半的效果最难查。
+    #[must_use]
+    pub fn effect(&self) -> &'static str {
+        if self.send_keys.is_some() {
+            "send"
+        } else if self.toggle.is_some() {
+            "toggle"
+        } else if self.set_option.is_some() {
+            "set_option"
+        } else if self.unset_option.is_some() {
+            "unset_option"
+        } else {
+            "(无)"
+        }
+    }
 }
 
 /// `key_binder/bindings` 的 `when` 谓词。

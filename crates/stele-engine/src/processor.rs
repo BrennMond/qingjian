@@ -375,18 +375,13 @@ impl stele_core::Processor for Editor {
 pub struct AsciiComposer {
     /// 哪个开关表示"英文模式"。
     option: Option<String>,
-    /// 大写锁定当前状态（用来识别 `CapsLock` 的按下沿）。
-    caps_on: bool,
 }
 
 impl AsciiComposer {
     /// 由开关名构造。
     #[must_use]
     pub fn new(option: Option<String>) -> Self {
-        Self {
-            option,
-            caps_on: false,
-        }
+        Self { option }
     }
 
     fn ascii_on(&self, state: &SessionState) -> bool {
@@ -409,24 +404,38 @@ impl stele_core::Processor for AsciiComposer {
             return ProcessResult::Noop;
         }
 
-        // ── CapsLock：状态位由前端给出（`Modifiers::CAPS`），这里取"按下沿" ──
-        let caps_now = key.mods.contains(Modifiers::CAPS);
-        if caps_now != self.caps_on {
-            self.caps_on = caps_now;
-            // 打开大写锁定 = 进英文；关掉 = 回中文（与 RIME 的行为一致）。
-            state.set_option(&name, caps_now);
-            return ProcessResult::Accepted;
-        }
-
-        // ── Shift 单独按下：切换 ──
+        // ── Shift / CapsLock **单独按下**：切换 ──
         //
-        // 只认"Shift 且没有别的键"这一种形态。`Shift` + 字母 在
-        // [`KeyCode`] 里已经被归一化成大写字符，因此不会走到这里。
-        if key.mods.contains(Modifiers::SHIFT)
-            && !key.mods.contains(Modifiers::CTRL)
-            && !key.mods.contains(Modifiers::ALT)
-            && matches!(key.code, KeyCode::Named(NamedKey::Shift))
-        {
+        // 两者都是"按一下换一次"，而不是"跟随某个状态位"。
+        //
+        // # CapsLock 为什么是"按下沿"而不是"跟随 CAPS 位"
+        //
+        // 我第一版让它跟随 `Modifiers::CAPS`（前端给出的开关状态），
+        // 并把"上一次的状态"记在处理器自己的字段里。那有两个问题：
+        //
+        // 1. **`AsciiComposer` 是每会话一份**，于是"A 会话的 CapsLock 状态"
+        //    会影响 B 会话——一个客户端的锁定状态泄漏到另一个客户端。
+        // 2. 它让 `{accept: C, send: Caps_Lock}` 这类绑定**在第一次按键时
+        //    什么都不做**（记录的状态从 false 变 false，没有"沿"），
+        //    而那正是 RIME 方案里"把某个键换成中英切换"的常见写法。
+        //
+        // 按下沿的判据因此落在**按键本身**：敲了一下 CapsLock = 想切换。
+        // 前端若要表达"锁定被外部改成了开"，用 `Session::set_option`。
+        //
+        // `Shift` + 字母 在 [`KeyCode`] 里已经被归一化成大写字符，
+        // 因此"单独按下"只能是具名键那一种形态。
+        let bare_toggle = match key.code {
+            KeyCode::Named(NamedKey::Shift) => {
+                key.mods.contains(Modifiers::SHIFT)
+                    && !key.mods.contains(Modifiers::CTRL)
+                    && !key.mods.contains(Modifiers::ALT)
+            }
+            KeyCode::Named(NamedKey::CapsLock) => {
+                !key.mods.contains(Modifiers::CTRL) && !key.mods.contains(Modifiers::ALT)
+            }
+            _ => false,
+        };
+        if bare_toggle {
             state.toggle_option(&name);
             return ProcessResult::Accepted;
         }
@@ -576,21 +585,13 @@ impl stele_core::Processor for Navigator {
 /// 处理器）眼里等于没发生过。RIME 的方案依赖它们看到。
 pub struct KeyBinder {
     bindings: Vec<crate::spec::KeyBinding>,
-    /// **正在派发"换来的按键"**——此刻本处理器一律放行。
-    ///
-    /// 名字照抄 librime（`redirecting_`）：它是一个**重入标志**，
-    /// 不是"我正在处理按键"。
-    redirecting: bool,
 }
 
 impl KeyBinder {
     /// 构造。
     #[must_use]
     pub fn new(bindings: Vec<crate::spec::KeyBinding>) -> Self {
-        Self {
-            bindings,
-            redirecting: false,
-        }
+        Self { bindings }
     }
 }
 
@@ -599,13 +600,11 @@ impl stele_core::Processor for KeyBinder {
         "key_binder"
     }
 
-    /// 被重绑定的按键**跳过**本处理器——这就是防重入的全部机制。
-    fn enabled(&self, _options: &stele_core::Options) -> bool {
-        !self.redirecting
-    }
-
     fn process(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult {
-        if key.release {
+        // **防重入**：正在派发"换来的按键"时一律放行。
+        // 这就是 librime 里那句 `if (redirecting_ || ...) return kNoop;`，
+        // 也是 `{accept: space, send: space}` 不会死循环的全部原因。
+        if key.release || state.redirecting {
             return ProcessResult::Noop;
         }
         for b in &self.bindings {
@@ -621,23 +620,41 @@ impl stele_core::Processor for KeyBinder {
             if !ok || !b.accept.iter().any(|c| c.matches(key)) {
                 continue;
             }
-            // 绑定命中：**先做效果，再决定按键算不算被消费**。
-            let mut did = false;
-            if let Some(name) = &b.toggle {
-                did |= state.toggle_option(name);
-            }
-            if let Some(seq) = &b.send_keys {
-                // 整个序列**按顺序**派发（librime 的 `binding.target`
-                // 是一个 `KeySequence`，按下一次全发出去）。
-                let keys = parse_send_sequence(seq);
-                if !keys.is_empty() {
-                    state.sent_keys.extend(keys);
-                    did = true;
+            // 绑定命中。**只有一件事会发生**——librime 的 `if / else if`
+            // 链（`send` → `send_sequence` → `toggle` → `set_option` →
+            // `unset_option` → `select`），见 [`KeyBinding::effect`]。
+            // 装载器已经把"同时写了多个"报成诊断了。
+            match b.effect() {
+                "send" => {
+                    // `send` 与 `send_sequence` 是**同一串按键、按顺序派发**
+                    // （librime 的 `binding.target` 是一个 `KeySequence`）。
+                    if let Some(seq) = &b.send_keys {
+                        let keys = parse_send_sequence(seq);
+                        if !keys.is_empty() {
+                            state.sent_keys.extend(keys);
+                        }
+                    }
                 }
+                "toggle" => {
+                    if let Some(name) = &b.toggle {
+                        state.toggle_option(name);
+                    }
+                }
+                "set_option" => {
+                    if let Some(name) = &b.set_option {
+                        state.set_option(name, true);
+                    }
+                }
+                "unset_option" => {
+                    if let Some(name) = &b.unset_option {
+                        state.set_option(name, false);
+                    }
+                }
+                // `select`（切换方案）需要 SchemaCatalog，属于会话语义，
+                // 处理器拿不到——装载期会报"尚未支持"。
+                _ => {}
             }
-            if did {
-                return ProcessResult::Accepted;
-            }
+            return ProcessResult::Accepted;
         }
         ProcessResult::Noop
     }
@@ -1010,6 +1027,8 @@ mod tests {
                 )],
                 send_keys: Some(vec!["space".into()]),
                 toggle: None,
+                set_option: None,
+                unset_option: None,
                 at: crate::spec::At::new(1),
             },
             KeyBinding {
@@ -1017,6 +1036,8 @@ mod tests {
                 accept: vec![C::new(KeyCode::Char('`'), Modifiers::NONE)],
                 send_keys: None,
                 toggle: Some("ascii_mode".into()),
+                set_option: None,
+                unset_option: None,
                 at: crate::spec::At::new(2),
             },
         ];

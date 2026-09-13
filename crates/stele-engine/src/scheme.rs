@@ -693,7 +693,6 @@ impl LoadedSchema for LoadedScheme {
         // `key_binder` 的位置要记下来：换来的按键必须从它之后开始派发，
         // 否则 `{accept: space, send: space}` 这类绑定会把自己再触发一遍，
         // 于是空格永远到不了选择器（见 `PipelineImpl::process_key`）。
-        let mut binder_index: Option<usize> = None;
         // 没有被 `engine:` 声明时用 RIME 的默认顺序。
         let declared: Vec<String> = if self.engine.processors.is_empty() {
             vec![
@@ -729,7 +728,6 @@ impl LoadedSchema for LoadedScheme {
                     Some("full_shape".to_owned()),
                 ))),
                 "key_binder" => {
-                    binder_index = Some(processors.len());
                     processors.push(Box::new(KeyBinder::new(self.key_bindings.clone())));
                 }
                 "navigator" => processors.push(Box::new(Navigator::new(
@@ -934,7 +932,6 @@ impl LoadedSchema for LoadedScheme {
                 self.candidate_cap,
             )
             .with_segmentors(recognizer, segmentors)
-            .with_binder_index(binder_index)
             .with_page_size(self.page_size)
             .with_preedit(self.preedit_delimiter, spelling),
         )

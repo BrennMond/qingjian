@@ -378,23 +378,107 @@ pub fn read_key_bindings(
                 ),
             }
         }
-        let toggle = item.get("toggle").and_then(stele_config::Node::as_str);
-        if send_keys.is_none() && toggle.is_none() {
+        // librime 的绑定是一条**严格的选择链**：
+        //
+        // ```text
+        // send → send_sequence → toggle → set_option → unset_option → select
+        // ```
+        //
+        // **只有第一个写了的会生效**；一个都没写的整条被丢弃
+        // （librime 在那里打 WARNING，我们报一条诊断）。
+        //
+        // 这里必须显式实现这条链，而不是"每个动作各自生效"：
+        // 后者在"同时写了 `send` 与 `toggle`"时会把两件事都做掉，
+        // 而方案作者的预期（照 RIME 的文档）只有一件。
+        let mut toggle = item.get("toggle").and_then(stele_config::Node::as_str);
+        let mut set_option = item.get("set_option").and_then(stele_config::Node::as_str);
+        let mut unset_option = item.get("unset_option").and_then(stele_config::Node::as_str);
+
+        if let Some(name) = item.get("select").and_then(stele_config::Node::as_str) {
             diags.push(
                 Diagnostic::new(
                     path,
-                    "这条绑定既没有 `send` 也没有 `toggle` —— 它什么都不会做",
+                    format!("`select`（切换到方案 `{name}`）尚未支持，这条绑定不会生效"),
+                )
+                .with_field(field("select"))
+                .with_entry(format!("第 {} 行", item.line)),
+            );
+            continue;
+        }
+
+        let effect = if send_keys.is_some() {
+            "send"
+        } else if toggle.is_some() {
+            "toggle"
+        } else if set_option.is_some() {
+            "set_option"
+        } else if unset_option.is_some() {
+            "unset_option"
+        } else {
+            ""
+        };
+        if effect.is_empty() {
+            diags.push(
+                Diagnostic::new(
+                    path,
+                    "这条绑定没有 `send` / `toggle` / `set_option` / `unset_option`\
+                     —— 它什么都不会做",
                 )
                 .with_field(format!("key_binder.bindings[{i}]"))
                 .with_entry(format!("第 {} 行", item.line)),
             );
             continue;
         }
+        // 链上第一个之后的动作**必须报出来**：静默只做一半的效果，
+        // 症状是"我配了两件事、只发生了一件"，而那查起来毫无线索。
+        let mut dropped: Vec<&str> = Vec::new();
+        if effect != "send" && send_keys.is_some() {
+            dropped.push("send");
+        }
+        if effect != "toggle" && toggle.is_some() {
+            dropped.push("toggle");
+        }
+        if effect != "set_option" && set_option.is_some() {
+            dropped.push("set_option");
+        }
+        if effect != "unset_option" && unset_option.is_some() {
+            dropped.push("unset_option");
+        }
+        if !dropped.is_empty() {
+            diags.push(
+                Diagnostic::new(
+                    path,
+                    format!(
+                        "这条绑定写了多个动作，只有 `{effect}` 会生效（被忽略：{}）",
+                        dropped.join("、")
+                    ),
+                )
+                .with_field(format!("key_binder.bindings[{i}]"))
+                .with_entry(
+                    "librime 的绑定是一条严格的选择链：\
+                     send → send_sequence → toggle → set_option → unset_option → select"
+                        .to_owned(),
+                ),
+            );
+        }
+        // 落库时只留生效的那一个，避免"数据里有两个动作、行为只有一个"
+        // 这种自相矛盾的状态流到引擎里。
+        if effect != "toggle" {
+            toggle = None;
+        }
+        if effect != "set_option" {
+            set_option = None;
+        }
+        if effect != "unset_option" {
+            unset_option = None;
+        }
         out.push(KeyBinding {
             when,
             accept,
             send_keys,
             toggle,
+            set_option,
+            unset_option,
             at: At::new(item.line as usize),
         });
     }
@@ -635,6 +719,63 @@ pub fn read_translator(
 mod tests {
     use super::*;
     use stele_core::{KeyCode, Modifiers, NamedKey};
+
+    fn key_binder_of(text: &str) -> (Vec<KeyBinding>, Vec<Diagnostic>) {
+        let root = stele_config::parse(text).expect("测试用的 YAML 必须能解析");
+        let node = root.get("key_binder").expect("要有 key_binder 段");
+        let mut diags = Vec::new();
+        let out = read_key_bindings(node, &mut diags, "t.yaml");
+        (out, diags)
+    }
+
+    #[test]
+    fn one_binding_produces_exactly_one_effect() {
+        // librime 的选择链：`send` 在前，`toggle` 在后，**只有第一个生效**。
+        let (bindings, diags) = key_binder_of(
+            "key_binder:\n  bindings:\n    - {accept: a, send: space, toggle: x}\n",
+        );
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].effect(), "send");
+        assert!(bindings[0].toggle.is_none(), "被忽略的动作不该留在数据里");
+        assert!(
+            diags.iter().any(|d| d.message.contains("只有 `send` 会生效")),
+            "丢了一个动作必须报出来：{diags:?}"
+        );
+    }
+
+    #[test]
+    fn set_option_and_unset_option_are_their_own_actions() {
+        let (b, d) = key_binder_of(
+            "key_binder:\n  bindings:\n    - {accept: b, set_option: ascii_mode}\n    - {accept: c, unset_option: ascii_mode}\n",
+        );
+        assert!(d.is_empty(), "{d:?}");
+        assert_eq!(b[0].effect(), "set_option");
+        assert_eq!(b[0].set_option.as_deref(), Some("ascii_mode"));
+        assert_eq!(b[1].effect(), "unset_option");
+        assert_eq!(b[1].unset_option.as_deref(), Some("ascii_mode"));
+    }
+
+    #[test]
+    fn select_is_reported_as_unsupported_not_silently_dropped() {
+        let (b, d) = key_binder_of(
+            "key_binder:\n  bindings:\n    - {accept: d, select: luna_pinyin}\n",
+        );
+        assert!(b.is_empty());
+        assert!(
+            d.iter().any(|x| x.message.contains("尚未支持")),
+            "不支持的动作品名要报出来：{d:?}"
+        );
+    }
+
+    #[test]
+    fn a_binding_without_any_action_is_dropped_with_a_reason() {
+        let (b, d) = key_binder_of("key_binder:\n  bindings:\n    - {accept: e}\n");
+        assert!(b.is_empty());
+        assert!(
+            d.iter().any(|x| x.message.contains("什么都不会做")),
+            "{d:?}"
+        );
+    }
 
     #[test]
     fn key_names_round_trip_through_the_parser() {

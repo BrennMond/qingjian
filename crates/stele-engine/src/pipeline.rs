@@ -74,8 +74,6 @@ pub struct PipelineImpl {
     delimiter: Option<char>,
     /// 用于渲染预编辑串的拼写层（拼写 → 编码单元 → 规范写法）。
     spelling: Option<Arc<dyn stele_core::Spelling>>,
-    /// `key_binder` 在处理器链里的下标（用来让"换来的按键"跳过它）。
-    binder_index: Option<usize>,
     /// 上一次 compose 用过的扫描结果（处理器改动输入后由 compose 重算）。
     scan: InputScan,
     /// **本次翻译该看的那一段文本**。
@@ -110,7 +108,6 @@ impl PipelineImpl {
             page_size: DEFAULT_PAGE_SIZE,
             delimiter: None,
             spelling: None,
-            binder_index: None,
             scan: InputScan::default(),
             segment_text: String::new(),
         }
@@ -125,13 +122,6 @@ impl PipelineImpl {
     ) -> Self {
         self.recognizer = recognizer;
         self.segmentors = segmentors;
-        self
-    }
-
-    /// 记下 `key_binder` 在处理器链里的位置（供"换来的按键"跳过它）。
-    #[must_use]
-    pub fn with_binder_index(mut self, index: Option<usize>) -> Self {
-        self.binder_index = index;
         self
     }
 
@@ -331,21 +321,30 @@ impl PipelineImpl {
 
 impl Pipeline for PipelineImpl {
     fn process_key(&mut self, state: &mut SessionState, key: &stele_core::Key) -> ProcessResult {
-        let first = self.dispatch(state, key, None);
-        // `key_binder` 可能要求"换成另一个按键再走一遍"。
+        let first = self.dispatch(state, key, false);
+        // `key_binder` 可能要求"换成另一串按键再走一遍"。
+        //
+        // # 三条语义，全部照抄 librime（`key_binder.cc`）
+        //
+        // 1. **从整条处理器链的最开头重跑**（`engine_->ProcessKey` 是顶层
+        //    入口）。前面的处理器（中英切换、输入处理器）**会再看到**
+        //    换来的按键——真实方案依赖这一点（实测：`send: Caps_Lock`
+        //    能让 key_binder **之前**的 `ascii_composer` 翻转中英模式）。
+        // 2. **防重入靠一个布尔标志**，只有 `key_binder` 自己看它
+        //    （`redirecting_`）。所以 `{accept: space, send: space}` 不会
+        //    死循环：换成的那一下被 key_binder 直接放行，继续往后走到
+        //    选择器/编辑器。
+        // 3. `send` 与 `send_sequence` 是**同一串按键、按顺序派发**。
+        //
+        // 我第一版写成"从 key_binder 之后派发 + 轮数上限"。那个实现能让
+        // 空格到达选择器（所以端到端测试当时是绿的），但**语义不同**：
+        // 第 1 条被丢掉了。`REBIND_ROUNDS` 那道上限现在只是"配置写出
+        // 自我循环时的安全带"——librime 不需要它，因为它没有自我循环。
         for _ in 0..REBIND_ROUNDS {
             let Some(next) = state.sent_keys.pop() else {
                 break;
             };
-            // **换来的按键从 `key_binder` 之后开始派发。**
-            //
-            // 这不是优化，是正确性：素材里 `{accept: space, send: space}`
-            // 这种"把空格换成空格"的绑定在 RIME 方案里很常见（它的意思是
-            // "让空格走确认那条路"）。若整链重跑，`key_binder` 会再次接住
-            // 这个空格并再发一次——**轮数上限挡住了死循环，却也让按键
-            // 永远到不了选择器/编辑器**：症状是"空格没反应"，
-            // 而配置看起来完全正常。端到端测试抓到了它。
-            let _ = self.dispatch(state, &next, self.binder_index);
+            let _ = self.dispatch(state, &next, true);
         }
         state.sent_keys.clear();
         first
@@ -555,16 +554,19 @@ impl Pipeline for PipelineImpl {
 impl PipelineImpl {
     /// 把一次按键派发给处理器链。
     ///
-    /// `skip_before`：从**这个下标**开始派发（`None` = 从头）。
-    /// 换来的按键用它跳过"产生它的那个重绑定器"，见 `process_key`。
+    /// `redirecting`：这一次派发的是**被重绑定换来的**按键。
+    /// 它决定 `key_binder` 要不要让路——这是防重入的**唯一**机制，
+    /// 与 librime 的 `redirecting_` 一一对应（见 `process_key`）。
     fn dispatch(
         &mut self,
         state: &mut SessionState,
         key: &stele_core::Key,
-        skip_before: Option<usize>,
+        redirecting: bool,
     ) -> ProcessResult {
-        let start = skip_before.map_or(0, |i| i + 1);
-        for p in self.processors.iter_mut().skip(start) {
+        // 这一个布尔量就是 librime 的 `redirecting_`：它让 `key_binder`
+        // 在"派发换来的按键"时让路，从而既不死循环、又不跳过前面的处理器。
+        state.redirecting = redirecting;
+        for p in &mut self.processors {
             if !p.enabled(&state.options) {
                 continue;
             }

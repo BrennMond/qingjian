@@ -548,19 +548,21 @@ bool TagMatching::TagsMatch(Segment* segment) {
 
 ## 5. 与我们（stele）实现的差异
 
-以下对照的是本仓库当前代码，**只做记录，未修改任何实现文件**。
+**这一节是快照，会过期。** 本文件写作期间，工作区里的另一个任务正在改 `crates/stele-engine/`（提交 `a8a366d`，之后 `processor.rs` / `spec.rs` 又有未提交改动）。下表核对的是**本文件落笔时磁盘上的实际代码**。**只做记录，未修改任何实现文件。**
 
-| # | 主题 | librime 的事实 | stele 现状 | 影响 |
+| # | 主题 | librime 的事实 | stele 现状（写作时） | 结论 |
 | --- | --- | --- | --- | --- |
-| 1 | `prefix` 的含义 | **字面字符串**（§2）。`"uU"` = 两个字面字符 | `crates/stele-engine/src/segmentor.rs:498` 的 `expand_prefix("uU")` 返回 `["uU", "u", "U"]`；同文件 `:858` 的断言把这个行为固定了下来；`:402-406` 的文档注释把它称为「RIME 约定：`prefix: "uU"` 表示大小写两种写法都接受」 | **这是自己发明的约定。** 后果：单独敲 `u` 也会被 affix 段吃掉；rime-ice 里以 `u` 开头的正常拼音输入会误入拆字段。修法：`prefix` 只保留字面串本身，删掉"大小写变体补充"。注意同文件 `:470-496` 的**另一段注释已经写对了**（「`prefix: "uU"` …字面的两个字符 `uU` 一起出现」），文件内部自相矛盾 |
-| 2 | `recognizer/patterns` 的值类型 | 必须是标量；列表被**静默跳过**（§1.1） | 需要核对解析器是否对列表报错或静默忽略 | 若我们接受列表并"取并集"，行为会比 librime 更宽松，方案在两边的表现会分叉 |
-| 3 | 模式的匹配语义 | `regex_search` + 强制"结束于串尾" + "起点在段边界"（§1.4） | `crates/stele-engine/src/regex.rs`（897 行）与 `segmentor.rs` 里的 `InputScan` / `match_prefix_len` 看起来是**前缀式**匹配 | 需要逐条核对：我们是否允许"**不锚定起点、但结束于串尾**"的匹配。真实反例就在眼前：`/usr/share/rime-data/default.yaml:60` 的 `uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"` **没有 `^`**，而 rime-ice 的 no-lua 方案用 `recognizer/import_preset: default` 继承了它。若我们只做前缀匹配，`Ni hao` 这类"大写开头的整串"就不会被识别成 `uppercase` 段 |
-| 4 | 多条模式的优先级 | 按**模式名字典序**，先命中者赢（§1.4 第 4 条） | 需要核对 | 若我们按声明顺序或按"最长匹配"选，结果会不同 |
-| 5 | leading literal 缓存 | librime **没有**（§1.5） | 我们若有，是自研优化 | 不是冲突，但**不能声称与 librime 一致**；需要单独验证它与 `regex_search` 语义等价 |
-| 6 | `affix_segmentor` 的触发前提 | 必须由 `matcher` + `recognizer/patterns/<tag>` **先贴标签**（§1.3、§4.1）；裸写 `affix_segmentor` 读的是 `segmentor/*` 命名空间 | 需要核对 | 若我们把"前缀匹配"直接做进 affix 组件、不依赖 recognizer 打标签，在缺少 `recognizer/patterns/<tag>` 的方案上我们会比 librime 更宽松（librime 那边是彻底不工作） |
-| 7 | `extra_tags` 贴在哪个段 | 只贴**正文段**（§4.2） | 需要核对 | 贴错段会让过滤器作用到前缀段上 |
-| 8 | 翻译器 `tag` vs 过滤器 `tags` 的默认值 | 翻译器默认 `["abc"]`；过滤器不写则**匹配一切**（§4.3） | 需要核对 | 容易记反 |
-| 9 | `Segment.length` 与 `end` 可能不同步 | librime 自己在 `affix_segmentor.cc:95` 就制造了这种不一致（§3.2） | 需要核对 | 移植时若按 `end - start` 而非 `length` 读，会与 librime 在带 `suffix` 的边界情形下分叉 |
+| 1 | `prefix` 的含义 | **字面字符串**（§2）。`"uU"` = 两个字面字符 | **代码已修**：`segmentor.rs:494-499` 的 `expand_prefix` 现在只返回 `vec![s.to_owned()]`，`body_start`（`:506-510`）也改成"前缀长度唯一"。**但注释还是旧的**：`segmentor.rs:402-409` 仍写着「RIME 约定：`prefix: "uU"` 表示大小写两种写法都接受…所以它不是一个两字符的前缀，而是两个候选前缀」，`segmentor.rs:412` 仍写「接受的前缀（已展开成列表）」，`spec.rs:243` 仍写「RIME 允许写两个字符表示大小写两种写法」 | 行为已对齐。**剩下的是三处会误导下一个人的注释**，应当一并改掉——它们现在是"文档说 A、代码做 B" |
+| 2 | `recognizer/patterns` 的值类型 | 必须是标量；列表被**静默跳过**（§1.1） | `spec.rs:232` 的 `patterns: Vec<RecogPattern>`；装载器如何对待列表形式待核对 | 若我们接受列表并"取并集"，会比 librime 宽松 |
+| 3 | **匹配从哪个位置开始** | `regex_search(input.substr(confirmed_pos))`，匹配起点必须等于 `j = GetCurrentEndPosition()` **或某个已有段的 `start`**（§1.4）——也就是**允许从串中间开始** | **锚死在位置 0**：`regex.rs:216-232` 的 `match_prefix_len` 调 `match_node(&self.root, &chars, 0, …)`；`segmentor.rs:251` 还有 `if !input.starts_with(p.leading.as_str()) { continue; }` | **语义差异。** 真实反例：`/usr/share/rime-data/default.yaml:60` 的 `uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"` 没有 `^`，librime 允许它在段边界处起匹配；我们要求它必须从 0 起 |
+| 4 | **匹配到哪里结束** | **无条件**要求 `end == input.length()`（`recognizer.cc:51-52`），与正则里有没有 `$` **无关** | 用**正则源码文本的启发式**：`segmentor.rs:133-135` 的 `ends_with_anchor()` 判断"正则是否以 `$` 结尾"，结果存进 `RecogPattern::to_end`（`:209`），`match_prefix_len(input, to_end)` 据此决定要不要吃掉整串（`regex.rs:220-226`） | **两条都不完全等价。** 例：rime-ice（带 Lua 版）的 `unicode: "^U[a-f0-9]+"` **没有 `$`** ——librime 仍要求它匹配到串尾（所以 `U62fcxyz` 不成立），我们会接受前缀匹配（`U62fc` 就成立），**我们更宽松** |
+| 5 | **多条模式谁赢** | 按**模式名字典序**遍历，**第一条满足约束的**赢（§1.4 第 4 条） | **最长认领赢**：`segmentor.rs:266-269` 的 `bytes_end > len` 取最长的那个 | **语义差异。** 例：同名长度下 `punct` 与 `radical_lookup` 谁赢，两边可能给出不同答案 |
+| 6 | leading literal 缓存 | librime **完全没有**（§1.5，全树核对过） | 我们**有**：`segmentor.rs:102-129` 的 `leading_literal()` 抽出 `^` 之后的字面前缀，`:251` 用它做快速排除 | **代码本身没错，但注释是编的**：`spec.rs:205-209` 写着「提前算出来是为了快速排除…**RIME 也是这么做的**（它把 `^abc...` 里的字面部分当作 `leading`）」。**librime 没有这个机制**，这句话必须删掉或改成"这是我们的优化"。此外它是**近似**的（`leading_literal` 对 `([nl])ue$` 取 `n`、对 `^\d+$` 取空串），必须验证它与完整匹配在语义上等价 |
+| 7 | `affix_segmentor` 的触发前提 | 必须由 `matcher` + `recognizer/patterns/<tag>` **先贴标签**（§1.3、§4.1）；裸写 `affix_segmentor` 读的是 `segmentor/*` 命名空间 | `segmentor.rs:244-269` 的 `scan()` 直接把"前缀匹配"做成了认领（claim），`AffixSegmentor` 据此切分 | **结构性差异。** 我们少了一层"recognizer 贴标签 → affix 才动"的耦合：在**只有 `affix_segmentor@foo` 而没写 `recognizer/patterns/foo`** 的方案上，librime 是彻底不工作，我们会照常工作。宽松不一定是坏事，但要**明确知道这是分叉**，并且不能声称"与 librime 一致" |
+| 8 | `extra_tags` 贴在哪个段 | 只贴**正文段**（§4.2） | 待核对（`segmentor.rs:571` 有 `affix_all_tags`） | 贴错段会让过滤器作用到前缀段上 |
+| 9 | 翻译器 `tag` vs 过滤器 `tags` 的默认值 | 翻译器默认 `["abc"]`；过滤器不写则**匹配一切**（§4.3） | 待核对 | 容易记反 |
+| 10 | `Segment.length` | librime 自己在 `affix_segmentor.cc:95` 制造了 `end` 与 `length` 不同步；引擎**不读 `length`**，现算 `end - start`（§3.2） | 待核对 | 对照实现时按 `end - start` 对齐 |
+| 11 | 模式名的优先级 | 模式名不是纯标签，它参与优先级（§1.4） | 待核对（我们按最长匹配，与名字无关） | 若将来要完全对齐，得引入"按名字排序" |
 
 ---
 

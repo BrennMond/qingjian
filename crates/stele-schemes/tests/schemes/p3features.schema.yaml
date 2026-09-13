@@ -125,9 +125,17 @@ recognizer:
 key_binder:
   bindings:
     - { when: always, accept: Control+Shift+1, toggle: ascii_mode }
+    # 把 CapsLock 换成"切中英" —— 这是**能验证"整链重派发"**的绑定：
+    # `CapsLock` 必须被 key_binder **之前**的 ascii_composer 看到才会翻转
+    # 那个开关（librime 的 `engine_->ProcessKey` 就是从这个位置开始重跑的）。
+    # 若实现成"从 key_binder 之后派发"，这条绑定会静默失效。
+    - { when: always, accept: Control+Shift+2, send: Caps_Lock }
     - { when: composing, accept: space, send: space }
     - { when: paging, accept: minus, send: Page_Up }
     - { when: has_menu, accept: equal, send: Page_Down }
+    # `set_option` / `unset_option`：置为开 / 置为关（与 `toggle` 不同）。
+    - { when: always, accept: Control+Shift+4, set_option: ascii_mode }
+    - { when: always, accept: Control+Shift+5, unset_option: ascii_mode }
 
 # ── 编辑器动作 ──
 editor:
