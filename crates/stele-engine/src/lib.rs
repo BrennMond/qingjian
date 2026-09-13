@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod calc;
 pub mod engine;
 pub mod filter;
 pub mod inline;
@@ -37,6 +38,7 @@ pub mod spelling;
 pub mod tag;
 pub mod translator;
 
+pub use calc::{CalcError, CalcTranslator, lua_number_to_string, replace_factorial, replace_percent};
 pub use engine::{EngineImpl, SessionImpl};
 pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
 pub use inline::{
@@ -60,7 +62,8 @@ pub use segmentor::{
 };
 pub use spec::{
     AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, NavigatorSpec,
-    AutoCapSpec, DateSpec, LongWordSpec, NotApplicableSpec, NumberSpec, PinCandSpec, PinEntry,
+    AutoCapSpec, CalcSpec, DateSpec, LongWordSpec, NotApplicableSpec, NumberSpec, PinCandSpec,
+    PinEntry,
     ReduceEnglishSpec,
     ReduceMode, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
     TranslatorKindSpec, TranslatorSpec, UnicodeSpec, UuidSpec, WhenPredicate, split_alias,

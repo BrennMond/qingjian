@@ -306,8 +306,8 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "calc_translator",
         slot: Slot::Translator,
-        availability: Availability::NeedsResource,
-        note: "计算器（上游调 Lua 的 load()，等于一整套表达式语言）",
+        availability: Availability::Implemented,
+        note: "计算器（cC1+2 → 3；自写表达式求值器）",
     },
     // ── 翻译器 ──
     Entry {

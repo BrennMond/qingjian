@@ -678,6 +678,30 @@ impl Default for NumberSpec {
     }
 }
 
+/// `calc_translator` 的配置。
+///
+/// 触发前缀默认 `cC`（rime-ice 的 `recognizer/patterns/calculator: "^cC.+"`，
+/// 以及 `calculator/prefix` 的默认值）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalcSpec {
+    /// 触发前缀。
+    pub prefix: String,
+    /// 是否在预编辑区显示前缀（上游的 `calculator/show_prefix`）。
+    pub show_prefix: bool,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for CalcSpec {
+    fn default() -> Self {
+        Self {
+            prefix: "cC".into(),
+            show_prefix: false,
+            at: At::default(),
+        }
+    }
+}
+
 /// `uuid` 的配置：一个**触发词**。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UuidSpec {
