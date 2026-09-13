@@ -316,7 +316,6 @@ impl PipelineImpl {
         }
         segs
     }
-
 }
 
 impl Pipeline for PipelineImpl {
@@ -380,7 +379,6 @@ impl Pipeline for PipelineImpl {
         }
         let segs = self.segment(&input);
         let active = self.active_tags(&segs);
-
 
         // ── ③ 翻译 ──
         //
@@ -475,7 +473,6 @@ impl Pipeline for PipelineImpl {
                     f.apply(&q, span, out);
                 }
             }
-
             // 重排器：只允许加分，且受各自的 bonus_limit 约束。
             if !self.rankers.is_empty() {
                 // 只在 debug 构建里为前置检查保存一份快照 ——
@@ -508,16 +505,20 @@ impl Pipeline for PipelineImpl {
             // 输入变短了（退格）→ 页号可能越界，钳回最后一页。
             state.candidate_page = state.candidate_pages.saturating_sub(1);
         }
-        // 视图裁剪：只把当前页交给前端。
         //
-        // **这是"视图翻页"而不是"按页查询"**（见 `Navigator` 的说明）：
-        // 候选全都算出来了，这里只是选一段给前端看。
-        if state.candidate_pages > 1 {
-            let start = state.candidate_page * self.page_size;
-            let end = (start + self.page_size).min(out.len());
-            let page: Vec<Candidate> = out[start..end].to_vec();
-            *out = page;
-        }
+        // ⚠️ **这里曾经把候选裁成"当前页"，那是个 bug**（P3.5 抓到）。
+        //
+        // 裁剪发生在**滤镜之后、`finalize`（排序）之前**。绝大多数候选是
+        // 按分数降序产出的，所以"前 9 个"看起来就是前 9 名——直到有滤镜
+        // **往末尾追加**候选：`simplifier`（emoji / 简繁）产出的候选全在
+        // 末尾，于是它们**永远被裁掉**。症状是"表装进来了、转换也算出来了、
+        // 候选里就是没有"——正是这个项目反复踩的那类静默失效。
+        //
+        // 正确的分工：**引擎给全量、排序后的列表，翻页是前端/视图的事**
+        // （`Session::candidates()` 的契约就是这么写的，见
+        // `docs/engine-design.md` §3.5 与 §4.3.2）。`navigator` 的翻页仍然
+        // 有效，因为它改的是 `candidate_page`（处理器状态），而不是靠
+        // 这里替它裁数据。
 
         // 预编辑串与分段**用同一份切分结果**得出。
         //
@@ -730,10 +731,8 @@ mod tests {
             crate::segmentor::InputScan::default(),
             vec!["radical_lookup"],
         );
-        let abc = crate::segmentor::CodingSegmentor::new(
-            "abc",
-            crate::segmentor::InputScan::default(),
-        );
+        let abc =
+            crate::segmentor::CodingSegmentor::new("abc", crate::segmentor::InputScan::default());
 
         let mut p = PipelineImpl::new(
             "abc",
@@ -753,11 +752,7 @@ mod tests {
         p.compose(&mut state, &mut out);
 
         let segs = &state.composition.segments;
-        assert_eq!(
-            segs.segments.len(),
-            1,
-            "整段被认领，兜底切分器不该再切"
-        );
+        assert_eq!(segs.segments.len(), 1, "整段被认领，兜底切分器不该再切");
         assert_eq!(segs.segments[0].tags, vec!["radical_lookup"]);
     }
 }
