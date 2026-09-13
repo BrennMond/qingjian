@@ -199,7 +199,7 @@ CLI 启动路径改用报告入口，并把被跳过的方案逐条打印。
 | `tools/librime-probe/probe.c` 文件头 | 缺 BSD-3-Clause 随附声明（notices §1.4 已指向 licenses/） |
 | 已提交的 `generated.dict.yaml` 头部 | 把 jieba 标成 THUOCL；生成器已修，**下次重新生成即消失**（未手改产物） |
 | git 历史 | 仍含被移除的 GPL Lua 旧版本（历史改写不在本次范围） |
-| 会话分段 / 余码 / 重开（阶段 2 的 F） | 未做，见 `docs/validation/phase-2.md` §8 |
+| 会话分段 / 重开（阶段 2 的 F） | **部分完成**：余码保留与标点语义已交付并有测试；逐段确认、重开、任意 span 未做。见 `docs/validation/phase-2.md` §8 |
 | 正则引擎的自动机替换 | 只有缓解 + 设计，见 `docs/regex-engine-design.md` |
 | 词典约束搜索进搜索内部 | 未做（阶段 2 的性能回退的正解） |
 

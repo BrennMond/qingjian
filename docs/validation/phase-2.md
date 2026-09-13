@@ -292,29 +292,48 @@ $ ./target/release/stele-bench --scheme-dir schemes/stele-default --iterations=4
 
 ### 8.1 任务包 F：会话分段、部分选词、余码保留、重开
 
-**状态：未做。** 现在仍然是"选中候选 → `finish_commit()` 清空整个
-composition"。也就是说：
+**部分完成。** 已交付的是**余码保留**这一半：
 
-- 选了「你好」（只消费 `niha` 的 3 个字节）之后，余码 `a` **不会**留下；
-- 没有"逐段确认"、没有"重新打开已选段"、没有候选覆盖特定 span 的语义。
-
-**这也让下面这条测试成为"已知缺口"的守门员**：
-
-```rust
-#[test]
-fn preedit_display_for_prefix_consumption_is_a_known_gap() {
-    assert_eq!(s.composition().preedit, "niha",
-        "如果这条开始失败，说明显示层已经接上消费边界——请把断言改成 `ni ha`");
-}
+```text
+$ cargo test -p stele-schemes --test decoder_matrix --offline
+test committing_a_prefix_candidate_keeps_the_remainder_in_the_input ... ok
+test committing_a_whole_input_candidate_clears_the_input ... ok
+test the_remainder_is_reanalysed_after_a_partial_commit ... ok
 ```
 
-预编辑串仍然回显整串，而不是上游那样的 `ni ha`。原因：`segment_for_display`
-对**整串输入**切分，不认识"缩写边只吃一个字符、余码不算已消费"。
-**候选的消费范围是对的**（有测试），错的只有显示。
+`finish_commit` 现在接收"这次上屏消费了多少字节"：候选的 `span` 小于输入
+长度时，`[consumed, len)` 留在输入里继续打，并**立刻按余码重算候选**。
+旧实现无条件 `composition.reset()`，等于把用户敲的余码丢掉。
+
+**仍然没有做的**：
+
+- **逐段确认**（一次上屏确认一段、其余仍在预编辑里）；
+- **重新打开已确认段**（RIME 的 `Reopen`）；
+- 候选覆盖**任意 span**（现在只支持"从头消费到 consumed"）——
+  这与"任意位置的分段"是两个不同的能力；
+- 光标位置参与编辑。
+
+预编辑串的**显示**也仍是整串回显（见下面那条"已知缺口"守门员测试）：
+`segment_for_display` 对整串输入切分，不认识"缩写边只吃一个字符、
+余码不算已消费"。**候选的消费范围是对的**（有测试），错的只有显示。
 
 ### 8.2 任务包 F 的状态机测试：标点、编辑器、中英/数字混输
 
-**状态：未做。** 审计要求的"端到端状态转换表"没有建立。
+**标点已完成（决定 + 测试）**，见 `crates/stele-schemes/tests/punctuation_semantics.rs`：
+
+| 敲标点时 | 行为 | 理由 |
+| --- | --- | --- |
+| 正在拼写（`ni`） | `Rejected` + 预编辑串原样保留 | 别让一个逗号吞掉半截的词 |
+| 没有拼写 | `Consumed` + 原样候选进入输入串 | 标点是用户要打的内容 |
+
+这是**有意与 Rime 不同**的产品语义（Rime 是 `ni,` → 你，），
+理由与前端契约写在那份测试的文档注释里——审计要求的是"明确决定并测试"，
+而不是"含糊过去"。
+
+**未做**：编辑器动作（Backspace/Delete/Esc 的完整状态转换表）、
+中英切换、数字与 URL 识别器与候选选择的**交叉**矩阵。
+既有的 `p3_pipeline.rs` 覆盖了单个零件的形状，但没有建立审计要求的
+那张"端到端状态转换表"。
 
 ### 8.3 造句子系统的其它边界
 
