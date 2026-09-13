@@ -35,10 +35,13 @@ Stele-IME（石经）命令行调试前端
       --list            列出已装载的方案
       --schema <id>     选择方案（默认第一个）
       --scheme-dir <p>  从目录装载方案（不指定则用内嵌的默认方案）
-      --candidates      打印候选列表，而不只是上屏结果
+      --candidates      打印候选列表（当前页）
+      --candidates=N    打印前 N 个候选；`--candidates=all` 打印全部
       --check           运行内核自检（不变式）
       --dump-config     打印合并后的完整方案，并标注每个值的来源
       --components      打印零件注册表（认识了什么、缺什么）
+      --option=<名>     打开方案里的一个开关（`--option=emoji`）
+      --option=<名>=off 关掉它（`--option=traditionalization=off`）
 
 示例：
   stele nihao                   拼音：上屏「你好」
@@ -46,6 +49,8 @@ Stele-IME（石经）命令行调试前端
   stele --candidates ni         看候选列表（含分数 / 来源 / 属性）
   stele --schema shape ab       精确编码方案：上屏「十」
   stele --scheme-dir ./my-schemes --list    装载自己的方案目录
+  stele --scheme-dir schemes/stele-default --option=emoji weixiao
+                                            开 emoji 开关，看候选里有没有 😄
 
 说明：
   本程序是开发期的调试前端。真实的输入法前端是 platforms/windows（TSF）
@@ -80,13 +85,24 @@ fn main() -> ExitCode {
     //
     // 两条路都返回**连同来源表**的结果：`--dump-config` 要回答
     // "这个值来自哪一层"，而那个信息只在装载期存在。
-    let loaded: Result<Vec<stele_schemes::Loaded>, _> = match &scheme_dir {
+    // 方案来源，按优先级：
+    //   1. `--scheme-dir <目录>`（显式指定）
+    //   2. **仓库里的默认方案目录**（`schemes/stele-default`，存在就用它）
+    //   3. 内嵌的演示方案（几十条词；保证任何环境下都能跑起来）
+    //
+    // 第 2 条是"克隆下来就能打字"的落点：**41 万条的生成词库不进二进制**
+    // （`include_str!` 会让它白胖 11 MB），而是走部署路径——编译成紧凑产物、
+    // 按需分页地读，常驻内存只留索引。
+    let auto = std::path::Path::new("schemes/stele-default");
+    let chosen_dir: Option<std::path::PathBuf> = match &scheme_dir {
+        Some(d) => Some(std::path::PathBuf::from(d)),
+        None if auto.is_dir() => Some(auto.to_path_buf()),
+        None => None,
+    };
+    let loaded: Result<Vec<stele_schemes::Loaded>, _> = match &chosen_dir {
         // 目录装载走**部署路径**：词库编译成紧凑产物，按需分页地读。
         // 内嵌方案只有几十条词，用内存表更快，所以两条路各走各的。
-        Some(dir) => {
-            let root = std::path::Path::new(dir);
-            stele_schemes::load_dir_deployed_layered(root, &root.join(".stele-cache"))
-        }
+        Some(root) => stele_schemes::load_dir_deployed_layered(root, &root.join(".stele-cache")),
         None => stele_schemes::all_layered(),
     };
     let loaded = match loaded {
@@ -105,6 +121,14 @@ fn main() -> ExitCode {
         }
     };
 
+    // **降级警告**：方案装上了，但有零件没生效（典型是外部数据没取回）。
+    //
+    // 缺失数据不阻止启动（D26），但必须**看得见**——"功能不生效却没有
+    // 任何提示"是这个项目反复踩的坑，所以出口是一行 stderr 警告。
+    for (id, note) in engine.degradations() {
+        eprintln!("⚠ 方案 {id}：{note}");
+    }
+
     if args.iter().any(|a| a == "--list") {
         for info in engine.schemas().list() {
             println!(
@@ -120,7 +144,39 @@ fn main() -> ExitCode {
     let schema_pos = args.iter().position(|a| a == "--schema");
     let schema_id = schema_pos.and_then(|i| args.get(i + 1)).cloned();
     let dir_pos = args.iter().position(|a| a == "--scheme-dir");
-    let show_candidates = args.iter().any(|a| a == "--candidates");
+    // `--candidates`（按页，默认）或 `--candidates=N` / `--candidates=all`。
+    //
+    // **为什么要有 `=N`**：候选是分页显示的（默认每页 9 个），而
+    // `Session::candidates()` 只把**当前页**交给前端。想看清"某个滤镜到底
+    // 有没有产出候选"（例如 emoji 排在 30 名开外），就得能要看全量。
+    // 这个项目里"功能存在但看不见"已经算过一次 bug，所以调试前端必须
+    // 有一条把全量候选摊开的路。
+    let candidate_limit: Option<usize> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--candidates="))
+        .map(|v| {
+            if v == "all" {
+                usize::MAX
+            } else {
+                v.parse().unwrap_or(9)
+            }
+        });
+    let show_candidates = args.iter().any(|a| a == "--candidates") || candidate_limit.is_some();
+    // `--option=emoji`（开）/ `--option=emoji=off`（关）。
+    //
+    // 为什么需要它：方案里的开关（emoji、简繁、全角）**只能这样验证**——
+    // 没有前端就没有开关界面，而"配置看着对、功能不生效"正是这个项目
+    // 反复踩的那类 bug（HANDOFF §3）。能一条命令开关它，
+    // 才谈得上端到端验证。
+    let options: Vec<(String, bool)> = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("--option="))
+        .map(|spec| match spec.split_once('=') {
+            Some((name, "off" | "0" | "false")) => (name.to_owned(), false),
+            Some((name, _)) => (name.to_owned(), true),
+            None => (spec.to_owned(), true),
+        })
+        .collect();
 
     // 按键序列 = 所有不以 `-` 开头、且不是某个**选项之值**的位置参数。
     // 漏掉任何一个选项都会让它的值被当成按键打出去 —— 这就是下面那句注释存在的理由。
@@ -150,6 +206,10 @@ fn main() -> ExitCode {
         }
     }
 
+    for (name, on) in &options {
+        session.set_option(name, *on);
+    }
+
     if keys.is_empty() {
         print!("{HELP}");
         return ExitCode::SUCCESS;
@@ -167,7 +227,8 @@ fn main() -> ExitCode {
             session.composition().input,
             session.candidates().len()
         );
-        for (i, c) in session.candidates().iter().enumerate() {
+        let limit = candidate_limit.unwrap_or(usize::MAX);
+        for (i, c) in session.candidates().iter().take(limit).enumerate() {
             println!(
                 "  {}. {:<8} score={:<9} origin={:<11} attr={:<9} lane={:?} {}",
                 i + 1,
@@ -258,9 +319,7 @@ fn dump_config(
         return ExitCode::FAILURE;
     };
     let Some(entry) = loaded.iter().find(|l| l.def.info.schema_id == id) else {
-        eprintln!(
-            "找不到方案 {id} 的装载记录（只有通过目录或内嵌方案装载的才有）"
-        );
+        eprintln!("找不到方案 {id} 的装载记录（只有通过目录或内嵌方案装载的才有）");
         return ExitCode::FAILURE;
     };
     // 确认引擎真的能装载它 —— `--dump-config` 打印的东西必须是
@@ -399,13 +458,19 @@ fn list_components() -> ExitCode {
         println!("  {n:<28} {slot:?}   {note}");
     }
     println!();
-    println!("需要外部数据 {} 个（机制有，数据要给）：", needs_data_names().len());
+    println!(
+        "需要外部数据 {} 个（机制有，数据要给）：",
+        needs_data_names().len()
+    );
     for n in needs_data_names() {
         let (_, slot, note) = stele_engine::registry::lookup(n);
         println!("  {n:<28} {slot:?}   {note}");
     }
     println!();
-    println!("尚未实现 {} 个（这是本项目的缺口）：", missing_names().len());
+    println!(
+        "尚未实现 {} 个（这是本项目的缺口）：",
+        missing_names().len()
+    );
     for n in missing_names() {
         let (_, slot, note) = stele_engine::registry::lookup(n);
         println!("  {n:<28} {slot:?}   {note}");

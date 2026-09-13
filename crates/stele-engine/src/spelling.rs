@@ -25,6 +25,7 @@
 //! 将来把 [`Rule`] 换成完整的运算子集合，不需要改这一层之外的东西。
 
 use std::collections::BTreeMap;
+use std::collections::BinaryHeap;
 use stele_core::{CodeUnitId, Expansion, ExpansionSink, Score, SpellingAttr};
 
 use crate::regex::{Regex, RegexError};
@@ -480,6 +481,35 @@ struct Projected {
     attr: SpellingAttr,
 }
 
+/// 拼写展开的搜索状态。
+///
+/// `Ord` 是**优先级**：代价高（罚分少）的排前面，其次编码单元少、编码字典序小。
+/// 与 `expand_into` 末尾的排序键完全一致——这样"名额"总是先给
+/// 最像用户本意的那条切分。
+#[derive(PartialEq, Eq)]
+struct ExpansionState {
+    cost: Score,
+    pos: usize,
+    units: Vec<CodeUnitId>,
+    attr: SpellingAttr,
+}
+
+impl Ord for ExpansionState {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.cost
+            .cmp(&other.cost)
+            .then_with(|| other.units.len().cmp(&self.units.len()))
+            .then_with(|| other.units.cmp(&self.units))
+            .then_with(|| other.attr.bits().cmp(&self.attr.bits()))
+    }
+}
+
+impl PartialOrd for ExpansionState {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl SpellingTable {
     /// 由字母表与运算规则编译出拼写表。
     ///
@@ -552,7 +582,19 @@ impl SpellingTable {
             alphabet,
             edges,
             by_first_char,
-            max_expansions: 64,
+            // 一次展开最多产出多少条切分。
+            //
+            // **512 不是随手填的**：这个上限决定"哪些切分能进入词库查询"。
+            // 实测（默认方案 399 个音节 + 两条缩写规则）：`nihao` 要出
+            // `ni hao`（rank 0），`nh` 要到 rank 4 才出现 `n hao`——
+            // 而 64 的上限**根本走不到那里**，结果是「你好」这个 40 万
+            // 词条词库里存在的词**打不出来**，单字却一切正常。
+            //
+            // 上限太小是**静默错误**（少几个候选，没人报错），所以这里
+            // 宁大勿小：超出上限的切分只会被翻译器的容量上限（200）
+            // 再筛一次，代价是每次按键多几百次词库查询——P50 实测仍在
+            // 20 µs 量级（< 1 ms 红线）。
+            max_expansions: 512,
             max_units: 16,
         }
     }
@@ -611,27 +653,56 @@ impl SpellingTable {
             return;
         }
 
-        // (位置, 已选编码, 累计代价, 累计属性)
-        let mut frontier: Vec<(usize, Vec<CodeUnitId>, Score, SpellingAttr)> =
-            vec![(0, Vec::new(), Score::ZERO, SpellingAttr::NORMAL)];
+        // **按代价排序的图搜索（best-first）**，而不是先进后出的深搜。
+        //
+        // # 为什么这里必须是"按代价"
+        //
+        // 一条拼写能展开出的切分可以有几百条（全拼 + 简拼 + 补全的各种
+        // 组合），而 `max_expansions` 会截断。截断留下哪些，**决定了
+        // 用户能不能打出一个词**——所以留下哪些不能靠运气。
+        //
+        // 第一版是深搜（`Vec` 当栈），后果实测过：`ni hao` 的规范切分
+        // **根本没被生成**，因为有限的名额被 `niu hao`（`ni` 的缩写边）
+        // 这类变体先占满了。症状是"你好"在 40 万词条的词库里**打不出来**，
+        // 而单字 `ni`、`hao` 都正常——极难从这个现象反推到展开顺序上。
+        //
+        // 排序键与下面 `done.sort_by` 的完全一致，因此**名额总是先给
+        // 代价最高（= 罚分最少）的切分**：规范拼写代价为 0，永远先入选；
+        // 简拼、补全这些带代价的排在后面。
+        //
+        // 状态空间是 `(位置, 已选编码)` 的 DAG，用 `seen` 去重保证
+        // 每个状态只扩展一次（同一状态经不同路径到达时，代价不同——
+        // 这里保留**先到的那条**，而先到的正是代价更高的那条）。
+        let mut heap: BinaryHeap<ExpansionState> = BinaryHeap::new();
+        heap.push(ExpansionState {
+            cost: Score::ZERO,
+            pos: 0,
+            units: Vec::new(),
+            attr: SpellingAttr::NORMAL,
+        });
+        let mut seen: std::collections::HashSet<(usize, Vec<CodeUnitId>)> =
+            std::collections::HashSet::new();
         let mut done: Vec<Expansion> = Vec::new();
         let mut budget = self.max_expansions * self.max_units * 8;
 
-        while let Some((pos, code, cost, attr)) = frontier.pop() {
+        while let Some(st) = heap.pop() {
             if budget == 0 || done.len() >= self.max_expansions {
                 break;
             }
             budget -= 1;
 
-            if pos == spelling.len() {
-                done.push(Expansion { code, cost, attr });
+            if st.pos == spelling.len() {
+                done.push(Expansion {
+                    code: st.units,
+                    cost: st.cost,
+                    attr: st.attr,
+                });
                 continue;
             }
-            if code.len() >= self.max_units {
+            if st.units.len() >= self.max_units {
                 continue;
             }
-
-            let Some(c) = spelling[pos..].chars().next() else {
+            let Some(c) = spelling[st.pos..].chars().next() else {
                 continue;
             };
             let Some(cands) = self.by_first_char.get(&c) else {
@@ -640,21 +711,29 @@ impl SpellingTable {
 
             for &idx in cands {
                 let edge = &self.edges[idx];
-                if !spelling[pos..].starts_with(&edge.text) {
+                if !spelling[st.pos..].starts_with(&edge.text) {
                     continue;
                 }
-                let mut next_code = code.clone();
-                next_code.push(edge.unit);
-                frontier.push((
-                    pos + edge.text.len(),
-                    next_code,
-                    cost.saturating_add(edge.cost),
-                    attr.union(edge.attr),
-                ));
+                let mut next_units = st.units.clone();
+                next_units.push(edge.unit);
+                let next_pos = st.pos + edge.text.len();
+                if !seen.insert((next_pos, next_units.clone())) {
+                    continue;
+                }
+                heap.push(ExpansionState {
+                    cost: st.cost.saturating_add(edge.cost),
+                    pos: next_pos,
+                    units: next_units,
+                    attr: st.attr.union(edge.attr),
+                });
             }
         }
 
         // 排序：**代价降序 → 编码单元数升序 → 编码字典序 → 属性**。
+        //
+        // 搜索本身已经按下述次序出队（`State::cmp`），所以这一步现在只是
+        // **把同一批结果排稳**——保留它是因为"输出顺序确定"是可复现铁律
+        // 的一部分，不该依赖"堆的实现恰好稳定"。
         //
         // # "编码单元数升序"这一条是实测加上的
         //
