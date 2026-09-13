@@ -5,7 +5,7 @@
 > 新会话只要读 **这份文件 + `PLAN.md` + `docs/engine-design.md`**，
 > 就能接着干，不必回溯对话。
 >
-> 最后更新：**P3 完成**（零件集 + 词条补全 + 分层 `--dump-config` + librime 对照）。
+> 最后更新：**P3 完成 + 阶段 A 的内联零件 10/14**（rime-ice 的 Lua 插件重写）。
 
 ---
 
@@ -22,24 +22,26 @@
 
 | 指标 | 实测 | 目标 |
 | --- | --- | --- |
-| 按键路径 P50（拼音，零件齐全） | **542 ns** | < 1 ms ✅ |
-| 按键路径 P99 | **851 ns** | < 10 ms ✅ |
+| 按键路径 P50（拼音，零件齐全） | **601 ns** | < 1 ms ✅ |
+| 按键路径 P99 | **1.56 µs** | < 10 ms ✅ |
 | 按键路径 P50（字形码，零件少） | **180 ns** | — |
 | 常驻内存（演示词库） | **4 MiB** | < 30 MB ✅ |
 | 50 万词条：装载峰值 | **46 MiB**（内存实现是 245 MiB） | — |
 | 50 万词条：命中产物 | **23 MiB** | — |
 
 **延迟数字必须注明方案**：`stele-bench --schema=<id>`。零件数差别很大，
-180 ns 与 542 ns 是同一套代码。
+180 ns 与 601 ns 是同一套代码。
 
-**进度**：P0 ✅ P1 ✅ P2 ✅ P2.5 ✅ **P3 ✅**（见 §4）→ 下一步 P3.5 / P4a
+**进度**：P0 ✅ P1 ✅ P2 ✅ P2.5 ✅ **P3 ✅** → **阶段 A 10/14**（见 §4）
+→ 下一步 **P3.5 词库管线** / P4a
 
 | | |
 | --- | --- |
-| 提交 | 12 个 |
-| 测试 | **282 个**（clippy 零警告，三条 CI 门禁全过） |
+| 提交 | 19 个 |
+| 测试 | **334 个**（clippy 零警告，三条 CI 门禁全过） |
 | crate | 8 个 |
-| Rust | 约 16000 行 |
+| Rust | 约 25700 行 |
+| 零件 | 注册表 40 项：已实现 32、需数据 2、需资源 2、不适用 1、未实现 3 |
 
 ---
 
@@ -53,9 +55,12 @@ stele/
 ├── reference/               ← 调研资料（RIME 官方文档对比、librime 内部机制…）
 ├── schemes/stele-default/   ← 默认方案（数据文件）
 ├── scripts/verify-*.sh      ← 三条 CI 门禁
-├── tools/                   ← 验证工装（不进内核、不进 CI）
+├── tools/                   ← 验证工装（**不进内核 crate、不进 CI**）
 │   ├── librime-probe/       ← 驱动真实 librime 的 C 探针（含抓取样本）
-│   └── compare-librime.py   ← 对照实验：同一批按键喂两边，比对结构行为
+│   ├── compare-librime.py   ← 对照实验：同一批按键喂两边，比对结构行为
+│   └── oracle/              ← 上游 Lua 的纯计算副本 + 它的输出存档
+│       ├── number_translator/   （42 条对照）
+│       └── calc_translator/     （74 条对照）
 └── crates/
     ├── stele-core/          抽象层：Engine/Session、组件 trait、数据结构（**零依赖**）
     ├── stele-engine/        引擎：拼写代数（含自写正则）、注册表、翻译器、处理器（**零依赖**）
@@ -86,6 +91,9 @@ stele/
 | **D34 标签只准从 `TagTable` 拿** | `Tag` 是 `&'static str`，方案里的标签名在装载期 intern 一次 | 两处各自 `Box::leak("punct")` 会得到两块内存，`contains` 静默失效（真发生过） |
 | **D35 配置值的单位写进字段名** | 边长用 `weight:`（线性比）或 `cost:`（毫对数），不共用一个字段 | `cost: -3000` 被当成"权重为负"→ 掉到下界 → 切分退化成随机（真发生过） |
 | **D36 `send` 从链头重派发 + 重入标志** | 照抄 librime：`ProcessKey` 是顶层入口，防重入靠 `redirecting` 布尔 | 我第一版"从 key_binder 之后 + 轮数上限"能跑但语义不同（源码证伪） |
+| **D37 候选的第三个轴 `CandidateKind`** | `Origin`（从哪来）/ `SpellingAttr`（编码怎么拼的）/ `kind`（**怎么被找出来的**） | `autocap` 要判"是不是补全"、`reduce_english` 要判"是不是用户词"——用 `Origin` 都表达不了。**判据是"有没有零件真的按它分支"**，不是"RIME 有这字段" |
+| **D38 外部不确定性一律注入** | 时钟 `Clock`（含 `utc_offset_secs`）、随机 `RandomSource`、记忆 `MemoryStore` | 零依赖 + 可复现。**默认时区偏移是 0（按 UTC 报时）**——接前端时容易漏 |
+| **D39 没有权威标准的行为拿上游当 oracle** | `tools/oracle/`：上游函数的纯计算副本 + `luajit` 跑出的输出存档 + 逐字节比对 | "与上游一致"这句话必须能被**重新跑一遍**，否则它只是又一句没有证据的话 |
 
 **三条铁律**（PLAN §5）：① 内存与延迟是硬指标 ② 可复现 ③ 候选封闭 ④ 精确优先
 ⑤ 配置错误绝不阻止启动（输入法的失败是**自锁**的）⑥ 简体优先、繁体只留接口。
@@ -108,6 +116,14 @@ stele/
   不能让两个组件各自以为对方知道。`Segmentor::rescan` 就是这么补上的。
 - **症状为"配置看起来正常、功能就是不生效"的 bug，只有端到端测试抓得到**。
   P3 抓到的四个全是这一类。
+- **行为没有权威标准时，拿上游当 oracle**（D39）。做法：把上游的**纯计算部分**
+  存进 `tools/oracle/`（剥掉它的运行时接口），用 `luajit` 跑出输出存档，
+  再与我们的实现逐字节比对。**"与上游一致"这句话必须能被重新跑一遍。**
+  写 `number_translator` 时它抓出 6 处、`calc_translator` 时 5 处——
+  全都是"我以为理所当然"的错误。见 `tools/oracle/README.md`。
+- **"比上游更宽松"也是一种不一致**。`--3`、`1+2)`、`sin(1,2)`（Lua 忽略
+  多余实参）我第一版都比 Lua 宽松，而后果是"上游说这个输入错了"
+  变成"我们算了个数"。移植时要把**两侧的边界都对齐**，不只是"能跑"。
 - **一半的修正比不修更糟**：`send` 的语义我改了 `KeyBinder` 却忘了改 `pipeline`，
   于是那个 `redirecting` 字段永远是 `false`——两半对不上，而测试当时是绿的
   （因为旧的"从中间派发"实现也能让空格到达选择器）。
@@ -142,6 +158,39 @@ stele/
 **RIME 原生写法**的等价方案，19+ 条端到端断言守着它），
 但我们**没有真的把那份文件跑起来**——拿不到它的词库与 OpenCC 数据。
 
+### 阶段 A：把 rime-ice 的 Lua 插件重写成原生零件（10/14）
+
+**动机**：rime-ice 的默认方案里，品牌输入法"上手快"的那些功能
+（日期、计算器、置顶、英文降权…）**全部住在 Lua 插件里**——
+核心引擎没有这些能力。要接近那种体验，就得把它们做成原生零件。
+
+| 已实现（10） | 行为 |
+| --- | --- |
+| `date_translator` | `rq`/`sj`/`xq`/`dt`/`ts`/`rqzh`/`rqen` |
+| `unicode_translator` | `U62fc` → 「拼」+ 同区后续码位 |
+| `uuid_translator` | 触发词 → UUID(v4) |
+| `number_translator` | `R3355` → 四种中文形态（含金额大写） |
+| `calc_translator` | `cC1+2` → 3（**自写表达式求值器**） |
+| `long_word_filter` | 长词优先 |
+| `autocap_filter` | `HEllo` → `HELLO` |
+| `v_filter` | v 模式单字优先 |
+| `pin_cand_filter` | 置顶 + **简码派生**（`ni hao` 也认 `nih`） |
+| `reduce_english_filter` | 英文候选降权（`all`/`custom`/`none`） |
+
+**代码位置**：`stele-engine/src/inline.rs`（8 个）+ `calc.rs`（求值器）。
+
+**余下 4 个——不是"没做完"，是各自缺代码之外的东西**：
+
+| 零件 | 缺什么 | 归在 |
+| --- | --- | --- |
+| `corrector` | 容错表在**上游的词库里**（数据资产） | `NeedsResource` |
+| `lunar` | 1900–2100 的二进制表（上游单独发布） | `NeedsResource` |
+| `select_character` | "候选能被当输入用"这条**会话语义** | 阶段 C |
+| 拆字辅码 `search` | 同上 + 一个反查索引 | 阶段 C |
+
+`stele --components` 分四档列出（已实现 / 需数据 / 需资源 / 不适用），
+`CoverageReport::blocking_reason()` 会说清"缺在哪一步、该谁动手"。
+
 ### 与 librime 的对照（P3 的验收线）
 
 ```bash
@@ -160,16 +209,33 @@ RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_pres
 
 ### 下一步
 
-1. **OpenCC 数据装载**（`simplifier` 的最后一块），做完注册表归零。
-2. **P3.5 默认方案**：`schemes/stele-default` 只有 30 条演示词，
-   它才是"装上就能打字"的载体。
+P3 的清单（1–6）**全部做完了**；阶段 A 的 10 个内联零件也做完了。
+剩下的是（**按建议顺序**）：
+
+1. **P3.5 词库管线**（最该做的那个）——`schemes/stele-default` 现在只有
+   30 条演示词，而**其余一切的验收都卡在它上面**：没有真词库，
+   "装上就能打字"是空的，librime 对照也只能比结构、比不了排序。
+   两件事一起做：
+   - **干净来源的词表**（THUOCL / pinyin-data / Unihan / rime-melt /
+     rime-essay-simp——清单见 `reference/rime-ice-research.md` §6）；
+   - **OpenCC 数据装载**（`simplifier` 的最后一块，做完"需数据"归零）。
+
+   > 雾凇那 44 MB 词表**不进仓库**：授权状态混合，而最大的两块
+   > （腾讯词向量、`base` 里那几项）来源不明或明确限制。
+   > 用户部署时自取，我们只提供装载路径与校验。
+
+2. **阶段 C：会话语义改造**（解锁 `select_character` + 拆字辅码）。
+   需要让 `Session` 能表达"把第 N 个候选的第 M 个字放进输入串"——
+   这是唯一需要动接口的事，风险最大、收益也最大。
 3. **recognizer 的三处语义分叉**（记在
    `reference/rime-recognizer-and-affix.md` 的差异表）：
    我们锚死在位置 0、用"正则是否以 `$` 结尾"的启发式、
-   取最长认领而非名字典序第一条。
-4. **`send_sequence` 的用例**与 **`select`**（切方案，需要
+   取最长认领而非名字典序第一条。前两处会影响真实方案。
+4. **`corrector` / `lunar`**：等有了数据来源再说——注册表里已经把
+   它们标成"缺表不是缺代码"，不必再查一遍。
+5. **`send_sequence` 的用例**与 **`select`**（切方案，需要
    `SchemaCatalog` 进处理器）——数据结构已就位。
-5. **P4a 用户记忆**（`MemoryStore`，`Event::ForgetRequested` 已经发出来了）。
+6. **P4a 用户记忆**（`MemoryStore`，`Event::ForgetRequested` 已经发出来了）。
 
 ## 5. 踩过的坑（**每一条都是"写代码/量数字"才发现的**）
 
@@ -196,13 +262,17 @@ RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_pres
 | 19 | **我把猜出来的约定写进文档并称之为"RIME 约定"**（`prefix: uU` / "RIME 也做 leading 缓存"） | 不确定就写"这是我们的选择"，或引源码；猜的约定写进文档比写进代码更危险 |
 | 20 | **语义改了 `KeyBinder` 却忘了改 `pipeline`** —— `redirecting` 永远是 false，而测试当时是绿的 | 跨两处的语义改动，要有一条**只在正确实现下**才过的测试 |
 | 21 | **目录装载从来没应用过用户补丁** —— 接线写在 `load_scheme_layered` 里，而 CLI 走的是目录那条路；测试也只覆盖了前者 | "机制存在"与"机制被走到"是两件事。**手工跑一遍并对照两份输出**才发现的（P2.5 的接线 bug 是同一形状，这是第二次） |
+| 22 | **`char::is_alphanumeric()` 对汉字返回 `true`** —— 长词滤镜把每个中文候选都当成英文候选，一个都不提升（RIME 那边是 Lua 的 `[%a%d]`，**只认 ASCII**） | **跨语言移植时"看着等价的谓词"最危险**：只承认两边行为一致的那部分（ASCII），不要相信名字相同 |
+| 23 | **Lua 的 `gsub(p, r)` 默认只替换第一处** —— 我按"全局替换"实现了它，因为那是这个名字给我的印象；上游连写两遍同一个 `gsub` 恰好是在**依赖**这个性质（`R0001` 应为「〇一」） | **名字给的印象不能代替读语义**。对照测试把它从「一」纠正回「〇一」 |
+| 24 | **我比 Lua 更宽松**：`--3`（Lua 里 `--` 是注释）、`1+2)`、`sin(1,2)`（Lua 忽略多余实参） | **"更宽松"也是一种不一致**——它会把"上游说这个输入错了"变成"我们算了个数" |
+| 25 | **我给对照数据放进了内核 crate**（`crates/stele-engine/tests/oracle/`） | `verify-no-scheme-data.sh` 当场拦下：**内核不许有数据文件**（D24）。"只是测试用"不是理由——门禁第六次抓到我 |
 
 ---
 
 ## 6. 现在怎么跑
 
 ```bash
-cargo build --workspace && cargo test --workspace      # 282 个测试
+cargo build --workspace && cargo test --workspace      # 334 个测试
 cargo run -p stele-cli -- --check                      # 7 组内核不变式
 cargo run -p stele-cli -- nihao                        # → 你好
 cargo run -p stele-cli -- nh                           # → 你好（简拼）
@@ -210,8 +280,12 @@ cargo run -p stele-cli -- --schema shape ab            # → 十（同一个引�
 cargo run -p stele-cli -- --dump-config                # 合并后的方案（标来源）
 cargo run -p stele-cli -- --components                 # 零件注册表
 cargo run -p stele-bench --release -- --schema=shape   # 换方案称重
-python3 tools/compare-librime.py                       # 与 librime 对照
+python3 tools/compare-librime.py                       # 与 librime 对照（结构）
 cd tools/librime-probe && ./build.sh && ./probe --help  # 驱动真实 librime
+cargo test -p stele-engine --test number_oracle         # 与上游 Lua 逐字节对照
+cargo test -p stele-engine --test calc_oracle           #   （42 + 74 条）
+# 重新生成对照数据（需要 luajit；见 tools/oracle/README.md）：
+luajit tools/oracle/calc_translator/calc.lua > tools/oracle/calc_translator/calc.expected.txt
 cargo run -p stele-cli -- --scheme-dir <目录> --list    # 装载自建方案
 cargo run -p stele-bench --release -- --iterations=200000
 bash scripts/verify-*.sh                               # 三条门禁
@@ -253,6 +327,31 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 
 ---
 
+## 7.5 许可证边界（**动手前先看这条**）
+
+项目所有者已定（2026-09）：
+
+| | |
+| --- | --- |
+| **Stele 本体** | MIT / Apache-2.0（**不变**） |
+| **插件代码** | **按行为重写**，不复制上游 Lua（阶段 A 的做法） |
+| **雾凇词表** | **不进仓库**，用户部署时自取；我们只提供装载路径与校验 |
+
+**一处值得讲清的误解**：把 GPL 插件与 MIT 内核**一起打包分发**，
+那一整份分发就落入 GPL——GPL 不允许"把 GPL 部件放进宽松作品、
+只给部件标 GPL"。所以"插件用 GPL、内核仍 MIT"在**同一个安装包里**
+不成立；成立的做法只有"那个部分是独立项目、独立分发"。
+
+**而且词表的问题比 GPL 更麻烦**：那 44 MB 里最大的两块是
+**来源不明或明确限制**的（`tencent` 16.9 MB 无许可声明、
+`base` 16.2 MB 是几种来源的混合、`google-10000-english` 作者
+自己写"不建议商用"）。"来源不明"比 GPL 难处理——GPL 至少有规则可循。
+
+`tools/oracle/*.lua` 是上游函数的副本，**只用于测试对照、不参与构建**；
+想彻底避开 GPL 就删掉它们，保留 `.expected.txt`（那是输出事实，不是代码）。
+
+---
+
 ## 8. 给新会话的操作提醒
 
 - 项目所有者**是初学者**，要求：新名词第一次出现就解释；不要高估基础；
@@ -262,7 +361,13 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
   （sudo 需密码，不能代劳）。
 - **每次动手前后都要实测**：这个项目里"以为对"的记录见 §5（现在有 20 条）。
 - **门禁与对照工装都在**：改动内核后跑 `bash scripts/verify-*.sh`；
-  改动零件行为后跑 `python3 tools/compare-librime.py`。
+  改动零件行为后跑 `python3 tools/compare-librime.py`；
+  改动那 10 个内联零件后跑 `cargo test -p stele-engine --test number_oracle
+  --test calc_oracle`（与上游逐字节对照）。
+- **内核 crate 不许有数据文件**——包括"只是测试用"的对照数据
+  （门禁抓到过我一次，已移到 `tools/oracle/`）。
+- **改行为之前先读 `reference/` 里那两份以源码为准的调研**，以及
+  `tools/oracle/README.md`——P3 到阶段 A 的 11 个 bug 全都写在里面。
 - **不要相信"配置看起来正常"**：P3 抓到的四个 bug 症状完全一样——
   配置合法、没有报错、某个功能就是不生效。只有端到端测试抓得到。
 - **不确定的约定，别写成"RIME 约定"**：要么引 librime 源码
