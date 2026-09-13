@@ -1379,36 +1379,119 @@ pub fn load_dir_layered(root: &std::path::Path) -> Result<Vec<Loaded>, SchemaErr
         });
     }
 
+    Ok(require_all(root, load_dir_reporting_inner(root, files))?.loaded)
+}
+
+/// 内联路径的目录装载实现（与部署路径共用同一套"跳过并报告"策略）。
+fn load_dir_reporting_inner(root: &std::path::Path, files: Vec<std::path::PathBuf>) -> DirLoad {
     let src = dict::DirSource::new(root);
-    let mut out = Vec::with_capacity(files.len());
+    let mut loaded: Vec<Loaded> = Vec::with_capacity(files.len());
+    let mut skipped: Vec<(String, Diagnostic)> = Vec::new();
     for f in files {
-        let Some(name) = f.file_name().and_then(|n| n.to_str()) else {
+        let Some(name) = f.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
             continue;
         };
-        let text = std::fs::read_to_string(&f).map_err(|e| SchemaError::Invalid {
-            schema_id: name.to_owned(),
-            diagnostics: vec![Diagnostic::new(name, format!("读不了文件：{e}"))],
-        })?;
+        let text = match std::fs::read_to_string(&f) {
+            Ok(t) => t,
+            Err(e) => {
+                skipped.push((
+                    name.clone(),
+                    Diagnostic::new(&name, format!("读不了文件：{e}")),
+                ));
+                continue;
+            }
+        };
         // 用户补丁：`<schema_id>.custom.yaml`（RIME 的约定）。
         // `schema_id` 通常等于文件名去掉扩展名，但**以文件里写的为准**——
         // 先装载一次拿到 id，再按 id 找补丁。
         // 用户补丁按 RIME 的约定找：`<schema_id>.custom.yaml`。
         // **补丁必须真的进编译**——只把它记进来源表是不够的（那正是
         // 上一轮的 bug：报告说改了、行为没变）。
-        let patch = find_patch(root, &text, name);
+        let patch = find_patch(root, &text, &name);
         let patch_ref = patch.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
-        out.push(load_layered_with(
+        match load_layered_with(
             &text,
-            name,
+            &name,
             patch_ref,
             &src,
             &DictMode::Inline,
             // 目录装载：辅助数据（`opencc_config`）相对于**这个目录**解析，
             // 而不是相对于 `name`（那只是文件名，诊断里用）。
             Some(root),
-        )?);
+        ) {
+            Ok(l) => loaded.push(l),
+            Err(e) => skipped.push((name, first_diagnostic(e))),
+        }
     }
-    Ok(out)
+    DirLoad { loaded, skipped }
+}
+
+/// 内联路径的目录装载，**连同"跳过了哪些方案"一起回报**。
+///
+/// # Errors
+///
+/// 同 [`load_dir_deployed_reporting`]。
+pub fn load_dir_reporting(root: &std::path::Path) -> Result<DirLoad, SchemaError> {
+    // 报告入口只把"一个都没装上"当错误。
+    let got = load_dir_reporting_inner(root, collect_schema_files(root)?);
+    if got.loaded.is_empty() {
+        return Err(SchemaError::Invalid {
+            schema_id: root.display().to_string(),
+            diagnostics: got.skipped.iter().map(|(_, d)| d.clone()).collect(),
+        });
+    }
+    Ok(got)
+}
+
+/// **严格**入口：目录里只要有一个方案装不上就报错。
+///
+/// 与 [`load_dir_reporting`] 的分工是明确的：
+///
+/// - **严格**给"我要求这个目录整体可用"的调用方（CI、测试、打包校验）；
+/// - **报告**给"启动路径"——那里一个坏配置不该让输入法用不了。
+fn require_all(root: &std::path::Path, got: DirLoad) -> Result<DirLoad, SchemaError> {
+    if got.skipped.is_empty() && !got.loaded.is_empty() {
+        return Ok(got);
+    }
+    Err(SchemaError::Invalid {
+        schema_id: root.display().to_string(),
+        diagnostics: got
+            .skipped
+            .iter()
+            .map(|(_, d)| d.clone())
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// 目录里全部 `*.schema.yaml`，**按文件名排序**（装载顺序确定）。
+fn collect_schema_files(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, SchemaError> {
+    let entries = std::fs::read_dir(root).map_err(|e| SchemaError::Invalid {
+        schema_id: root.display().to_string(),
+        diagnostics: vec![Diagnostic::new(
+            root.display().to_string(),
+            format!("读不了这个目录：{e}"),
+        )],
+    })?;
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.ends_with(".schema.yaml") {
+            files.push(p);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(SchemaError::Invalid {
+            schema_id: root.display().to_string(),
+            diagnostics: vec![Diagnostic::new(
+                root.display().to_string(),
+                "这个目录里没有 `*.schema.yaml`",
+            )
+            .with_entry("方案文件应当以 `.schema.yaml` 结尾")],
+        });
+    }
+    Ok(files)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1449,8 +1532,55 @@ pub fn load_dir_deployed(
         .collect())
 }
 
+/// 一个目录的装载结果：**成功的方案 + 被跳过的方案**。
+///
+/// # 为什么要"跳过并报告"而不是"一个坏方案拖垮整个目录"
+///
+/// 审计 §2.G1 实测：本机 `/usr/share/rime-data` 的 13 个上游方案逐个隔离
+/// 装载，0 个成功——**而且只要目录里有一个坏方案，整个目录都装不上**。
+/// 这与项目自己的目标（配置错误不阻止启动，D26）直接冲突：
+/// 用户加了一个写错的方案文件，代价却是"整个输入法用不了"——
+/// 而"打字去改配置"恰好是输入法唯一的自救手段。
+///
+/// 策略：
+///
+/// | 情况 | 行为 |
+/// | --- | --- |
+/// | 至少一个方案装上了 | `Ok`，坏的那些进 [`DirLoad::skipped`]，**必须打印** |
+/// | 一个都没装上 | `Err`（没有任何可用方案，启动没有意义） |
+/// | 目录读不了 / 没有方案文件 | `Err`（这不是"某个方案写错了"） |
+///
+/// **跳过的方案必须出现在用户看得见的地方**：静默跳过会让用户以为
+/// "我配了却没生效"，那正是这个项目反复踩的坑。
+#[derive(Debug)]
+pub struct DirLoad {
+    /// 装载成功的方案（按文件名排序，与装载顺序一致）。
+    pub loaded: Vec<Loaded>,
+    /// 被跳过的方案：`(文件名, 诊断)`。
+    pub skipped: Vec<(String, Diagnostic)>,
+}
+
+impl DirLoad {
+    /// 只用成功的方案。
+    #[must_use]
+    pub fn into_defs(self) -> Vec<SchemeDef> {
+        self.loaded.into_iter().map(|l| l.def).collect()
+    }
+
+    /// 给用户看的一行行警告（调用方**必须打印**）。
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        self.skipped
+            .iter()
+            .map(|(name, d)| format!("方案 `{name}` 装载失败，已跳过：{}", d.message))
+            .collect()
+    }
+}
+
 /// 部署路径的"连同来源表"版本。语义与 [`load_dir_layered`] 相同，
 /// 只是词库走紧凑产物（不读进内存）。
+///
+/// **一个坏方案不再拖垮整个目录**——见 [`DirLoad`]。
 ///
 /// # Errors
 ///
@@ -1459,6 +1589,19 @@ pub fn load_dir_deployed_layered(
     root: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<Vec<Loaded>, SchemaError> {
+    Ok(require_all(root, load_dir_deployed_reporting(root, cache_dir)?)?.loaded)
+}
+
+/// 部署路径的目录装载，**连同"跳过了哪些方案"一起回报**。
+///
+/// # Errors
+///
+/// 目录读不了、目录里没有方案文件、或**一个方案都没装上**时返回
+/// [`SchemaError`]。单个方案装不上**不是**错误——它进 [`DirLoad::skipped`]。
+pub fn load_dir_deployed_reporting(
+    root: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<DirLoad, SchemaError> {
     let src = dict::DirSource::new(root);
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     let entries = std::fs::read_dir(root).map_err(|e| SchemaError::Invalid {
@@ -1487,29 +1630,52 @@ pub fn load_dir_deployed_layered(
         });
     }
 
-    let mut out = Vec::with_capacity(files.len());
+    let mut loaded = Vec::with_capacity(files.len());
+    let mut skipped: Vec<(String, Diagnostic)> = Vec::new();
     for f in files {
         let name = f
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_owned();
-        let text = std::fs::read_to_string(&f).map_err(|e| SchemaError::Invalid {
-            schema_id: name.clone(),
-            diagnostics: vec![Diagnostic::new(&name, format!("读不了文件：{e}"))],
-        })?;
+        let text = match std::fs::read_to_string(&f) {
+            Ok(t) => t,
+            Err(e) => {
+                skipped.push((
+                    name.clone(),
+                    Diagnostic::new(&name, format!("读不了文件：{e}")),
+                ));
+                continue;
+            }
+        };
         let patch = find_patch(root, &text, &name);
         let patch_ref = patch.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
-        out.push(load_layered_inner_deployed(
-            &text,
-            &name,
-            patch_ref,
-            &src,
-            cache_dir,
-            Some(root),
-        )?);
+        match load_layered_inner_deployed(&text, &name, patch_ref, &src, cache_dir, Some(root)) {
+            Ok(l) => loaded.push(l),
+            Err(e) => {
+                // 单个方案的问题**只影响它自己**：收集诊断，继续装下一个。
+                skipped.push((name, first_diagnostic(e)));
+            }
+        }
     }
-    Ok(out)
+    Ok(DirLoad { loaded, skipped })
+}
+
+/// 从一个装载错误里取出**第一条**诊断（目录装载的跳过列表用它）。
+///
+/// 一条方案可能有几十条诊断；跳过列表是给人扫一眼的，取第一条并保留
+/// 完整信息在 `Diagnostic` 里即可。
+fn first_diagnostic(e: SchemaError) -> Diagnostic {
+    match e {
+        SchemaError::Invalid {
+            diagnostics,
+            schema_id,
+        } => diagnostics
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Diagnostic::new(schema_id, "装载失败（无诊断）")),
+        other => Diagnostic::new("dir", format!("装载失败：{other}")),
+    }
 }
 
 /// 部署一份词库：算身份指纹 → 需要就编译 → 以按需分页的方式打开。

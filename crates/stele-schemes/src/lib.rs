@@ -33,8 +33,8 @@ pub mod minimal;
 pub mod provenance;
 
 pub use file::{
-    load_dir, load_dir_deployed, load_dir_deployed_layered, load_dir_layered, load_scheme,
-    load_scheme_layered, Loaded,
+    load_dir, load_dir_deployed, load_dir_deployed_layered, load_dir_deployed_reporting,
+    load_dir_layered, load_dir_reporting, load_scheme, load_scheme_layered, DirLoad, Loaded,
 };
 pub use minimal::{
     all, all_layered, embedded, uses_both_translator_families, EmbeddedSource, EMBEDDED,

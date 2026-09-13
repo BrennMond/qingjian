@@ -120,19 +120,29 @@ fn main() -> ExitCode {
         None if auto.is_dir() => Some(auto.to_path_buf()),
         None => None,
     };
-    let loaded: Result<Vec<stele_schemes::Loaded>, _> = match &chosen_dir {
+    // 目录装载走**跳过并报告**的策略：一个写错的方案**不该让整个输入法
+    // 用不了**（审计 §2.G1 与项目自己的 D26 都要求这条）。被跳过的方案
+    // 必须打印出来——静默跳过会让用户以为"我配了却没生效"。
+    let loaded: Result<(Vec<stele_schemes::Loaded>, Vec<String>), _> = match &chosen_dir {
         // 目录装载走**部署路径**：词库编译成紧凑产物，按需分页地读。
         // 内嵌方案只有几十条词，用内存表更快，所以两条路各走各的。
-        Some(root) => stele_schemes::load_dir_deployed_layered(root, &root.join(".stele-cache")),
-        None => stele_schemes::all_layered(),
+        Some(root) => stele_schemes::load_dir_deployed_reporting(root, &root.join(".stele-cache"))
+            .map(|d| {
+                let w = d.warnings();
+                (d.loaded, w)
+            }),
+        None => stele_schemes::all_layered().map(|d| (d, Vec::new())),
     };
-    let loaded = match loaded {
+    let (loaded, skipped) = match loaded {
         Ok(d) => d,
         Err(e) => {
             eprintln!("装载方案失败：{e}");
             return ExitCode::FAILURE;
         }
     };
+    for w in &skipped {
+        eprintln!("⚠ {w}");
+    }
     let defs: Vec<_> = loaded.iter().map(|l| l.def.for_engine()).collect();
 
     // ── 用户记忆（P4a）─────────────────────────────────────────────────
