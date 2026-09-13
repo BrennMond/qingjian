@@ -91,19 +91,41 @@ pub fn load_scheme_layered(
     user_patch: Option<(&str, &str)>,
     dicts: &dyn dict::Source,
 ) -> Result<Loaded, SchemaError> {
+    load_layered_with(text, path, user_patch, dicts, &DictMode::Inline)
+}
+
+/// 由**方案文本 + 可选补丁文本**算出合并结果并编译。
+///
+/// # 这是唯一一条"分层 → 编译"的路径
+///
+/// 上一轮我把补丁合并写在 `load_scheme_layered` 里，而**目录装载
+/// （`load_dir_layered`）没有走它**——于是 `--dump-config` 打印出了
+/// "用户补丁贡献 2 项"，而引擎拿到的仍是未打补丁的方案。
+///
+/// 症状极其隐蔽：报告说得很清楚，行为却完全没变。抓它的方式是
+/// **真的跑一遍 CLI 并对照 `--dump-config` 与 `--list`**，
+/// 而不是只跑那条直接调 `load_scheme_layered` 的测试。
+///
+/// 现在三个入口（单文件 / 目录 / 目录+部署）都经过这里，因此不可能再分叉。
+fn load_layered_with(
+    text: &str,
+    path: &str,
+    user_patch: Option<(&str, &str)>,
+    dicts: &dyn dict::Source,
+    mode: &DictMode<'_>,
+) -> Result<Loaded, SchemaError> {
     let mut layers = vec![(
         crate::provenance::Layer::new("方案", path, "方案文件本身（基础层）"),
         parse_or_diag(text, path)?,
     )];
     if let Some((patch_text, patch_name)) = user_patch {
-        let node = parse_or_diag(patch_text, patch_name)?;
         layers.push((
             crate::provenance::Layer::new(
                 "用户补丁",
                 patch_name,
                 "你的改动层：它覆盖上面任何一层",
             ),
-            node,
+            parse_or_diag(patch_text, patch_name)?,
         ));
     }
     let resolution = crate::provenance::Resolution::of(layers).map_err(|msg| {
@@ -111,18 +133,68 @@ pub fn load_scheme_layered(
             schema_id: path.to_owned(),
             diagnostics: vec![Diagnostic::new(path, msg)
                 .with_field("layers")
-                .with_entry("检查补丁里同一个键的类型是否与方案一致（映射可以合并，列表整体替换）")],
+                .with_entry(
+                    "检查补丁里同一个键的类型是否与方案一致（映射可以合并，列表整体替换）",
+                )],
         }
     })?;
     // **编译的是合并结果**，不是原始方案文件。
     //
     // 这一行是 P2 欠下的接线：`stele-config` 里的分层补丁早就实现并测过，
     // 但装载路径一直只读方案文件本身——于是"用户补丁能覆盖一切"这句话
-    // 在 P2 是**假的**。现在它有一个端到端测试守着
-    // （`tests/p3_pipeline.rs` 的 `a_user_patch_is_merged_and_its_provenance_is_recorded`）。
-    let mut loaded = load_from_root(&resolution.root, path, dicts, &DictMode::Inline)?;
+    // 在 P2 是**假的**。
+    let mut loaded = load_from_root(&resolution.root, path, dicts, mode)?;
     loaded.resolution = resolution;
     Ok(loaded)
+}
+
+/// 同 [`load_layered_with`]，但词库走部署路径（紧凑产物）。
+///
+/// # Errors
+///
+/// 同 [`load_scheme_layered`]。
+fn load_layered_inner_deployed(
+    text: &str,
+    path: &str,
+    user_patch: Option<(&str, &str)>,
+    dicts: &dyn dict::Source,
+    cache_dir: &std::path::Path,
+) -> Result<Loaded, SchemaError> {
+    load_layered_with(text, path, user_patch, dicts, &DictMode::Deployed(cache_dir))
+}
+
+/// 找一份方案的用户补丁：`<schema_id>.custom.yaml`（RIME 的约定）。
+///
+/// `schema_id` 以**文件里写的**为准（不假定它等于文件名）——因此要先
+/// 轻量解析一次方案文本。解析失败时返回 `None`：那条错误会在真正的
+/// 装载里以更完整的诊断报出来，这里不必抢着报。
+fn find_patch(
+    dir: &std::path::Path,
+    text: &str,
+    file_name: &str,
+) -> Option<(String, String)> {
+    let id = stele_config::parse(text)
+        .ok()
+        .and_then(|root| {
+            root.get("schema")
+                .and_then(|s| s.get("schema_id"))
+                .and_then(stele_config::Node::as_str)
+        })
+        .unwrap_or_else(|| {
+            file_name
+                .trim_end_matches(".schema.yaml")
+                .trim_end_matches(".yaml")
+                .to_owned()
+        });
+    let path = dir.join(format!("{id}.custom.yaml"));
+    let patch_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("custom.yaml")
+        .to_owned();
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|t| (t, patch_name))
 }
 
 fn parse_or_diag(text: &str, path: &str) -> Result<Node, SchemaError> {
@@ -145,10 +217,11 @@ enum DictMode<'a> {
 
 fn load_scheme_with(
     text: &str,
-    path: &str,
+    schema_path: &str,
     dicts: &dyn dict::Source,
     mode: &DictMode<'_>,
 ) -> Result<Loaded, SchemaError> {
+    let path = schema_path;
     let root = stele_config::parse(text).map_err(|e| SchemaError::Invalid {
         schema_id: path.to_owned(),
         diagnostics: vec![Diagnostic::new(
@@ -981,50 +1054,14 @@ pub fn load_dir_layered(root: &std::path::Path) -> Result<Vec<Loaded>, SchemaErr
         // 用户补丁：`<schema_id>.custom.yaml`（RIME 的约定）。
         // `schema_id` 通常等于文件名去掉扩展名，但**以文件里写的为准**——
         // 先装载一次拿到 id，再按 id 找补丁。
-        let mut loaded = load_scheme_with(&text, name, &src, &DictMode::Inline)?;
-        let id = loaded.def.info.schema_id.clone();
-        let custom = root.join(format!("{id}.custom.yaml"));
-        if custom.is_file() {
-            if let Ok(patch_text) = std::fs::read_to_string(&custom) {
-                let patch_name = custom
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("custom.yaml")
-                    .to_owned();
-                let mut layers = vec![(
-                    crate::provenance::Layer::new("方案", name, "方案文件本身（基础层）"),
-                    stele_config::parse(&text).map_err(|e| SchemaError::Invalid {
-                        schema_id: name.to_owned(),
-                        diagnostics: vec![Diagnostic::new(
-                            name,
-                            format!("第 {} 行：{}", e.line, e.message),
-                        )],
-                    })?,
-                )];
-                layers.push((
-                    crate::provenance::Layer::new(
-                        "用户补丁",
-                        &patch_name,
-                        "你的改动层：它覆盖上面任何一层",
-                    ),
-                    stele_config::parse(&patch_text).map_err(|e| SchemaError::Invalid {
-                        schema_id: patch_name.clone(),
-                        diagnostics: vec![Diagnostic::new(
-                            patch_name.clone(),
-                            format!("第 {} 行：{}", e.line, e.message),
-                        )],
-                    })?,
-                ));
-                loaded.resolution =
-                    crate::provenance::Resolution::of(layers).map_err(|msg| {
-                        SchemaError::Invalid {
-                            schema_id: patch_name.clone(),
-                            diagnostics: vec![Diagnostic::new(patch_name.clone(), msg)],
-                        }
-                    })?;
-            }
-        }
-        out.push(loaded);
+        // 用户补丁按 RIME 的约定找：`<schema_id>.custom.yaml`。
+        // **补丁必须真的进编译**——只把它记进来源表是不够的（那正是
+        // 上一轮的 bug：报告说改了、行为没变）。
+        let patch = find_patch(root, &text, name);
+        let patch_ref = patch
+            .as_ref()
+            .map(|(t, n)| (t.as_str(), n.as_str()));
+        out.push(load_layered_with(&text, name, patch_ref, &src, &DictMode::Inline)?);
     }
     Ok(out)
 }
@@ -1116,50 +1153,17 @@ pub fn load_dir_deployed_layered(
             schema_id: name.clone(),
             diagnostics: vec![Diagnostic::new(&name, format!("读不了文件：{e}"))],
         })?;
-        let mut loaded = load_scheme_with(&text, &name, &src, &DictMode::Deployed(cache_dir))?;
-        let id = loaded.def.info.schema_id.clone();
-        let custom = root.join(format!("{id}.custom.yaml"));
-        if custom.is_file() {
-            if let Ok(patch_text) = std::fs::read_to_string(&custom) {
-                let patch_name = custom
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("custom.yaml")
-                    .to_owned();
-                let mut layers = vec![(
-                    crate::provenance::Layer::new("方案", &name, "方案文件本身（基础层）"),
-                    stele_config::parse(&text).map_err(|e| SchemaError::Invalid {
-                        schema_id: name.clone(),
-                        diagnostics: vec![Diagnostic::new(
-                            &name,
-                            format!("第 {} 行：{}", e.line, e.message),
-                        )],
-                    })?,
-                )];
-                layers.push((
-                    crate::provenance::Layer::new(
-                        "用户补丁",
-                        &patch_name,
-                        "你的改动层：它覆盖上面任何一层",
-                    ),
-                    stele_config::parse(&patch_text).map_err(|e| SchemaError::Invalid {
-                        schema_id: patch_name.clone(),
-                        diagnostics: vec![Diagnostic::new(
-                            patch_name.clone(),
-                            format!("第 {} 行：{}", e.line, e.message),
-                        )],
-                    })?,
-                ));
-                loaded.resolution =
-                    crate::provenance::Resolution::of(layers).map_err(|msg| {
-                        SchemaError::Invalid {
-                            schema_id: patch_name.clone(),
-                            diagnostics: vec![Diagnostic::new(patch_name.clone(), msg)],
-                        }
-                    })?;
-            }
-        }
-        out.push(loaded);
+        let patch = find_patch(root, &text, &name);
+        let patch_ref = patch
+            .as_ref()
+            .map(|(t, n)| (t.as_str(), n.as_str()));
+        out.push(load_layered_inner_deployed(
+            &text,
+            &name,
+            patch_ref,
+            &src,
+            cache_dir,
+        )?);
     }
     Ok(out)
 }

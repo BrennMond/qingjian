@@ -578,3 +578,48 @@ fn a_user_patch_is_merged_and_its_provenance_is_recorded() {
     assert_eq!(loaded.def.page_size, 7);
     assert_eq!(loaded.def.info.name, "我改过的名字");
 }
+
+#[test]
+fn the_directory_loader_also_applies_the_user_patch() {
+    // # 这条测试是怎么来的
+    //
+    // 上面那条测的是 `load_scheme_layered`（直接给文本）。
+    // 而 **CLI 走的是目录装载**（`load_dir_deployed_layered`）——
+    // 它当时**没有**合并补丁：`--dump-config` 打印出"用户补丁贡献 2 项"，
+    // 而 `--list` 显示的名字仍是方案里写的那个。
+    //
+    // 我是在**手工跑 CLI 对照两份输出**时发现的，不是测试发现的。
+    // 所以现在补上这一条：目录装载必须与直接装载得到同样的结果。
+    //
+    // 这类 bug 的形状值得记住：**"机制存在"与"机制被走到"是两件事**，
+    // 而单元测试很容易只覆盖前者。
+    let tmp = std::env::temp_dir().join(format!("stele-patch-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("建临时目录");
+    for entry in std::fs::read_dir(dir()).expect("读测试方案目录") {
+        let path = entry.expect("目录项").path();
+        let name = path.file_name().expect("文件名").to_owned();
+        std::fs::copy(&path, tmp.join(name)).expect("复制方案文件");
+    }
+    std::fs::write(
+        tmp.join("p3-features.custom.yaml"),
+        "schema:\n  name: 补丁改过的名字\nmenu:\n  page_size: 7\n",
+    )
+    .expect("写补丁");
+
+    let defs = stele_schemes::load_dir(&tmp).expect("目录装载");
+    assert_eq!(
+        defs[0].info.name, "补丁改过的名字",
+        "目录装载必须**真的应用**用户补丁，而不只是把它记进来源表"
+    );
+    assert_eq!(defs[0].page_size, 7);
+
+    let layered = stele_schemes::load_dir_layered(&tmp).expect("分层目录装载");
+    assert_eq!(layered[0].resolution.layers.len(), 2);
+    assert!(layered[0]
+        .resolution
+        .origin_note("schema.name")
+        .contains("用户补丁"));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
