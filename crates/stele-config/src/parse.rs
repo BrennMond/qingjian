@@ -537,6 +537,25 @@ fn parse_scalar(s: &str) -> Value {
     if let Ok(i) = t.replace('_', "").parse::<i64>() {
         return Value::Int(i);
     }
+    // ⚠️ **必须先挡掉 YAML"特殊浮点"的裸写法。**
+    //
+    // Rust 的 `f64::from_str` 认识 `"nan"` / `"inf"` / `"infinity"`
+    // （不区分大小写），于是音节表里那行 `- nan` 会被解析成 `Float(NaN)`，
+    // 而 `Node::as_str()` 对浮点返回 `None` —— **那一项被静默丢掉**。
+    //
+    // 这个坑真的发生过：默认词库的音节表里有 `nan`（「男女平等」的第一个
+    // 音节），装载器报「词条引用了字母表里没有的编码单元「nan」」，
+    // 而方案文件里明明写着它。查了半天不在装载器上，就在这一行。
+    //
+    // YAML 1.1 规定这两个特殊值要写成 `.nan` / `.inf`（带点）；裸的
+    // `nan` 在许多真实解析器里就是普通字符串。我们按后者处理：
+    // **歧义写法一律当字符串**，要浮点请写 `.nan`。
+    if matches!(
+        t.to_ascii_lowercase().as_str(),
+        "nan" | "+nan" | "-nan" | "inf" | "+inf" | "-inf" | "infinity" | "+infinity" | "-infinity"
+    ) {
+        return Value::Str(t.to_owned());
+    }
     if let Ok(f) = t.replace('_', "").parse::<f64>() {
         return Value::Float(f);
     }
@@ -894,5 +913,25 @@ mod tests {
     fn mixed_map_and_seq_at_one_level_is_rejected() {
         let e = parse("a: 1\n- b\n").unwrap_err();
         assert!(e.message.contains("混用"), "{}", e.message);
+    }
+
+    #[test]
+    fn bare_nan_is_a_string_not_a_float() {
+        // 音节表里真的有 `nan` 这个音节（「男女平等」）。Rust 的
+        // `f64::from_str` 认识它，于是它会变成 `Float(NaN)`，
+        // 而 `as_str()` 对浮点返回 `None` —— 那一项就被静默丢掉，
+        // 装载器随后报「词条引用了字母表里没有的编码单元」。
+        let root = parse("alphabet:\n  - nan\n  - ning\n").unwrap();
+        let seq = root.get("alphabet").unwrap().as_seq().unwrap();
+        let items: Vec<String> = seq.iter().filter_map(Node::as_str).collect();
+        assert_eq!(items, ["nan", "ning"], "裸 nan 必须是字符串");
+    }
+
+    #[test]
+    fn bare_inf_is_a_string_too() {
+        let root = parse("a: inf\nb: infinity\nc: -inf\n").unwrap();
+        assert_eq!(root.get("a").unwrap().as_str().as_deref(), Some("inf"));
+        assert_eq!(root.get("b").unwrap().as_str().as_deref(), Some("infinity"));
+        assert_eq!(root.get("c").unwrap().as_str().as_deref(), Some("-inf"));
     }
 }
