@@ -112,7 +112,32 @@
 
 > **共同点**：librime 允许输入**不完整**——它可以只消费一部分输入（末音节打一半 `niha`、只认前缀段 `nihaoshijie`），也可以用单字**造句**（`haoni` → 好你）。
 > 
-> **Stele 的模型**：拼写图要求输入是**编码单元的完整序列**，整段一起翻译；输入消费不完就退化成「字面量」候选（B3 三行的 stele 列都只剩输入串本身）。这是模型差异，不是崩溃——但**日常打字里「多打了一个字母」的场景，体验会明显不同**。
+> **Stele 的模型**：拼写图把**整串输入**展开成若干条编码，每条编码做一次精确查表；输入消费不完就退化成「字面量」候选（B3 三行的 stele 列都只剩输入串本身）。
+> 
+> **librime 有三条通路**（下一节的矩阵把它们分开）：① 切分图只覆盖**能解释的前缀**，查表在该子图上做（`src/rime/algo/syllabifier.cc:268` 的 `interpreted_length`）；② **拼写层补全**——剩下的尾巴若是某个更长拼写的前缀，`Prism::ExpandSearch` 补出一条边（同文件 `:224-228`，**默认开**）；③ 没有精确匹配的词时**造句**（`src/rime/gear/script_translator.cc:503`）。
+
+### B3.1 「输入不完整」的定位实验：缩写 × 补全
+
+同一份词表、同一个输入 `niha`，只改两个开关，看哪一格还能给出「你好」。
+
+| 缩写 | 补全 | librime 候选（前 3） | stele 候选（前 3） |
+| --- | --- | --- | --- |
+| 开 | 开 | 你好 拟好 尼号 | niha |
+| 开 | 关 | 你好 拟好 尼号 | niha |
+| 关 | 开 | 你好 拟好 尼号 | niha |
+| 关 | 关 | 你 尼 泥 | niha |
+
+- **librime**：4 格里 3 格命中「你好」（未命中：缩写=关/补全=关）——它有**不止一条**通路。
+- **stele**：4 格里 0 格命中（未命中：缩写=开/补全=开、缩写=开/补全=关、缩写=关/补全=开、缩写=关/补全=关）。
+
+- **对照 `nih`**（缩写开、补全关）：librime `你好 拟好 尼号`；stele `你好 拟好 尼号` —— 两边都命中，所以 **stele 的缩写通路是活的**。
+
+> **定位结论：差的是两处，不是一处。**
+> 
+> 1. **Stele 不存在「只消费前缀」这回事。** 它要求整串输入都能切成编码单元，否则退化成字面量。所以「缩写开」的两格也不命中：`niha` = `ni` + `ha`，而 `ha` 不是字母表里的单元（对照 `nih` = `ni` + `h` 能整串消费，两边都命中）。librime 那边，切分图只覆盖能解释的前缀、`a` 留在输入里照样出词——`src/rime/algo/syllabifier.cc:268` 的 `interpreted_length` **可以小于输入长度**。
+> 2. **Stele 的补全在编码单元层，用不上。** `crates/stele-engine/src/translator.rs:192` 做的是 `lexicon.prefix_lookup(&exp.code, ...)`——尾巴 `ha` 产不出 `exp.code`，补全永远轮不到。librime 的补全在**拼写层**（`Prism::ExpandSearch`，`src/rime/algo/syllabifier.cc:224-228`），所以「缩写关、补全开」那一格它仍然命中。
+> 
+> 这也顺带证实了 `enable_completion` 的**默认值是开**：夹具从没写过这个键，而「缩写关、补全开」那一格仍然命中——按 `src/rime/gear/translator_commons.h:176`（`= true`）与 `src/rime/gear/script_translator.cc:88`（把它交给切分器），只可能是这个解释。
 
 ### B4 配置项核对：被解析、但引擎里没人读的开关
 
@@ -122,9 +147,11 @@
 
 - `enable_sentence: true` 前后，stele 的输出**完全相同**（开关没有生效）。
 
-> **代码侧核对**：`TranslatorSpec::enable_sentence`（`crates/stele-engine/src/spec.rs:556`）确实由`crates/stele-schemes/src/components.rs:711` 从方案里读出来，但**引擎里没有任何地方读它**（`grep -rn enable_sentence crates/stele-engine/src` 只命中字段声明本身）；`Origin::Sentence` 也只有一个测试夹具在产出。也就是说：**方案里写了 `enable_sentence: true`，不会有任何效果，也不会有警告**。这与 HANDOFF §5 第 36 条（「实现了」与「被装配了」是两件事）是同一形状，只是这次连「实现」都没有。
+> **代码侧核对（这次用的是 rust-analyzer，不是 grep）**：`rust_analyzer_references` 在 `TranslatorSpec::enable_sentence` 上只返回 **2 处**——声明 `crates/stele-engine/src/spec.rs:556` 与赋值 `crates/stele-schemes/src/components.rs:711`，**零读取**。对照 `TranslatorSpec::completion()` 有 5 处引用，其中 `crates/stele-engine/src/scheme.rs:1159/1172` 是真实消费点。也就是说：**方案里写 `enable_sentence: true` 不会有任何效果，也不会有警告**——这与 HANDOFF §5 第 36 条（「实现了」与「被装配了」是两件事）同形，只是这次连「实现」都没有。
 > 
-> **另一处注释与上游源码不符**：`TranslatorSpec::default_completion()`的注释写着「RIME 的默认也是关」，而 librime 里`TranslatorOptions::enable_completion_` 的初值是 **`true`**（`src/rime/gear/translator_commons.h:176`），`script_translator` 未显式配置时 `enable_word_completion_` 继承它（`src/rime/gear/script_translator.cc:194-196`）。建议要么改注释，要么对齐默认值——**别让注释替上游下结论**。
+> **上游对照**：librime 里 `enable_sentence` 只存在于**码表族**（`src/rime/gear/table_translator.h:43`，初值 **`true`**；在 `:218` 读、在 `:226` 与 `:293` 用），而 `script_translator`（拼音族）**根本没有这个开关**——它在「至少两个音节、且没有精确匹配的词」时**无条件造句**（`src/rime/gear/script_translator.cc:503`）。Stele 把它放进了两族共用的 `TranslatorSpec`，而两族都没有接。
+> 
+> **`default_completion()` 的注释与上游不符，且已被 B3.1 实测证实**：注释写着「RIME 的默认也是关」，而 librime 的 `TranslatorOptions::enable_completion_` 初值是 **`true`**（`src/rime/gear/translator_commons.h:176`）；`script_translator` 未显式配置时 `enable_word_completion_` 继承它（`src/rime/gear/script_translator.cc:194-196`），并由 `:88` 交给切分器。B3.1 里「缩写关、补全开」那一格仍然命中「你好」，就是这个默认值在起作用。建议要么改注释，要么对齐默认值——**别让注释替上游下结论**。
 
 
 ## C. 上游方案能否装载（plum preset → stele）
@@ -197,9 +224,12 @@ plum 副本：`/home/brennmond/projects/stele/.work/upstream/plum`（b1be196 202
 
 **这次对照交出的问题清单**（不判失败，但都是可开工的条目）：
 
-1. **拼写图不做「不完整输入」**（B3，3 条用例）：输入的末音节打一半、或输入比词条长时，Stele 退化成字面量候选，librime 仍给前缀候选 / 造句候选。
-2. **`enable_sentence` 被解析但没有消费者**（B4）：方案里写 `enable_sentence: true` 不会有任何效果，也没有警告。
-3. **13 个上游 preset 方案有真实装载缺口**（C）：字典 `columns:` / `%` 权重、码表编码的无空格字符串、跨文件 `__patch`、X11 键名——四组，见 C 节的归类。
-4. **一个坏方案会让整个 `--scheme-dir` 都用不了**（C2）：装载器停在第一个坏方案上，且只报它。
+1. **「不完整输入」缺的是两处能力**（B3 / B3.1，3 条用例 + 4 格矩阵）：
+   - **没有「只消费前缀」**：Stele 要求整串输入都能切成编码单元，否则退化成字面量；librime 的切分图可以只覆盖能解释的前缀。
+   - **补全在编码单元层，用不上**：尾巴产不出 `exp.code` 时补全永远轮不到；librime 的补全在拼写层（`Prism::ExpandSearch`）。
+2. **没有造句器**（B3 / B4）：librime 在没有精确匹配的词时自动造句，**不需要语言模型**（`Poet` 无 `grammar` 时走动态规划）；Stele 的 `enable_sentence` 被解析但零读取，两族都没接。上游 `script_translator` 甚至没有这个开关（无条件造句），`table_translator` 的默认值是 `true`。
+3. **`enable_completion` 的默认值与注释不符**（B3.1 / B4）：librime 初值 `true`，Stele 的 `default_completion()` 返回 `false` 且注释声称「RIME 的默认也是关」——矩阵已实测证实。
+4. **13 个上游 preset 方案有真实装载缺口**（C）：字典 `columns:` / `%` 权重、码表编码的无空格字符串、跨文件 `__patch`、X11 键名——四组，见 C 节的归类。
+5. **一个坏方案会让整个 `--scheme-dir` 都用不了**（C2）：装载器停在第一个坏方案上，且只报它。
 
 > 本报告由 `tools/rime-compare/compare.py` 生成，重跑同一条命令应得到同样的结论（librime 侧一律取冷基线）。

@@ -20,6 +20,11 @@ ecosystem) under explicit, falsifiable definitions, and emit one report.
 "要比排序，得先让两边吃同一份词表"。两侧读同一份词表之后，
 "候选排序不同"就再也不能用"词库不同"解释——它只能来自引擎。
 
+**B3.1 是"把解释变成实验"的那一节**：同一份词表、同一个输入，
+只改「缩写」与「补全」两个开关，跑 2×2 矩阵。它的价值已经兑现过一次——
+第一版对"输入不完整也能出候选"的解释（"靠缩写"）被这张表**推翻**了。
+根因分析见 `reference/rime-sentence-and-completion.md`。
+
 # 断言与观察是两件事
 
 - **断言（invariant）**：必须成立，不成立则退出码非 0。
@@ -99,6 +104,16 @@ DIVERGENCE_CASES: list[tuple[str, str, str]] = [
     ("haoni", "词库里没有「好你」，但两个字都有", "造句：两个单字拼成词库外的词"),
     ("nihaoshijie", "词库里只有前两个音节，后面是未消费的输入", "只翻译能认出的前缀段，剩余留在输入里"),
 ]
+
+# B3.1 的 2×2 定位实验：同一份词表、同一个输入，只改「缩写」与「补全」两个开关。
+# 它把"输入不完整也能出候选"从一段解释变成一次**可证伪**的实验——
+# 第一版解释（"靠缩写"）就是被这张表推翻的。
+MATRIX_INPUT = "niha"
+MATRIX_EXPECTED = "你好"
+# 对照输入：`nih` 是**能整串消费**的缩写（`ni` + `h`）。两边都该命中——
+# 它用来排除"stele 没有缩写"这个误判：stele 的缩写是活的，
+# 它缺的是"允许切分图只覆盖前缀"。
+MATRIX_CONTROL = "nih"
 
 # 上游方案装载失败的原因分类。
 # 每条是 `(日志里出现的子串, 归类, 处置)`，处置取 `intentional` / `gap`。
@@ -225,6 +240,55 @@ def prepare_shared(work: Path) -> tuple[Path, Path]:
     return rime_dir, stele_dir
 
 
+def _variant_rime(target: Path, *, abbrev: bool, completion: bool) -> None:
+    """铺一份 RIME 侧变体：只改「缩写规则」与 `enable_completion` 两项。
+
+    替换失败会 `assert` 炸掉——**夹具改名/改写法时必须同步改这里**，
+    否则矩阵会静默地跑在错误的配置上（"一个不会失败的检查等于没有检查"）。
+    """
+    text = (FIXTURES / "rime" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
+    if not abbrev:
+        before = text
+        text = text.replace("  algebra:\n    - abbrev/^([a-z]).+$/$1/\n", "  algebra: []\n")
+        assert text != before, "RIME 侧缩写规则替换失败：fixture 改了？"
+    if not completion:
+        before = text
+        text = text.replace(
+            f"translator:\n  dictionary: {SCHEMA_ID}",
+            f"translator:\n  dictionary: {SCHEMA_ID}\n  enable_completion: false",
+        )
+        assert text != before, "RIME 侧 completion 替换失败：fixture 改了？"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy(FIXTURES / "shared.dict.yaml", target / f"{SCHEMA_ID}.dict.yaml")
+    shutil.copy(FIXTURES / "rime" / "default.yaml", target / "default.yaml")
+    (target / f"{SCHEMA_ID}.schema.yaml").write_text(text, encoding="utf-8")
+
+
+def _variant_stele(target: Path, *, abbrev: bool, completion: bool) -> None:
+    """铺一份 Stele 侧变体：改「缩写规则」与 `enable_word_completion`。
+
+    `enable_word_completion` **显式写成开或关**（不靠默认值），
+    这样矩阵比的是"开关的作用"，不是"两边的默认值"。
+    """
+    text = (FIXTURES / "stele" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
+    if not abbrev:
+        before = text
+        text = text.replace(
+            "  rules:\n    - abbrev: { take: 1, weight: 0.5 }\n", "  rules: []\n"
+        )
+        assert text != before, "Stele 侧缩写规则替换失败：fixture 改了？"
+    before = text
+    text = text.replace(
+        f"translator:\n  dictionary: {SCHEMA_ID}",
+        f"translator:\n  dictionary: {SCHEMA_ID}\n  enable_word_completion: "
+        + ("true" if completion else "false"),
+    )
+    assert text != before, "Stele 侧 completion 替换失败：fixture 改了？"
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy(FIXTURES / "shared.dict.yaml", target / f"{SCHEMA_ID}.dict.yaml")
+    (target / f"{SCHEMA_ID}.schema.yaml").write_text(text, encoding="utf-8")
+
+
 def librime_candidates(
     probe: Path, rime_dir: Path, user_dir: Path, keys: str, reset: bool = False
 ) -> list[str]:
@@ -345,11 +409,101 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
                  "（末音节打一半 `niha`、只认前缀段 `nihaoshijie`），"
                  "也可以用单字**造句**（`haoni` → 好你）。")
     lines.append("> ")
-    lines.append("> **Stele 的模型**：拼写图要求输入是**编码单元的完整序列**，"
-                 "整段一起翻译；输入消费不完就退化成「字面量」候选"
-                 "（B3 三行的 stele 列都只剩输入串本身）。"
-                 "这是模型差异，不是崩溃——但**日常打字里"
-                 "「多打了一个字母」的场景，体验会明显不同**。")
+    lines.append("> **Stele 的模型**：拼写图把**整串输入**展开成若干条编码，"
+                 "每条编码做一次精确查表；输入消费不完就退化成「字面量」候选"
+                 "（B3 三行的 stele 列都只剩输入串本身）。")
+    lines.append("> ")
+    lines.append("> **librime 有三条通路**（下一节的矩阵把它们分开）："
+                 "① 切分图只覆盖**能解释的前缀**，查表在该子图上做"
+                 "（`src/rime/algo/syllabifier.cc:268` 的 `interpreted_length`）；"
+                 "② **拼写层补全**——剩下的尾巴若是某个更长拼写的前缀，"
+                 "`Prism::ExpandSearch` 补出一条边（同文件 `:224-228`，**默认开**）；"
+                 "③ 没有精确匹配的词时**造句**（`src/rime/gear/script_translator.cc:503`）。")
+    lines.append("")
+
+    # ── B3.1：2×2 矩阵 ──
+    #
+    # 这一节存在的理由：把"输入不完整也能出候选"从**一段解释**变成**一次可证伪的实验**。
+    # 同一份词表、同一个输入，只改两个开关（缩写 / 补全），四个格子的结果把
+    # "这条能力由谁提供"钉死。第一版解释（"靠缩写"）就是被这张表推翻的：
+    # 没有缩写规则时 librime 照样命中，说明还有第二条通路。
+    lines.append("### B3.1 「输入不完整」的定位实验：缩写 × 补全")
+    lines.append("")
+    lines.append(f"同一份词表、同一个输入 `{MATRIX_INPUT}`，只改两个开关，"
+                 f"看哪一格还能给出「{MATRIX_EXPECTED}」。")
+    lines.append("")
+    lines.append("| 缩写 | 补全 | librime 候选（前 3） | stele 候选（前 3） |")
+    lines.append("| --- | --- | --- | --- |")
+    mx_root = work / "shared" / "mx"
+    if mx_root.exists():
+        shutil.rmtree(mx_root)
+    lib_cells: dict[tuple[bool, bool], list[str]] = {}
+    ste_cells: dict[tuple[bool, bool], list[str]] = {}
+    for abbrev in (True, False):
+        for completion in (True, False):
+            rdir = mx_root / f"rime-a{int(abbrev)}-c{int(completion)}"
+            sdir = mx_root / f"stele-a{int(abbrev)}-c{int(completion)}"
+            _variant_rime(rdir, abbrev=abbrev, completion=completion)
+            _variant_stele(sdir, abbrev=abbrev, completion=completion)
+            lib_cells[(abbrev, completion)] = librime_candidates(
+                probe, rdir, rdir / "user", MATRIX_INPUT
+            )
+            ste_cells[(abbrev, completion)] = stele_candidates(stele, sdir, MATRIX_INPUT)
+            lines.append(
+                f"| {'开' if abbrev else '关'} | {'开' if completion else '关'} | "
+                f"{' '.join(lib_cells[(abbrev, completion)][:3]) or '（无）'} | "
+                f"{' '.join(ste_cells[(abbrev, completion)][:3]) or '（无）'} |"
+            )
+    lines.append("")
+
+    def _hits(cells: dict[tuple[bool, bool], list[str]]) -> list[tuple[bool, bool]]:
+        return [k for k, v in cells.items() if MATRIX_EXPECTED in v]
+
+    def _fmt(keys: list[tuple[bool, bool]]) -> str:
+        return "、".join(
+            f"缩写={'开' if a else '关'}/补全={'开' if c else '关'}" for a, c in keys
+        ) or "无"
+
+    lib_hits = _hits(lib_cells)
+    ste_hits = _hits(ste_cells)
+    lines.append(f"- **librime**：4 格里 {len(lib_hits)} 格命中「{MATRIX_EXPECTED}」"
+                 f"（未命中：{_fmt([k for k in lib_cells if k not in lib_hits])}）"
+                 f"——它有**不止一条**通路。")
+    lines.append(f"- **stele**：4 格里 {len(ste_hits)} 格命中"
+                 f"（未命中：{_fmt([k for k in ste_cells if k not in ste_hits])}）。")
+    lines.append("")
+
+    # 对照：把"stele 没有缩写"这个误判排除掉。
+    ctrl_dir = mx_root / "rime-a1-c0"
+    ctrl_lib = librime_candidates(probe, ctrl_dir, ctrl_dir / "user", MATRIX_CONTROL)
+    ctrl_ste = stele_candidates(stele, mx_root / "stele-a1-c0", MATRIX_CONTROL)
+    ctrl_hit = MATRIX_EXPECTED in ctrl_lib and MATRIX_EXPECTED in ctrl_ste
+    lines.append(f"- **对照 `{MATRIX_CONTROL}`**（缩写开、补全关）："
+                 f"librime `{' '.join(ctrl_lib[:3]) or '（无）'}`；"
+                 f"stele `{' '.join(ctrl_ste[:3]) or '（无）'}` —— "
+                 f"{'两边都命中，所以 **stele 的缩写通路是活的**' if ctrl_hit else '对照不成立，需先查清'}。")
+    lines.append("")
+    lines.append("> **定位结论：差的是两处，不是一处。**")
+    lines.append("> ")
+    lines.append("> 1. **Stele 不存在「只消费前缀」这回事。** 它要求整串输入都能切成"
+                 "编码单元，否则退化成字面量。所以「缩写开」的两格也不命中："
+                 f"`{MATRIX_INPUT}` = `ni` + `ha`，而 `ha` 不是字母表里的单元"
+                 f"（对照 `{MATRIX_CONTROL}` = `ni` + `h` 能整串消费，两边都命中）。"
+                 "librime 那边，切分图只覆盖能解释的前缀、`a` 留在输入里照样出词——"
+                 "`src/rime/algo/syllabifier.cc:268` 的 `interpreted_length` "
+                 "**可以小于输入长度**。")
+    lines.append("> 2. **Stele 的补全在编码单元层，用不上。** "
+                 "`crates/stele-engine/src/translator.rs:192` 做的是 "
+                 "`lexicon.prefix_lookup(&exp.code, ...)`——尾巴 `ha` 产不出 `exp.code`，"
+                 "补全永远轮不到。librime 的补全在**拼写层**"
+                 "（`Prism::ExpandSearch`，`src/rime/algo/syllabifier.cc:224-228`），"
+                 "所以「缩写关、补全开」那一格它仍然命中。")
+    lines.append("> ")
+    lines.append("> 这也顺带证实了 `enable_completion` 的**默认值是开**："
+                 "夹具从没写过这个键，而「缩写关、补全开」那一格仍然命中——"
+                 "按 `src/rime/gear/translator_commons.h:176`（`= true`）与 "
+                 "`src/rime/gear/script_translator.cc:88`（把它交给切分器），"
+                 "只可能是这个解释。")
     lines.append("")
 
     # ── B4：配置项的实际效力 ──
@@ -384,22 +538,32 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     lines.append(f"- `enable_sentence: true` 前后，stele 的输出**完全{'相同' if same else '不同'}**"
                  f"（{'开关没有生效' if same else '开关生效了'}）。")
     lines.append("")
-    lines.append("> **代码侧核对**：`TranslatorSpec::enable_sentence`"
-                 "（`crates/stele-engine/src/spec.rs:556`）确实由"
-                 "`crates/stele-schemes/src/components.rs:711` 从方案里读出来，"
-                 "但**引擎里没有任何地方读它**"
-                 "（`grep -rn enable_sentence crates/stele-engine/src` 只命中字段声明本身）；"
-                 "`Origin::Sentence` 也只有一个测试夹具在产出。"
-                 "也就是说：**方案里写了 `enable_sentence: true`，不会有任何效果，也不会有警告**。"
-                 "这与 HANDOFF §5 第 36 条（「实现了」与「被装配了」是两件事）是同一形状，"
-                 "只是这次连「实现」都没有。")
+    lines.append("> **代码侧核对（这次用的是 rust-analyzer，不是 grep）**："
+                 "`rust_analyzer_references` 在 `TranslatorSpec::enable_sentence` 上"
+                 "只返回 **2 处**——声明 `crates/stele-engine/src/spec.rs:556` 与赋值 "
+                 "`crates/stele-schemes/src/components.rs:711`，**零读取**。"
+                 "对照 `TranslatorSpec::completion()` 有 5 处引用，其中 "
+                 "`crates/stele-engine/src/scheme.rs:1159/1172` 是真实消费点。"
+                 "也就是说：**方案里写 `enable_sentence: true` 不会有任何效果，"
+                 "也不会有警告**——这与 HANDOFF §5 第 36 条"
+                 "（「实现了」与「被装配了」是两件事）同形，只是这次连「实现」都没有。")
     lines.append("> ")
-    lines.append("> **另一处注释与上游源码不符**：`TranslatorSpec::default_completion()`"
-                 "的注释写着「RIME 的默认也是关」，而 librime 里"
-                 "`TranslatorOptions::enable_completion_` 的初值是 **`true`**"
-                 "（`src/rime/gear/translator_commons.h:176`），"
+    lines.append("> **上游对照**：librime 里 `enable_sentence` 只存在于**码表族**"
+                 "（`src/rime/gear/table_translator.h:43`，初值 **`true`**；"
+                 "在 `:218` 读、在 `:226` 与 `:293` 用），"
+                 "而 `script_translator`（拼音族）**根本没有这个开关**——"
+                 "它在「至少两个音节、且没有精确匹配的词」时**无条件造句**"
+                 "（`src/rime/gear/script_translator.cc:503`）。"
+                 "Stele 把它放进了两族共用的 `TranslatorSpec`，而两族都没有接。")
+    lines.append("> ")
+    lines.append("> **`default_completion()` 的注释与上游不符，且已被 B3.1 实测证实**："
+                 "注释写着「RIME 的默认也是关」，而 librime 的 "
+                 "`TranslatorOptions::enable_completion_` 初值是 **`true`**"
+                 "（`src/rime/gear/translator_commons.h:176`）；"
                  "`script_translator` 未显式配置时 `enable_word_completion_` 继承它"
-                 "（`src/rime/gear/script_translator.cc:194-196`）。"
+                 "（`src/rime/gear/script_translator.cc:194-196`），"
+                 "并由 `:88` 交给切分器。B3.1 里「缩写关、补全开」那一格仍然命中"
+                 "「你好」，就是这个默认值在起作用。"
                  "建议要么改注释，要么对齐默认值——**别让注释替上游下结论**。")
     lines.append("")
 
@@ -710,15 +874,24 @@ def main() -> int:
     report.append("")
     report.append("**这次对照交出的问题清单**（不判失败，但都是可开工的条目）：")
     report.append("")
-    report.append(f"1. **拼写图不做「不完整输入」**（B3，{len(DIVERGENCE_CASES)} 条用例）："
-                  "输入的末音节打一半、或输入比词条长时，Stele 退化成字面量候选，"
-                  "librime 仍给前缀候选 / 造句候选。")
-    report.append("2. **`enable_sentence` 被解析但没有消费者**（B4）："
-                  "方案里写 `enable_sentence: true` 不会有任何效果，也没有警告。")
-    report.append(f"3. **{len(c_gap_schemes)} 个上游 preset 方案有真实装载缺口**（C）："
+    report.append(f"1. **「不完整输入」缺的是两处能力**（B3 / B3.1，"
+                  f"{len(DIVERGENCE_CASES)} 条用例 + 4 格矩阵）：")
+    report.append("   - **没有「只消费前缀」**：Stele 要求整串输入都能切成编码单元，"
+                  "否则退化成字面量；librime 的切分图可以只覆盖能解释的前缀。")
+    report.append("   - **补全在编码单元层，用不上**：尾巴产不出 `exp.code` 时补全永远轮不到；"
+                  "librime 的补全在拼写层（`Prism::ExpandSearch`）。")
+    report.append("2. **没有造句器**（B3 / B4）：librime 在没有精确匹配的词时自动造句，"
+                  "**不需要语言模型**（`Poet` 无 `grammar` 时走动态规划）；"
+                  "Stele 的 `enable_sentence` 被解析但零读取，两族都没接。"
+                  "上游 `script_translator` 甚至没有这个开关（无条件造句），"
+                  "`table_translator` 的默认值是 `true`。")
+    report.append("3. **`enable_completion` 的默认值与注释不符**（B3.1 / B4）："
+                  "librime 初值 `true`，Stele 的 `default_completion()` 返回 `false` "
+                  "且注释声称「RIME 的默认也是关」——矩阵已实测证实。")
+    report.append(f"4. **{len(c_gap_schemes)} 个上游 preset 方案有真实装载缺口**（C）："
                   "字典 `columns:` / `%` 权重、码表编码的无空格字符串、"
                   "跨文件 `__patch`、X11 键名——四组，见 C 节的归类。")
-    report.append("4. **一个坏方案会让整个 `--scheme-dir` 都用不了**（C2）："
+    report.append("5. **一个坏方案会让整个 `--scheme-dir` 都用不了**（C2）："
                   "装载器停在第一个坏方案上，且只报它。")
     report.append("")
     report.append("> 本报告由 `tools/rime-compare/compare.py` 生成，"
