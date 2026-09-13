@@ -657,6 +657,27 @@ impl Default for UnicodeSpec {
     }
 }
 
+/// `number_translator` 的配置：一个**前缀字符**。
+///
+/// 敲 `R3355` 出「三千三百五十五」。前缀默认 `R`（rime-ice 的
+/// `recognizer/patterns/number: "^R[0-9]+[.]?[0-9]*"` 里的第 2 个字符）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumberSpec {
+    /// 前缀字符。
+    pub prefix: char,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for NumberSpec {
+    fn default() -> Self {
+        Self {
+            prefix: 'R',
+            at: At::default(),
+        }
+    }
+}
+
 /// `uuid` 的配置：一个**触发词**。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UuidSpec {

@@ -775,6 +775,443 @@ pub fn is_english_word(text: &str) -> bool {
     text.chars().any(|c| c.is_ascii_alphabetic())
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// number_translator
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **数字转中文**：敲 `R3355` 出「三千三百五十五」、
+/// `R1234.5` 出「壹仟贰佰叁拾肆元伍角」。
+///
+/// # 四种形态
+///
+/// 每一条输入产出最多四条候选，注释标明是哪一种：
+///
+/// | 注释 | 例（`3355.433`） |
+/// | --- | --- |
+/// | 〔数字小写〕 | 三千三百五十五点四三三 |
+/// | 〔数字大写〕 | 叁仟叁佰伍拾伍点肆叁叁 |
+/// | 〔金额小写〕 | 三千三百五十五元四角三分三厘 |
+/// | 〔金额大写〕 | 叁仟叁佰伍拾伍元肆角叁分叁厘 |
+///
+/// # 我们是**逐字节对齐**实现它的，包括几处怪癖
+///
+/// 这个零件的规则是"会计习惯"，没有权威标准可对照，因此唯一的判据
+/// 是**与上游一致**。下面这些怪癖被保留并在测试里钉住：
+///
+/// | 输入 | 输出 | 说明 |
+/// | --- | --- | --- |
+/// | `R0.5` 的〔数字小写〕 | 数值超限！五 | 整数部分为 0 的小数 |
+/// | `R0001` | 〇一 | 不是「一」 |
+/// | `R5.` | 五点 | 小数部分为空仍出「点」 |
+/// | `R1234567890123`（13 位） | 数值超限！ | |
+///
+/// **为什么不"顺手修好"**：这些是用户可观察的输出，改了就是行为不等价。
+/// "我觉得这里该是别的样子"正是 P3 里让我猜错两次的心态。
+/// 想改的人应当先拿一个对照实验证明上游也改了。
+///
+/// # 与上游**唯一**一处有意不同
+///
+/// 上游从 `recognizer/patterns/number` 的第 2 个字符现读触发前缀
+/// （`"^R[0-9]+[.]?[0-9]*"` → `R`）。我们让它在配置里显式写出
+/// （默认相同）——从正则源码里"取第 2 个字符"是隐式约定，改了正则
+/// 就静默失效，而症状是"这个功能突然不好使了"。
+pub struct NumberTranslator {
+    /// 触发前缀。
+    prefix: char,
+    /// 本翻译器负责的标签。
+    tags: Vec<Tag>,
+}
+
+/// 一次转换用哪套用字。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumberStyle {
+    /// 小写（日常写法）：〇一二三…十百千万亿。
+    Lower,
+    /// 大写（财务写法）：零壹贰叁…拾佰仟萬億。
+    Upper,
+}
+
+impl NumberStyle {
+    /// 数字用字。
+    fn figures(self) -> [&'static str; 10] {
+        match self {
+            Self::Lower => ["〇", "一", "二", "三", "四", "五", "六", "七", "八", "九"],
+            Self::Upper => ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"],
+        }
+    }
+
+    /// 组内数位（十百千）。
+    fn units(self) -> [&'static str; 4] {
+        match self {
+            Self::Lower => ["", "十", "百", "千"],
+            Self::Upper => ["", "拾", "佰", "仟"],
+        }
+    }
+
+    /// "零"这个字（小写是 〇，大写是 零）。
+    fn zero(self) -> &'static str {
+        self.figures()[0]
+    }
+
+}
+
+/// 数字串转中文读法（`formatNum` 的上位函数）。
+///
+/// `tail` 是**接在末尾的那个字**：数字形态接「点」（小数）或空串，
+/// 金额形态接「元」。上游把它作为一个参数传进来，我们照做——
+/// 它决定了 `R5.` 这种输入是否出现「点」。
+fn number_to_chinese(
+    digits: &str,
+    style: NumberStyle,
+    zero: &str,
+    scale: [&str; 2],
+    tail: &str,
+) -> String {
+    // 上游把「零」也当成一个**可传的参数**（`wordFigure[1]`），而四个
+    // 调用点传的值**不完全与该分支的用字一致**：
+    //
+    // | 分支 | 数字用字 | 传进去的「零」 |
+    // | --- | --- | --- |
+    // | 数字小写（有小数） | 〇一二三 | 〇 |
+    // | 数字大写（有小数） | 壹贰叁 | **〇**（不是零！） |
+    // | 数字小写（无小数） | 〇一二三 | 〇 |
+    // | 数字大写（无小数） | 零壹贰叁 | 零 |
+    // | 金额（小写/大写） | 〇…／零… | 〇／零（默认值） |
+    //
+    // 第二行那个「〇」是上游的一处不一致，而它**有可观察的后果**：
+    // `R1.5` 的〔数字大写〕是「壹点伍」——因为去前导零那一步拿
+    // 「〇」去找「壹」，什么也没找到。我按"大写就用零"实现时，
+    // 对照测试指出 12 处不一致。
+    let len = digits.len();
+    let mut result = if len < 5 {
+        group_to_chinese(digits, style)
+    } else if len < 9 {
+        format!(
+            "{}{}{}",
+            group_to_chinese(&digits[..len - 4], style),
+            scale[0],
+            group_to_chinese(&digits[len - 4..], style)
+        )
+    } else if len < 13 {
+        format!(
+            "{}{}{}{}{}",
+            group_to_chinese(&digits[..len - 8], style),
+            scale[1],
+            group_to_chinese(&digits[len - 8..len - 4], style),
+            scale[0],
+            group_to_chinese(&digits[len - 4..], style)
+        )
+    } else {
+        String::new()
+    };
+
+    // 上游那串 `gsub`，逐条照抄——**顺序有意义**，而且每一条都真的用到了：
+    //
+    // | 步骤 | 它负责的情形 |
+    // | --- | --- |
+    // | 去掉开头的零 | `R007` → 「七」（组内算出「〇七」） |
+    // | 零+万 / 零+亿 | `R10001` → 「一万〇一」而不是「一万〇〇一」 |
+    // | 连续零压成一个 | 组间相接处 |
+    // | 去掉末尾的零 | 组末尾留下的零 |
+    // 上游的 `gsub("^" .. wordFigure[1], "")`。注意 `wordFigure[1]` 是
+    // **零**（数字形态是「〇」），不是尾字。
+    if let Some(rest) = result.strip_prefix(zero) {
+        result = rest.to_string();
+    }
+    // `digitUnit[1]` / `[2]` 是数量级（万/亿），与尾字无关。
+    result = replace_once(&result, &format!("{zero}{}", scale[0]), "");
+    result = replace_once(&result, &format!("{zero}{}", scale[1]), "");
+    result = collapse_zeros(&result, zero);
+    // `gsub(zero .. "$", "")` —— 去掉**末尾的零**。
+    if result.ends_with(zero) {
+        result.truncate(result.len() - zero.len());
+    }
+    // 超过四位时，「一十…」写成「十…」（口语里不说「一十万」）。
+    if len > 4 {
+        let one_ten = format!("{}{}", style.figures()[1], style.units()[1]);
+        if result.starts_with(&one_ten) {
+            result = format!("{}{}", style.units()[1], &result[one_ten.len()..]);
+        }
+    }
+    if result.is_empty() {
+        "数值超限！".to_owned()
+    } else {
+        // `result` 可能已经是"数值超限！"——上游那时也会接上尾字，
+        // 于是 `R0.5` 的〔数字大写〕是「零点伍」而不是「点伍」。
+        // 我们不要自作聪明：两者都照抄。
+        if result == "数值超限！" && tail.is_empty() {
+            result
+        } else {
+            format!("{result}{tail}")
+        }
+    }
+}
+
+/// 把**第一次**出现的连续两个「〇」换成一个。
+///
+/// # 为什么不是"把所有连续零都压成一个"
+///
+/// 我第一版就是那么写的（直觉上更"对"），结果 `R0001` 从「〇一」变成了「一」。
+/// 上游用的是 Lua 的 `gsub`，而 **`gsub` 默认只替换第一处**；
+/// 写成 `gsub(pattern, repl, n)` 或 `%1` 才会全换。
+///
+/// 差别只在这种输入上出现：**带前导零**（`0001`）。对一个直接敲数字的
+/// 用户来说，`0001` 是常见的（编号、序号），而「〇一」与「一」
+/// 都是可读的——所以我们**照抄上游**，不自己"顺手修好"：
+/// 改了就是行为不等价，而"我觉得该这样"正是 P3 里让我猜错两次的心态。
+fn replace_once(s: &str, from: &str, to: &str) -> String {
+    match s.find(from) {
+        Some(i) => {
+            let mut out = String::with_capacity(s.len());
+            out.push_str(&s[..i]);
+            out.push_str(to);
+            out.push_str(&s[i + from.len()..]);
+            out
+        }
+        None => s.to_owned(),
+    }
+}
+
+/// 上游的 `gsub(zero .. zero, zero)`。
+fn collapse_zeros(s: &str, zero: &str) -> String {
+    replace_once(s, &format!("{zero}{zero}"), zero)
+}
+
+/// **最多四位**的数字转中文（`formatNum`）。
+///
+/// 自左向右拼：`"11"` → 「一」+「十」+「一」=「一十一」。
+///
+/// # 三处必须照抄的细节（我前两版都写错了）
+///
+/// 1. **`tonumber(num) == 0` 才算零**，不是"去掉前导零后为空"。
+///    两者对 `"0001"` 给出不同答案：前者给「〇一」，后者给「一」。
+/// 2. **全零的组返回单个「〇」**（`"0000"` → 「〇」），而它会被
+///    `number_to_chinese` 的"零+数量级"规则清掉。
+/// 3. **末尾的零在这里去掉**（`gsub(zero .. "$", "")`，上游写了两遍）。
+///    这一条决定了 `R007` 是「七」而不是「〇七」——因为清前导零那一步
+///    在 `number_to_chinese` 里，而这里先把末尾的零去干净了。
+fn group_to_chinese(num: &str, style: NumberStyle) -> String {
+    let figures = style.figures();
+    let units = style.units();
+    let zero = style.zero();
+    if num.len() > 4 {
+        return zero.to_owned();
+    }
+    let is_zero = num.is_empty() || num.bytes().all(|b| b == b'0');
+    if is_zero {
+        return zero.to_owned();
+    }
+    let bytes = num.as_bytes();
+    let mut result = String::new();
+    for i in 1..=num.len() {
+        let d = usize::from(bytes[num.len() - i] - b'0');
+        let n = figures[d];
+        if n == zero {
+            result = format!("{n}{result}");
+        } else {
+            result = format!("{n}{}{result}", units[i - 1]);
+        }
+    }
+    // 上游的三步：压一次连续零 → 去掉末尾的零 → **再去一次**（连写两遍）。
+    let result = collapse_zeros(&result, zero);
+    let result = result.strip_suffix(zero).unwrap_or(&result).to_owned();
+    let result = result.strip_suffix(zero).unwrap_or(&result).to_owned();
+    result
+}
+
+/// 小数部分**逐位**转写（`number2zh`）：`433` → `四三三`。
+fn digit_by_digit(dec: &str, style: NumberStyle) -> String {
+    let figures = style.figures();
+    let zero = style.zero();
+    let mut result = String::new();
+    for c in dec.chars() {
+        if let Some(d) = c.to_digit(10) {
+            result.push_str(figures[d as usize]);
+        }
+    }
+    // 上游连写两遍同一个 `gsub` = **替换两次**（不是一次、也不是全部）。
+    // 差别在 `R0.0001` 上可见：`〇〇〇一` 要变成 `〇一` 而不是 `〇〇一`。
+    let once = collapse_zeros(&result, zero);
+    collapse_zeros(&once, zero)
+}
+
+/// 金额的小数部分：`433` → `四角三分三厘`。
+fn decimal_func(dec: &str, style: NumberStyle) -> String {
+    let figures = style.figures();
+    let zero = style.zero();
+    // 上游先截到 4 位，再去掉**末尾**的零。
+    let mut d: Vec<char> = dec.chars().take(4).collect();
+    while d.last() == Some(&'0') {
+        d.pop();
+    }
+    if d.is_empty() {
+        return "整".to_owned();
+    }
+    let mut result = String::new();
+    for (pos, c) in d.iter().enumerate() {
+        let val = c.to_digit(10).unwrap_or(0) as usize;
+        if val != 0 {
+            result = format!("{result}{}{}", figures[val], DECIMAL_UNIT[pos]);
+        } else {
+            result.push_str(zero);
+        }
+    }
+    // 上游连做两次同一个 `gsub`（各替换一次，共两次）。
+    let once = collapse_zeros(&result, zero);
+    collapse_zeros(&once, zero)
+}
+
+/// 小数点后位置的名称。
+const DECIMAL_UNIT: [&str; 4] = ["角", "分", "厘", "毫"];
+
+impl NumberTranslator {
+    /// 构造。
+    #[must_use]
+    pub fn new(spec: &crate::spec::NumberSpec, tags: Vec<Tag>) -> Self {
+        Self {
+            prefix: spec.prefix,
+            tags,
+        }
+    }
+
+    /// 把一段输入渲染成候选（文本 + 注释）。
+    ///
+    /// 空数组表示这条输入不是本翻译器管的。
+    #[must_use]
+    pub fn render(&self, input: &str) -> Vec<(String, String)> {
+        let mut chars = input.chars();
+        if chars.next() != Some(self.prefix) {
+            return Vec::new();
+        }
+        // 上游：去掉开头连续的字母，剩下的是数字部分。
+        let body: String = input
+            .chars()
+            .skip_while(char::is_ascii_alphabetic)
+            .collect();
+        let (int_part, dec_part) = split_number(&body);
+        if int_part.is_empty() && dec_part.unwrap_or("").is_empty() {
+            return Vec::new();
+        }
+        let dec = dec_part.unwrap_or("");
+        let mut out = Vec::new();
+        if dec_part.is_some() {
+            out.push((
+                format!(
+                    "{}{}",
+                    number_to_chinese(int_part, NumberStyle::Lower, "〇", ["万", "亿"], "点"),
+                    digit_by_digit(dec, NumberStyle::Lower)
+                ),
+                "〔数字小写〕".to_owned(),
+            ));
+            // **注意用字与数量级不成对**：上游这一支传的是
+            // `{ "萬", "億" }` 数量级，但**数字用字仍是小写的
+            // `〇一二三…`**（`wordFigure[1..3]` 传的是 `〇/一/十`，
+            // 只有 `wordFigure[4]` 是「点」）。因此
+            // `R1.5` 的〔数字大写〕是「一点伍」而不是「壹点伍」。
+            //
+            // 我一开始按"大写就用大写用字"实现，测试当场指出四处不一致。
+            // 这类"看起来该成对、实际不成对"的地方，是逐字节对照的价值所在。
+            out.push((
+                format!(
+                    "{}{}",
+                    number_to_chinese(int_part, NumberStyle::Upper, "〇", ["萬", "億"], "点"),
+                    digit_by_digit(dec, NumberStyle::Upper)
+                ),
+                "〔数字大写〕".to_owned(),
+            ));
+        } else {
+            out.push((
+                number_to_chinese(int_part, NumberStyle::Lower, "〇", ["万", "亿"], ""),
+                "〔数字小写〕".to_owned(),
+            ));
+            // 无小数时，这一支**才**是大写用字（`{零,壹,拾,元}`）。
+            out.push((
+                number_to_chinese(int_part, NumberStyle::Upper, "零", ["萬", "億"], ""),
+                "〔数字大写〕".to_owned(),
+            ));
+        }
+        out.push((
+            format!(
+                "{}{}",
+                number_to_chinese(int_part, NumberStyle::Lower, "〇", ["万", "亿"], "元"),
+                decimal_func(dec, NumberStyle::Lower)
+            ),
+            "〔金额小写〕".to_owned(),
+        ));
+        // 注意上游**这一支没有传自定义数量级**，因此它用的是
+        // `number2cnChar` 的默认值 `{万, 亿}`（**简体**），
+        // 而不是〔数字大写〕那一支的 `{萬, 億}`。
+        // 这是上游的一处不一致，但对齐就是对齐：`R10000.5` 的
+        // 〔金额大写〕是「壹万元伍角」而不是「壹萬元伍角」。
+        let mut upper_amount = format!(
+            "{}{}",
+            number_to_chinese(int_part, NumberStyle::Upper, "零", ["万", "亿"], "元"),
+            decimal_func(dec, NumberStyle::Upper)
+        );
+        let _ = &mut upper_amount;
+        // 会计书写要求：整数部分超过四位、以「拾」开头、且含「万/亿」时
+        // 补「壹」——「壹拾万元整」而不是「拾万元整」。
+        // 上游为 issue #989 加的，我们照抄。
+        if int_part.len() > 4
+            && upper_amount.starts_with("拾")
+            && (upper_amount.contains('万') || upper_amount.contains('亿'))
+        {
+            upper_amount = upper_amount.replacen('拾', "壹拾", 1);
+        }
+        out.push((upper_amount, "〔金额大写〕".to_owned()));
+        out
+    }
+}
+
+impl Translator for NumberTranslator {
+    fn translate(&self, q: &Query<'_>, span: Span, out: &mut CandidateSink<'_>) {
+        for (i, (text, comment)) in self.render(q.segment_text).into_iter().enumerate() {
+            let step = f64::from(u32::try_from(i).unwrap_or(u32::MAX));
+            out.push(Candidate {
+                text,
+                comment: Some(comment),
+                score: Score::from_weight(50_000.0 - step * 10.0),
+                origin: Origin::Literal,
+                attr: stele_core::SpellingAttr::NORMAL,
+                span,
+                lane: stele_core::Lane::Input,
+                kind: CandidateKind::Inline,
+            });
+        }
+    }
+
+    fn accepts(&self, tags: &[Tag]) -> bool {
+        tags.iter().any(|t| self.tags.contains(t))
+    }
+
+    fn targets(&self) -> &[Tag] {
+        &self.tags
+    }
+}
+
+/// 按上游的 `string.match(str, "^(%d*)(%.?)(%d*)")` 切分。
+///
+/// 返回 `(整数部分, 小数部分)`；`None` 表示**没有小数点**。
+#[must_use]
+pub fn split_number(s: &str) -> (&str, Option<&str>) {
+    let digits_end = s
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map_or(s.len(), |(i, _)| i);
+    let int_part = &s[..digits_end];
+    let rest = &s[digits_end..];
+    if let Some(after_dot) = rest.strip_prefix('.') {
+        let dec_end = after_dot
+            .char_indices()
+            .find(|(_, c)| !c.is_ascii_digit())
+            .map_or(after_dot.len(), |(i, _)| i);
+        (int_part, Some(&after_dot[..dec_end]))
+    } else {
+        (int_part, None)
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // pin_cand_filter
 // ─────────────────────────────────────────────────────────────────────────────

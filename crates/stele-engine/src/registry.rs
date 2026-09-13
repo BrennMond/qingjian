@@ -220,6 +220,12 @@ const ENTRIES: &[Entry] = &[
         note: "U<hex> → Unicode 字符（含同区后续码位）",
     },
     Entry {
+        name: "number_translator",
+        slot: Slot::Translator,
+        availability: Availability::Implemented,
+        note: "中文数字/金额大写（R<数字>）",
+    },
+    Entry {
         name: "uuid_translator",
         slot: Slot::Translator,
         availability: Availability::Implemented,

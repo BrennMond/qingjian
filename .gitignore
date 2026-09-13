@@ -16,3 +16,4 @@
 
 # rime-ice 的调研副本（GPL 项目的数据，不入库；只作行为对照）
 /.rime-research/
+# 注意：tools/oracle/ 的对照数据**要入库**（它是实验记录）。
