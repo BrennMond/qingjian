@@ -50,7 +50,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | --- | --- | --- | --- |
 | 1 | `nihao`/`niha`/`nih`/`nh`/`haoni`/`nihaoshijie` 都有定义明确的预期 | `crates/stele-schemes/tests/decoder_matrix.rs`（15 条）。`nih` → 你好、`nh` → 你好、`nhao` → 你好 也都在 `word_pinyin_quality.rs` 的简拼用例里 | ✅ |
 | 2 | 候选消费范围和余码有测试 | `decoder_matrix.rs::niha_gives_the_word_for_the_interpreted_prefix`（`span=0..3`、余码 `a`、attr=ABBREV）+ `::committing_a_prefix_candidate_keeps_the_remainder_in_the_input`（上屏后余码仍在输入里） | ✅ |
-| 3 | 逐段选择、重开、删除、标点、中英/数字混输有状态机测试 | 标点：`crates/stele-schemes/tests/punctuation_semantics.rs`（3 条，并写明与 Rime 的有意差异）。**删除/中英/数字混输只有零件级测试（`p3_pipeline.rs`），没有审计要求的"端到端状态转换表"；逐段确认与重开未实现** | ❌ |
+| 3 | 逐段选择、重开、删除、标点、中英/数字混输有状态机测试 | `crates/stele-schemes/tests/session_state_machine.rs`（10 条通过 + 1 条 `#[ignore]`）：部分选词后继续输入、选第二段、Backspace/Delete/Esc、数字选词、中英开关、预测与数字选择的隔离；标点在 `punctuation_semantics.rs`（3 条）。**唯一未实现的是"重开已确认段"**——那条被显式 `#[ignore]` 并写明原因（内核不持有已上屏的文本，接口上就没有这个入口） | ⚠️ |
 | 4 | 动态造句不会把单词重复作为"句子"，不会无限展开 | `decoder_matrix.rs::sentence_making_does_not_repeat_the_same_word`、`::a_single_word_is_never_reported_as_a_sentence`；上限 `MAX_SENTENCE_WORDS`、边严格向前 | ✅ |
 | 5 | 正确候选召回和资源预算同时通过 | `decoder_matrix.rs::the_target_candidates_are_present_not_just_the_literal` 与 `spelling_resource_bounds.rs`（同一批语料上同时断言召回与状态/工作量/图字节上界） | ✅ |
 

@@ -330,10 +330,22 @@ test the_remainder_is_reanalysed_after_a_partial_commit ... ok
 理由与前端契约写在那份测试的文档注释里——审计要求的是"明确决定并测试"，
 而不是"含糊过去"。
 
-**未做**：编辑器动作（Backspace/Delete/Esc 的完整状态转换表）、
-中英切换、数字与 URL 识别器与候选选择的**交叉**矩阵。
-既有的 `p3_pipeline.rs` 覆盖了单个零件的形状，但没有建立审计要求的
-那张"端到端状态转换表"。
+**端到端状态转换表现已建立**：`crates/stele-schemes/tests/session_state_machine.rs`
+覆盖 10 条交互（部分选词后继续输入、选第二段、Backspace/Delete/Esc、
+数字选词、中英开关、预测与数字选择的隔离），跑法含被忽略项：
+
+```bash
+cargo test -p stele-schemes --test session_state_machine -- --include-ignored
+# 11 passed; 0 failed
+```
+
+**仍然未做**：
+
+- **重开已确认段**——审计明确要求的能力。内核一旦把文本交给前端就不再
+  持有它，而 `Session` 上没有"把这段放回来继续编辑"的入口。
+  有一条 `#[ignore]` 的测试把这条缺口**显式记录**为将来的验收点；
+- URL / 数字**识别器**与候选选择的交叉矩阵（识别器本身在
+  `regex_and_recognizer.rs` 里有覆盖）。
 
 ### 8.3 造句子系统的其它边界
 
