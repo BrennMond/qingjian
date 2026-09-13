@@ -219,11 +219,19 @@ pub struct InlineConfigs {
 
 /// 构造一个词条的便捷函数。
 ///
-/// ```ignore
-/// entries: vec![
-///     entry(&["ni", "hao"], "你好", 10_000.0),
-/// ]
 /// ```
+/// use qingjian_engine::scheme::entry;
+///
+/// let entries = vec![
+///     entry(&["ni", "hao"], "你好", 10_000.0),
+/// ];
+/// assert_eq!(entries[0].1, "你好");
+/// ```
+///
+/// **这个例子是真的会编译、会跑的**：它以前写成 ` ```ignore ` 且内容只是
+/// 一个片段（`entries: vec![…]`，不是合法 Rust），于是
+/// `cargo test -- --include-ignored` 会在它上面失败。用 `ignore` 藏起一个
+/// 写错的例子，等于让文档里的用法从未被验证过。
 #[must_use]
 pub fn entry(code: &[&str], word: &str, weight: f64) -> (Vec<String>, String, f64) {
     (
