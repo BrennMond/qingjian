@@ -11,6 +11,7 @@
 //! 我们两端都是自己的代码，没有理由继承它——**上屏信息由返回值带出**。
 
 use crate::candidate::{Lane, Origin, SpellingAttr};
+use std::sync::Arc;
 
 /// 上屏的触发方式。
 #[non_exhaustive]
@@ -48,8 +49,25 @@ pub struct Commit {
     pub context: Vec<String>,
     /// 候选从哪来。
     pub origin: Origin,
-    /// **学习时必须用它把 `input` 规范化成规范编码**（G10）。
+    /// **学习时必须用它判断这条编码是怎么来的**（G10）。
     pub attr: SpellingAttr,
+    /// **产生这次上屏的规范编码键**（如 `ni'hao`），没有编码时为 `None`。
+    ///
+    /// # 它才是学习该用的主键（PLAN D42）
+    ///
+    /// 旧设计让接收方"用 `input` 反查规范编码"，而那条路**走不通**：
+    /// 反查需要拼写层与词库，而它们只存在于引擎内部（`LoadedScheme`）
+    /// ——前端拿不到，记忆实现也拿不到。
+    ///
+    /// 正确做法是**让键随候选一起出来**（[`crate::Candidate::key`]）：
+    /// 翻译器手里本来就有编码，把它渲染成键挂在候选上，
+    /// 上屏时原样带进 `Commit`。于是"规范编码"这件事**在产生它的地方
+    /// 就定了**，不需要任何一层去猜。
+    ///
+    /// `None` 表示这条候选不是从词库编码来的（原样上屏、标点、
+    /// 造句）。此时学习退回按 `input` 规范化——那条路**可能不共享**
+    /// 跨拼法，但它至少是自洽的。
+    pub key: Option<Arc<str>>,
     /// 所属通道。
     pub lane: Lane,
     /// 触发方式。
@@ -214,19 +232,33 @@ pub enum ProcessResult {
 pub enum Event {
     /// 记录一次学习（用户记忆使用）。
     Learned {
-        /// 原始输入（**未规范化**；接收方须按 `attr` 换算，见 G10）。
+        /// 原始输入（**未规范化**）。
         input: String,
         /// 上屏文本。
         text: String,
         /// 候选来源。
         origin: Origin,
         /// **这条编码是怎么拼出来的。**
-        ///
-        /// 接收方靠它决定要不要把 `input` 规范化成规范编码——
-        /// 少了这个字段，G10 那条规则**无法实现**。
         attr: SpellingAttr,
         /// 上屏时的通道。
         lane: Lane,
+        /// **上屏之前**的上下文窗口（最近已上屏的词，最新的在末尾）。
+        ///
+        /// # 为什么它必须在这里（P4b 的直接要求）
+        ///
+        /// `Lane::Input` 的学习键是**编码**（PLAN D42），用不到它；
+        /// 而 `Lane::Predict` 的学习键是**上下文**——"微信用过之后打了
+        /// 朋友圈"这条记录的主键就是那个 `微信`。
+        ///
+        /// 少了这个字段，`apply_events` 拿到的是一份**没有上下文的 `Commit`**，
+        /// 于是预测学习会**静默地什么都不记**：事件发出去了、函数也调了、
+        /// 预测表永远是空的（HANDOFF §7.7.4 第 4 条正是这个形状）。
+        context: Vec<String>,
+        /// **规范编码键**——学习的**主键**（PLAN D42）。
+        ///
+        /// 有了它，`nhao` 学到的词在 `nihao` 下也查得到；没有它，
+        /// 接收方只能按拼写记，而那正是"换一种拼法就失忆"的来源。
+        key: Option<Arc<str>>,
     },
     /// **用户要求删除这个候选的学习记录**（RIME 的 `delete_candidate`）。
     ///
@@ -238,6 +270,9 @@ pub enum Event {
         input: String,
         /// 要求删除的候选文本。
         text: String,
+        /// **规范编码键**——与 `Learned` 用的是同一把（PLAN D42）。
+        /// 少了它，"取消学习"会取消到另一条记录上。
+        key: Option<Arc<str>>,
     },
     /// 开关被引擎改动（例如自动切换到英文模式）。
     OptionChanged {
@@ -261,6 +296,7 @@ mod tests {
             attr: SpellingAttr::NORMAL,
             lane: Lane::Input,
             trigger: Trigger::Space,
+            key: Some(Arc::from("ni'hao")),
         }
     }
 
@@ -272,6 +308,8 @@ mod tests {
         assert!(!c.text.is_empty());
         assert_eq!(c.origin, Origin::SystemWord);
         assert_eq!(c.attr, SpellingAttr::NORMAL);
+        // 学习真正需要的主键是**规范编码**，不是拼写（PLAN D42）。
+        assert_eq!(c.key.as_deref(), Some("ni'hao"));
     }
 
     #[test]

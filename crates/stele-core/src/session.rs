@@ -64,7 +64,14 @@ pub trait LoadedSchema: Send + Sync {
     /// **代价是可控的**：组件本身很轻，**昂贵的资源（词库、拼写表）通过
     /// `Arc` 共享**，每个会话只是重新装配一遍引用。RIME 也是这个模型
     /// （每个 Session 拥有一份 Engine）。
-    fn build_pipeline(&self) -> Box<dyn Pipeline + Send>;
+    ///
+    /// # 服务从参数进来（P4a）
+    ///
+    /// 签名里出现 [`crate::Services`] 是 `docs/engine-design.md` §4 那条规则的
+    /// 落地方式：**服务在组件构造时注入，不穿过 `Query`**。
+    /// 曾经这里没有这个参数，于是"用户记忆"无处可挂——那正是 P4a 之前
+    /// `Ranker` 一直是空列表的原因。
+    fn build_pipeline(&self, services: &crate::service::Services) -> Box<dyn Pipeline + Send>;
 }
 
 /// 装配好的组件流水线。
@@ -76,17 +83,46 @@ pub trait Pipeline: Send {
     /// 送一个按键；可以修改会话状态。
     fn process_key(&mut self, state: &mut SessionState, key: &Key) -> ProcessResult;
 
-    /// 由当前状态产出候选（含切分、翻译、过滤、重排）。
+    /// 由当前状态产出候选（切分、翻译、重排、**排序**、过滤），
+    /// **并且必须按最终顺序排好**。
     ///
     /// 允许修改 `state` 以写回预编辑串与切分信息。
+    ///
+    /// # 为什么"排序"在这条契约里，而且必须在滤镜之前
+    ///
+    /// 早先这里分成 `compose` + `finalize` 两步，排序放在 `finalize` 里
+    /// ——也就是**滤镜之后**。那让三个"重排型"滤镜（长词优先 / v 模式 /
+    /// 置顶候选）**完全不生效**：它们费劲排好的顺序，被紧随其后的那次
+    /// 排序原样抹掉（实测：声明 `long_word_filter` 的方案输出仍是纯粹的
+    /// 权重序，见 HANDOFF §5 第 38 条）。
+    ///
+    /// 正确的顺序只有这一种：
+    ///
+    /// ```text
+    /// 翻译 → 重排（只加分，要参与排序）→ 排序 → 滤镜（按位置表达意图）
+    /// ```
+    ///
+    /// 滤镜里的"把长词提到第 4 位"是**按位置**描述意图的，因此它看到的
+    /// 必须是最终顺序——排完就定了，**后面不能再排一次**。RIME 也是这个
+    /// 语义（滤镜作用在已排好序的候选表上，列表顺序即最终顺序）。
+    ///
+    /// 因此 `finalize` 这个钩子被删掉了：留着它，下一个人就会想往里放
+    /// "收尾排序"，而那正好会重新踩上同一个坑。
     fn compose(&mut self, state: &mut SessionState, out: &mut Vec<Candidate>);
 
-    /// 收尾：排序与"精确优先"守卫。
+    /// **本流水线实际装配了哪些零件**：`(处理器, 翻译器, 滤镜, 重排器)`。
     ///
-    /// 默认实现已经正确，**实现者通常不需要覆盖它**。
-    fn finalize(&self, cands: &mut Vec<Candidate>) {
-        crate::sort::sort_candidates(cands);
-    }
+    /// # 为什么它必须在 trait 上
+    ///
+    /// 因为"方案里**声明**了零件"与"流水线里**装进了**零件"是两件事，
+    /// 而后者此前**没有任何地方可以问**。后果是真实的：阶段 A 的 10 个
+    /// 内联零件有实现、有单元测试、注册表里标着"已实现"，而装配路径里
+    /// 一次都没引用过——**没有任何一条测试或工具能发现它**
+    /// （HANDOFF §5 第 36 条）。
+    ///
+    /// 单元测试测的是"零件本身对不对"；这个方法让"装进来了"成为
+    /// 可断言的东西。两者缺一，就会留下"接线在、但没被走到"的洞。
+    fn component_counts(&self) -> (usize, usize, usize, usize);
 }
 
 /// 方案目录：应用级，持有已装载的方案，按内存预算惰性装载与淘汰（D29）。
@@ -155,8 +191,11 @@ pub trait Session {
 
     /// 当前候选列表，**已跨段合并、跨通道排好序**——前端照着画就行。
     ///
-    /// 它由 [`Pipeline::compose`] + [`Pipeline::finalize`] 产出，
-    /// 顺序满足"可复现"铁律（同一状态 + 同一输入 ⇒ 逐字节相同）。
+    /// 它由 [`Pipeline::compose`] 产出，顺序满足"可复现"铁律
+    /// （同一状态 + 同一输入 ⇒ 逐字节相同）。
+    ///
+    /// **排序在滤镜之前完成**，因此滤镜（如"长词优先"）的重排就是最终顺序
+    /// ——见 [`Pipeline::compose`] 的说明。
     ///
     /// 前端**不要**去读 `Segment::candidates`：它没有跨段合并、
     /// 没有跨通道排序、也没有经过最终滤镜。
@@ -261,6 +300,25 @@ pub struct SessionState {
     pub candidate_pages: usize,
     /// 当前页（由 `navigator` 写回，流水线据此裁剪可见候选）。
     pub candidate_page: usize,
+    /// **预测候选块**在已渲染列表里的起点（P4b，由流水线写回）。
+    ///
+    /// `Lane::Predict` 的候选在 [`Pipeline::compose`] 的结果里是**连续一段**，
+    /// 因此"第 N 个输入候选在哪儿"可以用这对字段算出来。
+    ///
+    /// # 它为什么是显式的会话状态，而不是"读一下候选列表"
+    ///
+    /// 因为**处理器看不到候选列表**（那是会话的东西）。而
+    /// [`crate::Processor`] 里有两处真的需要它：
+    ///
+    /// 1. `selector` 的**数字键映射**：预测候选不参与盲选，所以"按 3"
+    ///    必须指向**第 3 个输入候选**，而不是已渲染列表的第 3 项。
+    ///    少了这对字段，插在中间的预测候选会把后面所有输入候选的编号
+    ///    整体推后——用户按 2 却什么都没发生（那正是设计文档
+    ///    `docs/engine-design.md` §4.3.1 要防的"肌肉记忆被破坏"）。
+    /// 2. `key_binder` 的 `when: predicting` 谓词。
+    pub predict_start: usize,
+    /// 预测候选的条数（0 = 这次没有预测）。
+    pub predict_count: usize,
 }
 
 impl SessionState {
@@ -278,6 +336,35 @@ impl SessionState {
             candidate_count: 0,
             candidate_pages: 0,
             candidate_page: 0,
+            predict_start: 0,
+            predict_count: 0,
+        }
+    }
+
+    /// **第 `ordinal` 个可盲选候选在已渲染列表里的下标**（P4b）。
+    ///
+    /// # 它存在的理由
+    ///
+    /// `selector` 把数字键 `n` 翻译成"第 n 个候选"。而预测候选
+    /// （`Lane::Predict`）**不参与盲选**（`docs/engine-design.md` §4.3.1）：
+    /// 它们可能插在输入候选中间（§4.3.2 的默认位置是"第 1 名之后"），
+    /// 于是"已渲染列表的第 n 项"与"第 n 个输入候选"在插入点之后**不再相等**。
+    ///
+    /// 这一条把两个编号空间显式地换算一次：
+    ///
+    /// ```text
+    /// ordinal <  predict_start  →  下标 = ordinal
+    /// ordinal >= predict_start  →  下标 = ordinal + predict_count
+    /// ```
+    ///
+    /// 于是**输入候选的编号永远等于它的名次**，插进来多少条预测都不影响
+    /// ——这正是"盲选肌肉记忆"要的东西。
+    #[must_use]
+    pub fn selectable_index(&self, ordinal: usize) -> usize {
+        if ordinal < self.predict_start {
+            ordinal
+        } else {
+            ordinal.saturating_add(self.predict_count)
         }
     }
 

@@ -12,6 +12,7 @@ use crate::candidate::{Candidate, CandidateSink};
 use crate::commit::Commit;
 use crate::context::Context;
 use crate::score::Score;
+use std::sync::Arc;
 
 /// 编码单元的编号。
 ///
@@ -281,6 +282,56 @@ pub trait RandomSource: Send + Sync {
     fn next_u64(&mut self) -> u64;
 }
 
+/// 一个**真随机**的随机源（生产装配处用）。
+///
+/// # 它凭什么不需要第三方依赖
+///
+/// `std` 的 [`std::collections::hash_map::RandomState`] 在**每个进程**
+/// 启动时从操作系统取一次随机种子（这是 `HashMap` 抗哈希碰撞攻击的机制）。
+/// 拿它当键、拿一个自增计数器当消息做一次哈希，就得到一条**不可预测**
+/// （跨进程）且互不重复（进程内）的流。
+///
+/// # 它不是什么（诚实交代）
+///
+/// **它不是密码学安全的**：计数器是公开的，安全性完全落在 `RandomState`
+/// 那份每进程密钥上。用它生成 UUID 够用——UUID 在这里是**用户要打出来的
+/// 一段文本**，不是安全令牌。真需要密码学随机时，前端应当注入自己的实现
+/// （`RandomSource` 是个 trait，这正是它的用途）。
+#[derive(Debug, Clone)]
+pub struct SystemRandom {
+    /// 每进程随机的哈希键。
+    state: std::collections::hash_map::RandomState,
+    /// 进程内单调递增的计数器。
+    counter: u64,
+}
+
+impl SystemRandom {
+    /// 构造。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: std::collections::hash_map::RandomState::new(),
+            counter: 0,
+        }
+    }
+}
+
+impl Default for SystemRandom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RandomSource for SystemRandom {
+    fn next_u64(&mut self) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        self.counter = self.counter.wrapping_add(1);
+        let mut h = self.state.build_hasher();
+        h.write_u64(self.counter);
+        h.finish()
+    }
+}
+
 /// 一个**确定性**的随机源（测试与 `--dump-config` 用）。
 ///
 /// 它是 splitmix64——一个短小、无依赖、分布够好的发生器。
@@ -356,10 +407,10 @@ pub enum PredictionOrigin {
 pub trait MemoryStore: Send + Sync {
     /// 记录一次上屏。**必须是异步 / 非阻塞路径。**
     ///
-    /// 按 `commit.lane` 分流：`Lane::Input` 用 `input` 作主键，
+    /// 按 `commit.lane` 分流：`Lane::Input` 用**编码键**作主键，
     /// `Lane::Predict` 用 `context` 作主键。
     ///
-    /// # ⚠️ 主键必须是**规范编码**（G10）
+    /// # ⚠️ 主键必须是**规范编码**（G10 / PLAN D42）
     ///
     /// RIME 明确警告过一颗地雷：
     ///
@@ -370,24 +421,51 @@ pub trait MemoryStore: Send + Sync {
     /// 原因在于**投影是单向的**：词库的键永远是**规范编码**（`ni hao`），
     /// 简拼（`nh`）只是**到达该编码的一条路径**。
     ///
-    /// 所以：如果 `commit.attr.is_derived()`，实现**必须**先把 `commit.input`
-    /// 经拼写层反查回规范编码再存；**换算不出来就宁可不存**。
+    /// **主键就是 `commit.key`**——它在**产生候选的地方**（翻译器）
+    /// 由编码渲染而来，因此"规范"这件事不需要任何一层去反查。
+    /// `commit.key` 为 `None` 时（原样上屏、标点、造句）退回按
+    /// [`Commit::input`] 规范化：那条路自洽，但不跨拼法共享。
     ///
     /// **实现错了的症状是"学过的词有时出现有时不出现"，极难排查。**
     fn record(&self, commit: &Commit);
 
-    /// 查询某个输入的已学词条，供 `Lane::Input` 的重排使用。
+    /// 按**键**查询已学词条，供 `Lane::Input` 的重排使用。
     /// **必须走内存缓存，零磁盘 I/O。**
-    fn lookup(&self, input: &str) -> Vec<MemoryEntry>;
+    ///
+    /// # `key` 是**已经定好的键**，实现不得再加工
+    ///
+    /// 它要么是 [`Commit::key`]（规范编码，如 `ni'hao`），要么是
+    /// 实现自己在 `record` 的兜底路径里用过的拼写键。**不要再规范化一次**
+    /// ——规范化的规则（去分隔符）会把编码键里的 `'` 吃掉，
+    /// 于是存进去的与查出来的变成两把不同的键。
+    fn lookup(&self, key: &str) -> Vec<MemoryEntry>;
 
     /// **取消一次学习**（G11）。
     ///
     /// RIME 的规则是：「只能夠從用戶詞典中刪除詞組。用於碼表中原有的詞組時，
     /// **只會取消其調頻效果**」——也就是说，"删除"对系统词来说不是删掉它，
     /// 而是**撤销用户对它的加权**。用户需要能反悔。
+    ///
+    /// `key` 与 [`MemoryStore::lookup`] 同一条约定：**已经是定好的键**。
     fn forget(&self, key: &str, text: &str);
 
     /// 查询"上一个词之后可能接什么"，供 `Lane::Predict` 使用（P4b）。
+    ///
+    /// # 上下文有多长、看谁
+    ///
+    /// **由实现决定策略，但必须是确定性的**。本项目的默认实现
+    /// （`stele-memory::FileMemory`）走**最长上下文优先 + 回退**：
+    /// 先看最近**两个**词（trigram），有记录就只答它；没有才退到最近**一个**
+    /// 词（bigram）。这样"今天 微信 → 朋友圈"这种更具体的搭配优先于
+    /// "微信 → 朋友圈"这种更泛的搭配，而数据稀疏时又不会什么都不给。
+    ///
+    /// # 返回什么顺序
+    ///
+    /// **分数降序**，同分时按确定顺序（实现内部用有序容器）。
+    /// 流水线会把它们排进 `Lane::Predict`，因此这里**不需要**考虑
+    /// `Lane::Input` 的排序规则，也不需要满足"精确优先"。
+    ///
+    /// 上下文为空（还没上屏过任何词）时返回空。
     fn predict_next(&self, context: &Context) -> Vec<Prediction>;
 }
 
@@ -397,7 +475,6 @@ pub trait MemoryStore: Send + Sync {
 /// 引擎一行都不用改。
 #[derive(Debug, Default)]
 pub struct NoMemory;
-
 impl MemoryStore for NoMemory {
     fn record(&self, _commit: &Commit) {}
 
@@ -462,5 +539,144 @@ impl Spelling for LiteralSpelling {
             attr: crate::candidate::SpellingAttr::NORMAL,
         });
         let _ = spelling;
+    }
+}
+
+/// 装配处注入引擎的**服务集合**。
+///
+/// # 为什么是一个结构体，而不是"给 `Engine` 加几个参数"
+///
+/// 服务会变多（P4a 的重排器、P4b 的预测表、P5 的向量），而每加一个就改一次
+/// `Engine` 的构造函数，意味着**每一处装配点都要跟着改**。一个集合把这件事
+/// 收敛成一处：装配点构造它，引擎消费它。
+///
+/// # 谁构造它（PLAN §5.12 的三个角色）
+///
+/// - **接口是什么**：本结构体 + 它持有的那些 trait。
+/// - **谁实现**：周边 crate（`stele-memory` 提供 `Ranker` 与 `Clock`）。
+/// - **谁消费**：[`crate::LoadedSchema::build_pipeline`] 在**装配期**把它们
+///   注入组件——**不穿过 `Query`**（`docs/engine-design.md` §4）。
+///
+/// # 它为什么在 `stele-core` 而不是 `stele-engine`
+///
+/// 因为 `LoadedSchema` 是内核 trait，它的签名里出现的东西必须也属于内核。
+/// 这个结构体只装 `stele-core` 自己定义的 trait 对象，因此不引入任何依赖。
+#[derive(Clone)]
+pub struct Services {
+    /// 需要"现在几点"的零件用它（`date_translator` 一族）。
+    ///
+    /// **不是 `Option`**：时钟缺席时该做的不是"零件不装"，而是"装配处要说清
+    /// 用哪个时钟"——一个静默冻结在 1970 的时钟会让日期候选全部出错，
+    /// 而那是这个项目最怕的一类 bug（配置看着正常、功能就是不对）。
+    pub clock: Arc<dyn Clock>,
+    /// **每个会话装配时都会挂上的重排器**（按顺序执行）。
+    ///
+    /// 记忆（P4a）、上下文（P4b）、向量（P5）都从这里进来。为空即"不重排"，
+    /// 这正是 `--userdb` 默认关闭时的行为。
+    pub rankers: Vec<Arc<dyn Ranker>>,
+    /// **下一词预测的数据源**（P4b）。`None` = 这个进程**不预测**。
+    ///
+    /// # 它为什么与 `rankers` 分开，而不是从重排器里取
+    ///
+    /// 两者消费的是**同一个服务实现**（`stele-memory::FileMemory`）的两组
+    /// 不同数据，但它们是**两条独立的开关**：用户可以只要"打过的词下次优先"
+    /// 而不要"猜我下一句想打什么"（HANDOFF §7.7.3 第 6 步：预测默认关）。
+    /// 用一个 `Option` 表达"预测有没有被装上"，是最直接的可检查判据。
+    ///
+    /// # 它为什么是 `Option` 而 `clock` 不是
+    ///
+    /// 时钟缺席会让日期类零件**静默给出 1970 年**——那必须由装配处说清。
+    /// 而预测缺席是**有意义的产品状态**（默认关），不是配置遗漏。
+    /// 两者的区别是"静默错误"与"显式关闭"的区别。
+    pub prediction: Option<Arc<dyn MemoryStore>>,
+    /// **随机源的工厂**（`uuid_translator` 用它）。
+    ///
+    /// # 为什么是工厂而不是一个 `RandomSource`
+    ///
+    /// 因为 [`RandomSource::next_u64`] 要 `&mut self`：一条**流**不能被
+    /// 多个会话共享（共享就得给每次取数上锁，而"随机"本来就不需要跨会话
+    /// 一致）。每个会话装配时向工厂要一个新的流，各自独立推进。
+    ///
+    /// 用 `Box<dyn Fn() -> ...>` 而不是泛型：服务集合要被 `Clone`
+    /// 并在所有会话之间共享（D38）。
+    pub random: Arc<dyn Fn() -> Box<dyn RandomSource> + Send + Sync>,
+}
+
+impl Services {
+    /// 只有时钟、没有任何重排器。
+    ///
+    /// 随机源默认是**确定性**的（`DeterministicRandom`）：这样测试与
+    /// `--check` 的输出可复现。**生产装配处应当用
+    /// [`Services::with_random`] 注入真随机**——否则同一个进程每次生成的
+    /// UUID 会一模一样。
+    #[must_use]
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            rankers: Vec::new(),
+            prediction: None,
+            random: Arc::new(|| Box::new(DeterministicRandom::new(0))),
+        }
+    }
+
+    /// 换一个随机源工厂（链式）。
+    #[must_use]
+    pub fn with_random(
+        mut self,
+        random: Arc<dyn Fn() -> Box<dyn RandomSource> + Send + Sync>,
+    ) -> Self {
+        self.random = random;
+        self
+    }
+
+    /// 加上一个重排器（链式）。
+    #[must_use]
+    pub fn with_ranker(mut self, ranker: Arc<dyn Ranker>) -> Self {
+        self.rankers.push(ranker);
+        self
+    }
+
+    /// 装上**下一词预测的数据源**（链式）——装上才会预测（P4b）。
+    ///
+    /// 不调用它 = 不预测。这是"预测默认关"在装配层的表达，
+    /// 也是"一键关闭"的执行点：**没有服务，就没有预测候选**。
+    #[must_use]
+    pub fn with_prediction(mut self, store: Arc<dyn MemoryStore>) -> Self {
+        self.prediction = Some(store);
+        self
+    }
+
+    /// 有没有预测数据源——装配期用它决定要不要走预测那条路。
+    #[must_use]
+    pub fn has_prediction(&self) -> bool {
+        self.prediction.is_some()
+    }
+
+    /// 有没有重排器——装配期用它决定要不要走重排那条路。
+    #[must_use]
+    pub fn has_rankers(&self) -> bool {
+        !self.rankers.is_empty()
+    }
+
+    /// **无服务的便捷构造**：没有重排器，时钟固定在 Unix 纪元。
+    ///
+    /// # 它只该出现在测试与自检里
+    ///
+    /// 冻结在 0 的时钟意味着任何依赖"现在几点"的零件都会报 1970 年。
+    /// 生产装配处（CLI / 未来前端）**必须**用 [`Services::new`] 传一个真时钟，
+    /// 否则那个功能会静默地给出错误的日期。
+    #[must_use]
+    pub fn none() -> Self {
+        Self::new(Arc::new(FrozenClock {
+            secs: 0,
+            ms: 0,
+            offset_secs: 0,
+        }))
+    }
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Self::none()
     }
 }

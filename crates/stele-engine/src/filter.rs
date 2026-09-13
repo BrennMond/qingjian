@@ -399,6 +399,7 @@ mod tests {
             span: Span::new(0, 1),
             lane: Lane::Input,
             kind: stele_core::CandidateKind::Normal,
+            key: None,
         }
     }
 

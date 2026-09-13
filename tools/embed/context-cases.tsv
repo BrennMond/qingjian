@@ -1,0 +1,45 @@
+# 本地向量偏好记忆的对比集（P5 · D46）
+#
+# 它回答一个问题：**在"同一个编码下有多个词、而该选哪个取决于上文"的地方，
+# 向量记忆能不能比已有的精确记忆更准？**
+#
+# 格式：每行 TAB 分隔。第一列是 `history` 或 `case`，后面是**交替的 (编码, 词) 对**。
+#
+#   history  <编码> <词> [<编码> <词> ...]
+#       用户"打过"的一句话。整行会被依次上屏，于是它同时喂给
+#       P4a 的精确记忆（按编码）与预测表（按上下文）——**向量就是从后者学出来的**。
+#
+#   case  <上文编码> <上文词> ... <待输入编码> <期望词>
+#       留出用例：先把前面的词上屏（建立上下文），再敲最后一个编码，
+#       然后看"期望词"排在第几位。
+#
+# 断言（crates/stele-embed/tests/context_cases.rs）：
+#   · **基线**（只有词库权重 + P4a）在"上下文该说话"的用例上是错的；
+#   · **加上向量重排**之后，全部用例期望词排第 1；
+#   · 而且**不许有净损失**——基线本来对的用例，加了向量仍然是第 1。
+#
+# 设计要点（避免"做局"）：期望词的 P4a 次数被**刻意压得比对手低**，
+# 于是基线必然选错。这不是为了让向量赢，而是为了让"上下文"成为唯一的判别依据：
+# 如果向量没学到上下文，它同样会选错。
+#
+# 跑：cargo test -p stele-embed --test context_cases
+
+history	jin tian	今天	tian qi	天气
+history	jin tian	今天	tian qi	天气
+history	jin tian	今天	tian qi	天气
+history	ming tian	明天	tian qi	天气
+history	ming tian	明天	tian qi	天气
+history	nong tian	农田	tian qi	田七
+history	nong tian	农田	tian qi	田七
+history	nong tian	农田	tian qi	田七
+history	nong tian	农田	tian qi	田七
+history	nong tian	农田	tian qi	田七
+history	nong tian	农田	tian qi	田七
+history	dian nao	电脑	ping mu	屏幕
+history	dian nao	电脑	ping mu	屏幕
+history	shou ji	手机	dian liang	电量
+history	shou ji	手机	dian liang	电量
+
+case	jin tian	今天	tian qi	天气
+case	ming tian	明天	tian qi	天气
+case	nong tian	农田	tian qi	田七

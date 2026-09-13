@@ -14,6 +14,7 @@
 //! - [`SpellingAttr`]：编码**怎么拼出来的**（位集，可叠加）
 
 use crate::score::Score;
+use std::sync::Arc;
 
 /// 输入串中的一段，左闭右开 `[start, end)`，单位是**字节**。
 ///
@@ -138,6 +139,13 @@ pub enum Origin {
     // ── 猜出来的（Guessed）──
     /// 造句（动态规划拼出来的组合）。
     Sentence,
+    /// **下一词预测**（P4b）：文本来自预测表（个人 n-gram），不是当前输入。
+    ///
+    /// 它一定是 [`Lane::Predict`] 的候选——`Lane::Input` 的候选永远不是
+    /// 预测出来的。把它与 `Sentence` 分开，是因为两者是**不同的猜测**：
+    /// 一个在回答"你敲的这串想要哪个词"，一个在回答"你接下来想打什么"，
+    /// 而 UI 与诊断（`--candidates`）都该把它们分开显示。
+    Prediction,
 }
 
 /// 候选属于哪条通道。
@@ -226,6 +234,65 @@ pub struct Candidate {
     pub lane: Lane,
     /// 这一条是**怎么被找出来的**——决定滤镜怎么对待它。
     pub kind: CandidateKind,
+    /// **产生这条候选的规范编码键**（如 `ni'hao`）；没有编码时为 `None`。
+    ///
+    /// # 它为什么进内核（判据与 [`CandidateKind`] 相同）
+    ///
+    /// 不是"RIME 有这么个字段"，而是"**有没有零件真的按它分支**"。
+    /// 有，而且是两个：**用户记忆按它查表、上屏时按它落库**。
+    ///
+    /// 这条路只有翻译器走得通：编码在翻译器手里（`Expansion::code`），
+    /// 到了候选列表这一层本来就被丢掉了。丢掉之后，记忆就只能按
+    /// "用户敲的那串拼写"作键——于是 `nhao` 学到的词**永远不会**帮到
+    /// `nihao`，而 RIME 的用户词典（以编码为键）是共享的（PLAN D42）。
+    ///
+    /// **"规范"的意思是**：同一条编码只有一把键，无论它是被哪条拼写
+    /// （全拼 / 简拼 / 模糊音 / 补全）走到的。跨拼法共享因此是**自动**的，
+    /// 不需要在记忆层做任何反查。
+    ///
+    /// # 为什么是 `Arc<str>` 而不是 `String`
+    ///
+    /// 同一条编码下的全部同音词**共享一份**；而候选在流水线里会被克隆
+    /// （每个分段一份、debug 守卫一份）。克隆 `String` 会把热路径变成
+    /// 分配热点，克隆 `Arc` 只是一次原子自增。
+    pub key: Option<Arc<str>>,
+}
+
+impl Candidate {
+    /// 规范编码键的字符串视图。
+    #[must_use]
+    pub fn key_str(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+}
+
+/// 把一条编码渲染成**记忆的键**：编码单元的规范写法用 `'` 连接。
+///
+/// # 为什么要有分隔符
+///
+/// 直接拼接会撞车：编码 `["n", "i"]` 与 `["ni"]` 拼出来都是 `ni`，
+/// 而它们是两条**不同的编码**。`'` 是拼音方案里惯用的音节分隔符，
+/// 因此这个键既可读又无歧义。
+///
+/// 返回 `None` 表示有编码单元不在字母表里——那是**装载期的错误**
+/// （`SchemeDef::compile` 会响亮报出来），这里只能选择不产出键。
+#[must_use]
+pub fn code_key(
+    alphabet: &crate::service::CodeAlphabet,
+    code: &[crate::service::CodeUnitId],
+) -> Option<Arc<str>> {
+    if code.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for (i, unit) in code.iter().enumerate() {
+        let text = alphabet.text(*unit)?;
+        if i > 0 {
+            out.push('\'');
+        }
+        out.push_str(text);
+    }
+    Some(Arc::from(out))
 }
 
 /// 这个候选是不是"输入本身就是答案"，而不是引擎猜的。
@@ -300,6 +367,7 @@ mod tests {
             span: Span::new(0, 1),
             lane: Lane::Input,
             kind: CandidateKind::Normal,
+            key: None,
         }
     }
 
@@ -342,5 +410,28 @@ mod tests {
         let s = Span::empty_at(3);
         assert!(s.is_empty());
         assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn code_keys_separate_units_so_different_codes_never_collide() {
+        use crate::service::{CodeAlphabet, CodeUnitId};
+        let alphabet = CodeAlphabet::new(vec!["n".into(), "i".into(), "ni".into()]);
+        // `["n","i"]` 与 `["ni"]` 是**两条不同的编码**。直接拼接会得到同一个
+        // `ni`，于是两条编码共享一份记忆——一个安静而难查的错误。
+        let split = code_key(&alphabet, &[CodeUnitId(0), CodeUnitId(1)]).unwrap();
+        let whole = code_key(&alphabet, &[CodeUnitId(2)]).unwrap();
+        assert_ne!(split, whole);
+        assert_eq!(&*split, "n'i");
+        assert_eq!(&*whole, "ni");
+    }
+
+    #[test]
+    fn code_key_rejects_unknown_units() {
+        use crate::service::{CodeAlphabet, CodeUnitId};
+        let alphabet = CodeAlphabet::new(vec!["ni".into()]);
+        // 空编码没有键（它不是"一条编码"）。
+        assert!(code_key(&alphabet, &[]).is_none());
+        // 越界的编号不是我们的错误——装载期已经报过，这里只能不产键。
+        assert!(code_key(&alphabet, &[CodeUnitId(7)]).is_none());
     }
 }

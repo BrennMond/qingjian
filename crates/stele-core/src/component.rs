@@ -288,5 +288,6 @@ pub fn literal_candidate(text: impl Into<String>, span: Span) -> Candidate {
         span,
         lane: Lane::Input,
         kind: CandidateKind::Normal,
+        key: None,
     }
 }

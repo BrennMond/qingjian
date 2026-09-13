@@ -312,12 +312,19 @@ impl Translator for DateTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
         }
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        tags.iter().any(|t| self.tags.contains(t))
+        // **不绑标签时对全部输入生效**（自己的标签表为空 = "我自己判断"）。
+        //
+        // 上游写的是 `lua_translator@*date_translator`，那个 `*` 是 Lua 的
+        // 命名空间而不是标签——这些零件本来就不绑标签，各自在 `translate()`
+        // 里先认自己的触发词。少了这一句，`accepts` 会对空标签表返回 false，
+        // 于是"装配好了却永远不被调用"。
+        self.tags.is_empty() || tags.iter().any(|t| self.tags.contains(t))
     }
 
     fn targets(&self) -> &[Tag] {
@@ -430,12 +437,19 @@ impl Translator for UnicodeTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
         }
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        tags.iter().any(|t| self.tags.contains(t))
+        // **不绑标签时对全部输入生效**（自己的标签表为空 = "我自己判断"）。
+        //
+        // 上游写的是 `lua_translator@*date_translator`，那个 `*` 是 Lua 的
+        // 命名空间而不是标签——这些零件本来就不绑标签，各自在 `translate()`
+        // 里先认自己的触发词。少了这一句，`accepts` 会对空标签表返回 false，
+        // 于是"装配好了却永远不被调用"。
+        self.tags.is_empty() || tags.iter().any(|t| self.tags.contains(t))
     }
 
     fn targets(&self) -> &[Tag] {
@@ -543,11 +557,18 @@ impl Translator for UuidTranslator {
             span,
             lane: stele_core::Lane::Input,
             kind: CandidateKind::Inline,
+            key: None,
         });
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        tags.iter().any(|t| self.tags.contains(t))
+        // **不绑标签时对全部输入生效**（自己的标签表为空 = "我自己判断"）。
+        //
+        // 上游写的是 `lua_translator@*date_translator`，那个 `*` 是 Lua 的
+        // 命名空间而不是标签——这些零件本来就不绑标签，各自在 `translate()`
+        // 里先认自己的触发词。少了这一句，`accepts` 会对空标签表返回 false，
+        // 于是"装配好了却永远不被调用"。
+        self.tags.is_empty() || tags.iter().any(|t| self.tags.contains(t))
     }
 
     fn targets(&self) -> &[Tag] {
@@ -1192,12 +1213,19 @@ impl Translator for NumberTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
         }
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        tags.iter().any(|t| self.tags.contains(t))
+        // **不绑标签时对全部输入生效**（自己的标签表为空 = "我自己判断"）。
+        //
+        // 上游写的是 `lua_translator@*date_translator`，那个 `*` 是 Lua 的
+        // 命名空间而不是标签——这些零件本来就不绑标签，各自在 `translate()`
+        // 里先认自己的触发词。少了这一句，`accepts` 会对空标签表返回 false，
+        // 于是"装配好了却永远不被调用"。
+        self.tags.is_empty() || tags.iter().any(|t| self.tags.contains(t))
     }
 
     fn targets(&self) -> &[Tag] {
@@ -1703,6 +1731,7 @@ mod tests {
             span: Span::new(0, 1),
             lane: Lane::Input,
             kind: CandidateKind::Normal,
+            key: None,
         }
     }
 
@@ -1931,6 +1960,7 @@ mod tests {
         // 但补全候选允许不一致（它本来就不逐字相等）。
         let mut v2 = vec![Candidate {
             kind: CandidateKind::Completion,
+            key: None,
             ..cand("Photoshop")
         }];
         f.apply(&q("PHO", &opts, &ctx), Span::new(0, 3), &mut v2);
@@ -2232,6 +2262,7 @@ mod tests {
         let mut v = vec![
             Candidate {
                 kind: CandidateKind::UserTable,
+                key: None,
                 ..cand("rug")
             },
             cand("如果"),

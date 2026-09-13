@@ -18,7 +18,9 @@ use stele_core::{
     Switch, Tag, Translator,
 };
 
+use crate::calc::CalcTranslator;
 use crate::filter::Uniquifier;
+use crate::inline::DateTranslator;
 use crate::lexicon::{InMemoryLexicon, LexiconError};
 use crate::pipeline::PipelineImpl;
 use crate::processor::{AsciiComposer, Editor, KeyBinder, Navigator, Selector, Speller};
@@ -163,6 +165,46 @@ pub struct SchemeDef {
     /// **引擎不解释它的内容**——这是"装载器 → 工具链"的一条旁路，
     /// 用来让 `--dump-config` 之类的东西能报告装载细节，而不必让引擎认识它们。
     pub custom: std::collections::BTreeMap<String, String>,
+    /// **内联零件**（阶段 A 的那一族）的配置。
+    ///
+    /// # 为什么是一张表，不是十个字段
+    ///
+    /// 它们的消费点只有一处：`build_pipeline` 按 `engine:` 里的名字装配。
+    /// 十个字段会让"加第十一个零件"变成改三处结构体——而这张表只加一行。
+    pub inline: InlineConfigs,
+}
+
+/// 内联零件（`date_translator` / `calc_translator` / `pin_cand_filter` …）
+/// 的配置束。
+///
+/// 这十个零件的共同点是**候选文本由代码算出来，不在任何词库里**。
+/// 在 RIME 那边它们全部住在 Lua 插件里；我们按行为重做成原生零件
+/// （见 `crate::inline` 的模块文档）。
+///
+/// **每一段的默认值都与上游一致**，因此一份从 rime-ice 抄来的方案
+/// 不写这些段也能得到同样的行为。
+#[derive(Clone, Debug, Default)]
+pub struct InlineConfigs {
+    /// `date_translator:` 段。
+    pub date: crate::spec::DateSpec,
+    /// `unicode` 段的前缀（上游从 `recognizer/patterns/unicode` 取）。
+    pub unicode: crate::spec::UnicodeSpec,
+    /// `number_translator` 段的前缀。
+    pub number: crate::spec::NumberSpec,
+    /// `calculator:` 段。
+    pub calc: crate::spec::CalcSpec,
+    /// `uuid:` 段。
+    pub uuid: crate::spec::UuidSpec,
+    /// `long_word_filter:` 段。
+    pub long_word: crate::spec::LongWordSpec,
+    /// `pin_cand_filter:` 段。
+    pub pin_cand: crate::spec::PinCandSpec,
+    /// `reduce_english_filter:` 段。
+    pub reduce_english: crate::spec::ReduceEnglishSpec,
+    /// `v_filter` 的例外表（上游没有这一段，默认空）。
+    pub v_filter: Vec<String>,
+    /// `autocap_filter`（它没有配置项，只有来源行号）。
+    pub autocap: crate::spec::AutoCapSpec,
 }
 
 /// 构造一个词条的便捷函数。
@@ -304,6 +346,7 @@ impl SchemeDef {
             input_alphabet: self.input_alphabet.clone(),
             page_size: self.page_size,
             external_data: self.external_data.clone(),
+            inline: self.inline.clone(),
             degradations,
         })
     }
@@ -339,6 +382,22 @@ impl SchemeDef {
             .chain(self.engine.segmentors.iter())
             .cloned()
             .collect();
+
+        // **注册表说"已实现"，装配路径里却没有它** —— 这是本项目的一个
+        // 独立缺口（HANDOFF §5 第 36 条），它此前**完全静默**：
+        // 方案里写了名字、什么都不发生、也没有任何报错。
+        //
+        // 判据分开是刻意的：`Availability::Implemented` 回答"我们写了实现吗"，
+        // [`assembles`] 回答"装配时会用到它吗"。两个都真，零件才真的生效。
+        for name in &names {
+            let (component, _) = crate::spec::split_alias(name);
+            let (availability, slot, _) = crate::registry::lookup(component);
+            if availability == Availability::Implemented && !assembles(name) {
+                degraded.push(format!(
+                    "零件 `{component}`（{slot:?}）**有实现但还没有装配分支**——                     声明了它不会有任何效果。这是本项目的缺口，不是方案写错了；                     见 HANDOFF §5 第 36 条"
+                ));
+            }
+        }
 
         // **判据由装载器给**（只有它知道文件在不在），引擎按判据出声。
         for (name, availability, note) in
@@ -470,6 +529,8 @@ pub struct LoadedScheme {
     translator_specs: Vec<(String, crate::spec::TranslatorSpec)>,
     input_alphabet: Vec<char>,
     page_size: usize,
+    /// 内联零件的配置（见 [`SchemeDef::inline`]）。
+    inline: InlineConfigs,
     /// 外部数据就位判据（见 [`SchemeDef::external_data`]）。
     ///
     /// 它只在 `compile` 期用来"出声"，装完之后留着供 `--dump-config`
@@ -700,6 +761,49 @@ struct SegmentorBuild {
     tags: Vec<Tag>,
 }
 
+/// **这个零件名有装配分支吗**。
+///
+/// # 为什么需要一个单独的清单（而不是"注册表说有就是有"）
+///
+/// 注册表的 `Availability::Implemented` 说的是"**我们写了实现**"，
+/// 而不是"**装配路径会用到它**"。两者曾经差得很远：
+/// 阶段 A 的 10 个内联零件全都有实现、全都有单元测试、注册表里全标着
+/// "已实现"，而 `build_pipeline` 里**一次都没引用过它们**
+/// （HANDOFF §5 第 36 条）。症状是"方案里写了名字、什么都不发生、
+/// 也没有任何报错"——本项目最恨的那一类。
+///
+/// 所以这里把"装配"这件事写成一个**能被检查的谓词**：
+/// [`SchemeDef::check_declared_components`] 用它报告
+/// "注册表说已实现、但装配路径里没有它"，于是那个缺口**看得见**。
+///
+/// # 加装配分支时请同步这里
+///
+/// 两处不一致会被测试抓住：`assembles()` 说 true 而实际没装配，
+/// 声明那个零件的方案会**少一个组件**；反过来会多一条假降级。
+/// 见 `crates/stele-engine/src/scheme.rs` 的
+/// `assembles_matches_what_build_pipeline_actually_builds`。
+#[must_use]
+pub fn assembles(name: &str) -> bool {
+    let (component, _) = crate::spec::split_alias(name);
+    matches!(
+        component,
+        // 处理器
+        "speller" | "editor" | "express_editor" | "selector" | "ascii_composer"
+            | "punctuator" | "key_binder" | "navigator"
+        // 切分器（`recognizer` 是"扫描"，不是切分器）
+        | "matcher" | "abc_segmentor" | "affix_segmentor" | "punct_segmentor"
+            | "fallback_segmentor" | "ascii_segmentor"
+        // 翻译器
+        | "script_translator" | "table_translator" | "punct_translator"
+        | "date_translator" | "calc_translator" | "unicode_translator"
+        | "number_translator" | "uuid_translator"
+        // 滤镜
+        | "uniquifier" | "simplifier" | "reverse_lookup_filter"
+        | "long_word_filter" | "autocap_filter" | "v_filter"
+        | "pin_cand_filter" | "reduce_english_filter"
+    )
+}
+
 impl LoadedSchema for LoadedScheme {
     fn info(&self) -> &SchemaInfo {
         &self.info
@@ -719,7 +823,7 @@ impl LoadedSchema for LoadedScheme {
     /// 1. **按方案声明的顺序**放进零件（`engine:` 段）。顺序即语义。
     /// 2. **检查每个翻译器的标签有切分器产出它**——否则那个翻译器
     ///    永远不会被调用，而配置看起来完全正常。
-    fn build_pipeline(&self) -> Box<dyn Pipeline + Send> {
+    fn build_pipeline(&self, services: &stele_core::Services) -> Box<dyn Pipeline + Send> {
         let mut processors: Vec<Box<dyn Processor>> = Vec::new();
         // `key_binder` 的位置要记下来：换来的按键必须从它之后开始派发，
         // 否则 `{accept: space, send: space}` 这类绑定会把自己再触发一遍，
@@ -806,6 +910,18 @@ impl LoadedSchema for LoadedScheme {
             let mut v: Vec<Box<dyn Translator>> = Vec::new();
             for name in &self.engine.translators {
                 let (component, alias) = crate::spec::split_alias(name);
+                // ── 内联翻译器（候选文本由代码算出来，不查词库）──
+                //
+                // **不绑标签**（`tags: vec![]`），与上游一致：rime-ice 的
+                // `engine:` 里写的是 `lua_translator@*date_translator`，
+                // 而那个 `*` 是 Lua 的命名空间、不是标签；两个零件的配置段里
+                // 都没有 `tags:`。它们各自在 `translate()` 里认自己的触发词
+                // （`rq` / `cC…`），认不出就返回空——因此不绑标签是安全的，
+                // 而且**不会**踩"忘了写 recognizer 模式 ⇒ 零件永不生效"那颗雷。
+                if let Some(t) = self.make_inline_translator(component, services) {
+                    v.push(t);
+                    continue;
+                }
                 let Some(kind) = crate::spec::TranslatorKindSpec::parse(component) else {
                     continue;
                 };
@@ -902,6 +1018,22 @@ impl LoadedSchema for LoadedScheme {
                         }
                     }
                 }
+                // ── 内联滤镜 ──
+                "long_word_filter" => filters.push(Box::new(crate::inline::LongWordFilter::new(
+                    &self.inline.long_word,
+                ))),
+                "autocap_filter" => filters.push(Box::new(crate::inline::AutoCapFilter)),
+                "v_filter" => filters.push(Box::new(crate::inline::VFilter::new(
+                    self.inline.v_filter.clone(),
+                ))),
+                "pin_cand_filter" => filters.push(Box::new(crate::inline::PinCandFilter::new(
+                    &self.inline.pin_cand,
+                ))),
+                "reduce_english_filter" => filters.push(Box::new(
+                    crate::inline::ReduceEnglishFilter::new(&self.inline.reduce_english),
+                )),
+                // `autocap_filter` 没有配置项，但它**必须能被声明**才谈得上
+                // "装配好了"——这一条就是 `assembles()` 的另一半。
                 "simplifier" => {
                     if let Some(a) = alias {
                         if let Some((_, table, spec)) =
@@ -950,17 +1082,66 @@ impl LoadedSchema for LoadedScheme {
                 processors,
                 translators,
                 filters,
-                Vec::new(),
+                // **重排器来自装配处**（P4a）：记忆、上下文、向量都从这里进来。
+                // 引擎不知道 `MemoryRanker` 的存在，也不知道记忆存在哪——
+                // 这正是 `docs/engine-design.md` §4「服务在构造时注入」的意思。
+                services.rankers.clone(),
                 self.candidate_cap,
             )
             .with_segmentors(recognizer, segmentors)
             .with_page_size(self.page_size)
+            // **预测数据源也来自装配处**（P4b）：`None` = 这条流水线不预测。
+            // 与重排器同一条规则——服务在构造时注入，引擎不知道预言从哪来。
+            .with_prediction(services.prediction.clone())
             .with_preedit(self.preedit_delimiter, spelling),
         )
     }
 }
 
 impl LoadedScheme {
+    /// 造一个**内联翻译器**（阶段 A 的那一族）。
+    ///
+    /// # 为什么它们不绑标签
+    ///
+    /// 上游的 `engine:` 里写的是 `lua_translator@*date_translator`——
+    /// 那个 `*` 是 **Lua 的命名空间**（`LuaComponent::Create` 把 `@` 之后的
+    /// 整串当 `name_space_`），不是标签；而它们的配置段里也没有 `tags:`。
+    /// 换句话说上游让它们**对全部输入生效**，各自在内部认自己的触发词。
+    ///
+    /// 我们照做，而且这样做还避开一颗雷：绑标签要求方案同时写一条
+    /// `recognizer.patterns`，忘了写就"零件永不生效且不报错"。
+    /// 不绑标签时最坏情况只是"每次按键多一次前缀比较"。
+    ///
+    /// 返回 `None` 表示这个名字不属于内联翻译器——交给后面的分发。
+    fn make_inline_translator(
+        &self,
+        component: &str,
+        services: &stele_core::Services,
+    ) -> Option<Box<dyn Translator>> {
+        Some(match component {
+            "date_translator" => Box::new(DateTranslator::new(
+                Arc::clone(&services.clock),
+                self.inline.date.clone(),
+                Vec::new(),
+            )),
+            "calc_translator" => Box::new(CalcTranslator::new(&self.inline.calc, Vec::new())),
+            "unicode_translator" => Box::new(crate::inline::UnicodeTranslator::new(
+                &self.inline.unicode,
+                Vec::new(),
+            )),
+            "number_translator" => Box::new(crate::inline::NumberTranslator::new(
+                &self.inline.number,
+                Vec::new(),
+            )),
+            "uuid_translator" => Box::new(crate::inline::UuidTranslator::new(
+                (services.random)(),
+                &self.inline.uuid,
+                Vec::new(),
+            )),
+            _ => return None,
+        })
+    }
+
     /// 造一个翻译器（两族共用一条装配路径）。
     fn make_translator(
         kind: crate::spec::TranslatorKindSpec,
@@ -1055,7 +1236,7 @@ mod tests {
     fn exact_code_scheme_needs_no_spelling_table() {
         let scheme = def(TranslatorKind::ExactCode).compile().unwrap();
         assert!(scheme.spelling.is_none());
-        let mut p = scheme.build_pipeline();
+        let mut p = scheme.build_pipeline(&stele_core::Services::none());
         let mut state = stele_core::SessionState::default();
 
         assert_eq!(
@@ -1066,7 +1247,6 @@ mod tests {
 
         let mut out = vec![];
         p.compose(&mut state, &mut out);
-        p.finalize(&mut out);
         assert_eq!(out[0].text, "十");
         assert_eq!(out[0].origin, Origin::SystemWord);
         assert_eq!(out[0].span, Span::new(0, 2));
@@ -1109,6 +1289,116 @@ mod tests {
         assert_eq!(
             scheme.options().missing(&["emoji"]),
             vec!["emoji".to_owned()]
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 缺口 ①② 的**可见性**（HANDOFF §5 第 36、38 条）
+    //
+    // 这两条测试守的不是"零件算得对不对"（那是单元测试的活），
+    // 而是**"声明了它会不会被静默忽略"**——本项目栽过六次的那个形状。
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// 一个最小的可编译方案，`engine:` 段由调用方给。
+    fn scheme_declaring(engine: crate::spec::EngineSpec) -> SchemeDef {
+        SchemeDef {
+            info: SchemaInfo {
+                schema_id: "probe".into(),
+                name: "probe".into(),
+                version: "0".into(),
+                format_version: SCHEME_FORMAT_VERSION,
+                family: None,
+            },
+            alphabet: vec!["a".into(), "b".into()],
+            translator: TranslatorKind::ExactCode,
+            engine,
+            ..Default::default()
+        }
+    }
+
+    /// 阶段 A 的 10 个内联零件名。
+    const INLINE_NAMES: &[&str] = &[
+        "date_translator",
+        "unicode_translator",
+        "number_translator",
+        "uuid_translator",
+        "calc_translator",
+        "long_word_filter",
+        "autocap_filter",
+        "v_filter",
+        "pin_cand_filter",
+        "reduce_english_filter",
+    ];
+
+    #[test]
+    fn assembles_agrees_with_what_build_pipeline_actually_builds() {
+        // `assembles()` 是一张**手写的**清单（`build_pipeline` 的分支没法
+        // 被程序列举），所以它会漂移。这条测试就是"两处必须一致"的执行方式：
+        //
+        //   说 true → 声明它必须真的多出一个组件（否则清单在撒谎）
+        //   说 false → 声明它必须得到一条降级说明（否则缺口是静默的）
+        //
+        // 加装配分支时若忘了改 `assembles()`，这里立刻变红。
+        for name in INLINE_NAMES {
+            let is_translator = name.ends_with("_translator");
+            let engine = if is_translator {
+                crate::spec::EngineSpec {
+                    translators: vec!["table_translator".into(), (*name).to_owned()],
+                    ..Default::default()
+                }
+            } else {
+                crate::spec::EngineSpec {
+                    translators: vec!["table_translator".into()],
+                    filters: vec![(*name).to_owned(), "uniquifier".into()],
+                    ..Default::default()
+                }
+            };
+            let def = scheme_declaring(engine);
+            let compiled = def
+                .compile()
+                .unwrap_or_else(|e| panic!("{name}: 编译失败 {e}"));
+            let services = stele_core::Services::none();
+            let p = compiled.build_pipeline(&services);
+            let (_, translators, filters, _) = p.component_counts();
+            let notes = compiled.degradations().join("｜");
+
+            if assembles(name) {
+                // table_translator + 兜底 echo = 2 是基线。
+                let extra = if is_translator {
+                    translators.saturating_sub(2)
+                } else {
+                    // uniquifier 是显式声明的，过滤掉它再看。
+                    filters.saturating_sub(1)
+                };
+                assert_eq!(
+                    extra, 1,
+                    "`assembles({name})` 说它有装配分支，但组件数没有增加"
+                );
+            } else {
+                assert!(
+                    notes.contains("还没有装配分支"),
+                    "`{name}` 没有装配分支，却没被报成降级（缺口是静默的）：{notes}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reorder_only_filter_is_no_longer_flagged() {
+        // 缺口 ② 修好之后的**反面**：`long_word_filter` 曾经被报成
+        // "声明了等于没声明"（因为排序在它之后，会把它的重排抹掉）。
+        // 排序移到滤镜之前以后，那条降级说明**必须消失**——
+        // 留着它会变成一条假的警告，而假的警告会让人不再看警告。
+        let def = scheme_declaring(crate::spec::EngineSpec {
+            translators: vec!["table_translator".into()],
+            filters: vec!["long_word_filter".into(), "uniquifier".into()],
+            ..Default::default()
+        });
+        let compiled = def.compile().expect("编译");
+        let notes = compiled.degradations().join("｜");
+        assert!(
+            !notes.contains("重排"),
+            "缺口 ② 已修好，不该再报「重排会被丢掉」：{notes}"
         );
     }
 }

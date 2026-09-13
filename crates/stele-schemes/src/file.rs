@@ -618,6 +618,61 @@ fn load_from_root(
         |n| components::read_navigator(n, &mut diags, path),
     );
 
+    // ── 内联零件（阶段 A）：顶层段，默认值与上游一致 ──
+    //
+    // **只有写了段才读**：没写就用默认值。这与 `punctuator` 的处理不同
+    // （那个有"中文输入法本来该有的标点"的预设），因为这些零件的默认值
+    // 本身就是"上游的默认"——写 `date_translator` 不写 `date_translator:`
+    // 段，得到的应当是与 rime-ice 一样的行为。
+    let mut inline = stele_engine::scheme::InlineConfigs::default();
+    if let Some(n) = root.get("date_translator") {
+        inline.date = components::read_date(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("calculator") {
+        inline.calc = components::read_calc(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("long_word_filter") {
+        inline.long_word = components::read_long_word(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("autocap_filter") {
+        inline.autocap = components::read_autocap(n);
+    }
+    if let Some(n) = root.get("unicode") {
+        inline.unicode = components::read_unicode(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("number_translator") {
+        inline.number = components::read_number(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("uuid") {
+        inline.uuid = components::read_uuid(n);
+    }
+    if let Some(n) = root.get("v_filter") {
+        inline.v_filter = components::read_v_filter(n);
+    }
+    if let Some(n) = root.get("pin_cand_filter") {
+        inline.pin_cand = components::read_pin_cand(n, &mut diags, path);
+    }
+    if let Some(n) = root.get("reduce_english_filter") {
+        inline.reduce_english = components::read_reduce_english(n, &mut diags, path);
+    }
+
+    // **上游从识别模式里推前缀**（`unicode` 与 `number_translator` 的 Lua
+    // "自动获取 `recognizer/patterns/<name>` 的第 2 个字符"）。
+    //
+    // 只有**没写显式段**时才推：显式配置永远优先，因为"前缀"与"分段模式"
+    // 是两件事（见 `read_calc` 的说明）。这条推导让一份从 rime-ice 抄来的
+    // 方案**不改一个字**也能得到正确的触发前缀。
+    if root.get("unicode").is_none() {
+        if let Some(c) = leading_char_of_pattern(&recognizer, "unicode") {
+            inline.unicode.prefix = c;
+        }
+    }
+    if root.get("number_translator").is_none() {
+        if let Some(c) = leading_char_of_pattern(&recognizer, "number") {
+            inline.number.prefix = c;
+        }
+    }
+
     // 带词缀的切分器 / 反查滤镜 / 转换滤镜：**按 `engine:` 里出现的别名**
     // 去找对应的顶层段。找不到就是"声明了却没人配"——`compile` 会报。
     let mut affixes: Vec<(String, stele_engine::spec::AffixSpec)> = Vec::new();
@@ -746,9 +801,33 @@ fn load_from_root(
         }
     }
 
-    // `speller.alphabet` 被写成**字符串**（RIME）时，每个字符是一个输入字符。
-    // 注意这与 `speller.alphabet` 的**列表**写法不同：列表是编码字母表
-    // （可以是多字符的单元），字符串是"允许敲哪些字符"。
+    // **允许敲哪些字符**。
+    //
+    // # 修过的一个静默缺口：这里以前只看 `speller.input_alphabet`
+    //
+    // 而 RIME **没有**这个键。RIME 的 `speller/alphabet` 就是"这个方案允许
+    // 敲哪些字符"（`initials` 是其中"只能作始码"的子集），所以真正该读的是
+    // **`speller.alphabet` 的字符串写法**。
+    //
+    // 于是此前任何 RIME 原生方案里的非字母数字输入都被**静默丢掉**：
+    // 雾凇的辅码引导符 `` ` ``、`v` 模式的符号、计算器要用的 `+ - * /`
+    // 全部打不进去——而症状是"敲了没反应"，没有任何报错。
+    //
+    // 两种写法的区别是刻意的：
+    // - **字符串**（RIME）：每个字符既是一个编码单元，也是允许输入的字符。
+    // - **列表**（我们的扩展）：每个元素是一个编码单元，可能是多字符
+    //   （拼音方案的 `ni`/`hao`），**反推不出输入字符集**，因此留空
+    //   ——空 = 不额外限制（[`crate::file`] 的调用方把它交给 `Speller`，
+    //   由那里的兜底规则"ASCII 字母数字 + 分隔符"处理）。
+    //
+    // `speller.input_alphabet` 仍然接受，作为**显式覆盖**。
+    let alphabet_string_input_chars: Vec<char> = speller
+        .and_then(|s| s.get("alphabet"))
+        .and_then(|n| match &n.value {
+            Value::Str(t) => Some(t.chars().collect()),
+            _ => None,
+        })
+        .unwrap_or_default();
     let input_alphabet: Vec<char> = speller
         .and_then(|s| s.get("input_alphabet"))
         .and_then(Node::as_str)
@@ -759,7 +838,7 @@ fn load_from_root(
                 .and_then(Node::as_str)
                 .map(|s| s.chars().collect())
         })
-        .unwrap_or_default();
+        .unwrap_or(alphabet_string_input_chars);
 
     let page_size = root
         .get("menu")
@@ -809,6 +888,7 @@ fn load_from_root(
             translator_specs,
             input_alphabet,
             page_size,
+            inline,
             external_data: external_data_facts(root, &engine_spec, &convert_facts),
             custom: {
                 let mut m = std::collections::BTreeMap::new();
@@ -834,6 +914,32 @@ fn load_from_root(
         )])
         .expect("单层合并不可能失败"),
     })
+}
+
+/// 从 `recognizer/patterns/<name>` 里推出**触发前缀**。
+///
+/// 上游的 Lua 这么干：模式 `"^U[a-f0-9]+"` 的第 2 个字符（跳过 `^`）就是
+/// `unicode` 的前缀 `U`。**这是上游的行为**（rime-ice 的方案里因此没有
+/// `unicode:` 段），所以我们要复现它，否则抄过来的方案前缀会不对。
+///
+/// 推不出来（没有这个模式、或模式不以 `^` + 一个字符开头）就返回 `None`
+/// ——**不猜**，退回 spec 的默认值。
+fn leading_char_of_pattern(
+    recognizer: &stele_engine::spec::RecognizerSpec,
+    name: &str,
+) -> Option<char> {
+    let regex = recognizer
+        .patterns
+        .iter()
+        .find(|p| p.name == name)
+        .map(|p| p.regex.as_str())?;
+    let rest = regex.strip_prefix('^').unwrap_or(regex);
+    let mut it = rest.chars();
+    match (it.next(), it.next()) {
+        // 前缀必须是一个**字面**字符，后面还得有东西（`^U[...]` 而不是 `^U`）。
+        (Some(c), Some(_)) if c.is_ascii_alphanumeric() => Some(c),
+        _ => None,
+    }
 }
 
 /// 一个 `simplifier@别名` 的外部数据事实。

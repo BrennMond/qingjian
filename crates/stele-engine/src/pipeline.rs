@@ -30,14 +30,34 @@
 
 use std::sync::Arc;
 use stele_core::{
-    Candidate, CandidateSink, Filter, Lane, Pipeline, ProcessResult, Processor, Query, QueryView,
-    Ranker, Segment, SegmentStatus, Segmentation, SessionState, Span, Tag, Translator,
+    Candidate, CandidateKind, CandidateSink, Filter, Lane, MemoryStore, Origin, Pipeline,
+    ProcessResult, Processor, Query, QueryView, Ranker, Segment, SegmentStatus, Segmentation,
+    SessionState, Span, SpellingAttr, Tag, Translator,
 };
 
 use crate::segmentor::{InputScan, Recognizer};
 
 /// 一次组装出来的候选总量上限。
 pub const CANDIDATE_CAP: usize = 200;
+
+/// 预测通道最多产出几条（P4b）。
+///
+/// 设计文档给的建议是 **1–2 条**（`docs/engine-design.md` §4.3.1：
+/// "数量：严格受限"）。取 2 而不是 1，是为了让"第二可能"也有机会出现，
+/// 同时多出来的那一条**不参与盲选**、位置固定，因此不会破坏肌肉记忆。
+pub const DEFAULT_PREDICTION_LIMIT: usize = 2;
+
+/// 预测候选插到**第几个输入候选之后**（P4b）。
+///
+/// 默认 1 = "紧随 `Lane::Input` 的第 1 名之后"，与
+/// `docs/engine-design.md` §4.3.2 的默认一致。
+///
+/// # 它为什么不会破坏"第 N 个就是我要的"盲选
+///
+/// 因为数字键数的是**输入候选的名次**，不是列表下标——
+/// 换算在 [`SessionState::selectable_index`] 里，由 `selector` 调用。
+/// 插入位置因此可以任意调整，而输入候选的编号恒定。
+pub const DEFAULT_PREDICTION_INSERT_AFTER: usize = 1;
 
 /// 一页显示多少个候选（`navigator` 用）。
 ///
@@ -81,6 +101,15 @@ pub struct PipelineImpl {
     /// 它必须是流水线自己的字段（而不是 `compose` 里的局部变量），
     /// 因为 [`Query`] 借用了它，而 `Query` 要活过整段翻译。
     segment_text: String,
+    /// **下一词预测的数据源**（P4b）。`None` = 这条流水线不预测。
+    ///
+    /// 它是**装配期注入的服务**（`docs/engine-design.md` §4）：引擎不知道
+    /// 预测存在哪、也不知道 `FileMemory` 这个名字。
+    prediction: Option<Arc<dyn MemoryStore>>,
+    /// 预测通道最多几条。
+    prediction_limit: usize,
+    /// 预测候选插到第几个输入候选之后。
+    prediction_insert_after: usize,
 }
 
 impl PipelineImpl {
@@ -110,7 +139,26 @@ impl PipelineImpl {
             spelling: None,
             scan: InputScan::default(),
             segment_text: String::new(),
+            prediction: None,
+            prediction_limit: DEFAULT_PREDICTION_LIMIT,
+            prediction_insert_after: DEFAULT_PREDICTION_INSERT_AFTER,
         }
+    }
+
+    /// 装上**下一词预测的数据源**（P4b）。不调用 = 不预测。
+    ///
+    /// 这是"预测默认关"在流水线上的落点：没有服务就没有 `Lane::Predict`
+    /// 候选，`compose` 的其余部分一行都不变。
+    #[must_use]
+    pub fn with_prediction(mut self, store: Option<Arc<dyn MemoryStore>>) -> Self {
+        self.prediction = store;
+        self
+    }
+
+    /// 这条流水线会不会产出预测候选——供调试与测试问"装上了没有"。
+    #[must_use]
+    pub fn prediction_enabled(&self) -> bool {
+        self.prediction.is_some()
     }
 
     /// 装上识别器与切分器。
@@ -160,17 +208,6 @@ impl PipelineImpl {
     #[must_use]
     pub fn has_recognizer(&self) -> bool {
         self.recognizer.is_some()
-    }
-
-    /// 零件数量（处理器, 翻译器, 过滤器, 重排器）——供调试与测试。
-    #[must_use]
-    pub fn component_counts(&self) -> (usize, usize, usize, usize) {
-        (
-            self.processors.len(),
-            self.translators.len(),
-            self.filters.len(),
-            self.rankers.len(),
-        )
     }
 
     /// 切分器给输入打的全部标签（按声明顺序去重）。
@@ -260,6 +297,82 @@ impl PipelineImpl {
         (text, spans)
     }
 
+    /// **产出下一词预测候选并插进已渲染列表**（P4b）。
+    ///
+    /// # 它为什么跑在滤镜之后
+    ///
+    /// 管线的顺序只有一种是对的：**翻译 → 重排 → 排序 → 滤镜**
+    /// （D43 / `docs/engine-design.md` §5.4.1）。滤镜用**位置**描述意图，
+    /// 所以它们看到的是最终顺序。预测候选不属于任何一段输入、也不该被
+    /// "把长词提到第 4 位"这类规则挪动——因此它们**在滤镜之后**插入：
+    /// **插入的位置就是最终位置**（HANDOFF §7.7.3 第 3 步的两条路里的一条）。
+    ///
+    /// 代价是"滤镜看不到预测候选"，而那正是我们要的：一个英文降权滤镜
+    /// 不该去评判"你接下来想打什么"。
+    ///
+    /// # 两个通道的排序规则不同（§5.4）
+    ///
+    /// `Lane::Predict` 只看 `score` 降序，不看 `Origin` 优先级。
+    /// 这里仍然调用**唯一的排序入口** [`stele_core::sort_candidates`]，
+    /// 而不是自己写一个 `sort_by`——两套排序规则是候选顺序不可复现的经典来源。
+    fn append_predictions(&self, state: &mut SessionState, out: &mut Vec<Candidate>) {
+        // 先清零：没有预测时也必须写回"没有"，否则上一轮的块位置会残留，
+        // 而数字键的换算会用到它（那会变成一个极难查的"按 3 没反应"）。
+        state.predict_start = 0;
+        state.predict_count = 0;
+
+        let Some(store) = self.prediction.as_ref() else {
+            return;
+        };
+        if state.context.recent().is_empty() {
+            return;
+        }
+        let preds = store.predict_next(&state.context);
+        if preds.is_empty() {
+            return;
+        }
+
+        let caret = state.composition.caret;
+        let mut block: Vec<Candidate> = Vec::new();
+        for p in preds {
+            if p.text.is_empty() {
+                continue;
+            }
+            // 同一个词不显示两遍：输入候选里已经有它，或它已经作为预测出现。
+            if out.iter().any(|c| c.text == p.text) || block.iter().any(|c| c.text == p.text) {
+                continue;
+            }
+            block.push(Candidate {
+                text: p.text,
+                comment: None,
+                score: p.score,
+                // 预测是**另一种猜测**，不是造句——两者分开显示（见 `Origin`）。
+                origin: Origin::Prediction,
+                // 预测不经过拼写代数，因此没有"变形"可言。
+                attr: SpellingAttr::NORMAL,
+                // **预测没有对应的输入片段**：必须填 caret 处的空区间，
+                // 否则"按 span 切分/上屏"的逻辑会误伤输入串（`Span::empty_at`）。
+                span: Span::empty_at(caret),
+                lane: Lane::Predict,
+                kind: CandidateKind::Normal,
+                // 预测不是从词库编码来的：它没有规范编码键。
+                key: None,
+            });
+            if block.len() >= self.prediction_limit {
+                break;
+            }
+        }
+        if block.is_empty() {
+            return;
+        }
+
+        stele_core::sort_candidates(&mut block);
+        let at = self.prediction_insert_after.min(out.len());
+        state.predict_start = at;
+        state.predict_count = block.len();
+        out.splice(at..at, block);
+    }
+
     /// 跑一遍切分：扫描 → 各切分器按顺序上场 → 兜底。
     ///
     /// # 它为什么**看不到开关与上下文**
@@ -319,6 +432,16 @@ impl PipelineImpl {
 }
 
 impl Pipeline for PipelineImpl {
+    /// 零件数量（处理器, 翻译器, 过滤器, 重排器）——供调试与测试。
+    fn component_counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.processors.len(),
+            self.translators.len(),
+            self.filters.len(),
+            self.rankers.len(),
+        )
+    }
+
     fn process_key(&mut self, state: &mut SessionState, key: &stele_core::Key) -> ProcessResult {
         let first = self.dispatch(state, key, false);
         // `key_binder` 可能要求"换成另一串按键再走一遍"。
@@ -355,9 +478,16 @@ impl Pipeline for PipelineImpl {
         if state.composition.input.is_empty() {
             state.composition.preedit.clear();
             state.composition.segments.clear();
-            state.candidate_count = 0;
-            state.candidate_pages = 0;
             state.candidate_page = 0;
+            // **输入为空不等于没有候选**（P4b）。
+            //
+            // 下一词预测恰恰发生在这个时刻：刚上屏完"微信"、还没敲下一个键，
+            // 而"朋友圈"应该已经能看见。原先这里直接 `return`，于是
+            // `Session::candidates()` 永远是空的——预测在数据模型上就没有
+            // 落点（`docs/engine-design.md` §4.2 补 `Context` 时说的就是这件事）。
+            self.append_predictions(state, out);
+            state.candidate_count = out.len();
+            state.candidate_pages = out.len().div_ceil(self.page_size);
             return;
         }
 
@@ -457,22 +587,20 @@ impl Pipeline for PipelineImpl {
         }
         self.segment_text = body_buf;
 
-        // ── ④ 滤镜与重排 ──
+        // ── ④ 重排 → 排序 → 滤镜 ──
+        //
+        // # 这个顺序只有一种是对的（HANDOFF §5 第 38 条）
+        //
+        // 1. **重排器**只加分、不改顺序，因此它跑在排序**之前**——
+        //    它改的分数要参与那次排序。
+        // 2. **排序**跑在滤镜**之前**。滤镜里的"把长词提到第 4 位"
+        //    是按**位置**描述意图的，所以它看到的必须是最终顺序。
+        //    排序若留在滤镜之后（这里曾经如此），滤镜的每一次重排都会被
+        //    它原样抹掉——**实测**：声明 `long_word_filter` 的方案，
+        //    输出仍是纯粹的权重序，而装配报告一切正常。
+        // 3. **滤镜**最后跑，它的顺序**就是** `Session::candidates()`
+        //    给出的顺序（`Pipeline::compose` 的契约）。
         {
-            let q = Query {
-                input: &input,
-                caret,
-                options: &state.options,
-                context: &state.context,
-                segment_text: &input,
-            };
-
-            // 滤镜：顺序即语义。
-            for f in &self.filters {
-                if f.applies_to(&active) {
-                    f.apply(&q, span, out);
-                }
-            }
             // 重排器：只允许加分，且受各自的 bonus_limit 约束。
             if !self.rankers.is_empty() {
                 // 只在 debug 构建里为前置检查保存一份快照 ——
@@ -488,13 +616,38 @@ impl Pipeline for PipelineImpl {
                     r.rerank(&view, out);
                 }
                 // "精确优先"铁律的开发期检查：重排器不许造成跨类倒置。
+                // （它比的是**排序之前**的位置，因此放在排序之前是对的。）
                 #[cfg(debug_assertions)]
                 debug_assert!(
                     !stele_core::has_cross_class_inversion(&before, out, Lane::Input),
                     "重排器把猜测候选顶到了精确匹配之前"
                 );
             }
+
+            // **排序**：唯一的排序入口（全序、稳定 ⇒ 可复现）。
+            stele_core::sort_candidates(out);
+
+            let q = Query {
+                input: &input,
+                caret,
+                options: &state.options,
+                context: &state.context,
+                segment_text: &input,
+            };
+            // **滤镜**：顺序即语义——它们看到的是已排序的列表，
+            // 而它们排出来的顺序就是最终顺序。
+            for f in &self.filters {
+                if f.applies_to(&active) {
+                    f.apply(&q, span, out);
+                }
+            }
         }
+
+        // ── ④′ 预测通道（P4b）──
+        //
+        // 位置是**刻意的**：在滤镜之后、写回之前。见 `append_predictions`
+        // 的说明（预测不参与"按位置"的滤镜语义，插入位置即最终位置）。
+        self.append_predictions(state, out);
 
         // ── ⑤ 写回 ──
         //
@@ -638,7 +791,6 @@ mod tests {
             p.process_key(&mut state, &Key::ch(c));
             p.compose(&mut state, &mut out);
         }
-        p.finalize(&mut out);
         out
     }
 
@@ -754,5 +906,153 @@ mod tests {
         let segs = &state.composition.segments;
         assert_eq!(segs.segments.len(), 1, "整段被认领，兜底切分器不该再切");
         assert_eq!(segs.segments[0].tags, vec!["radical_lookup"]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 预测通道（P4b）
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// 一个只回答固定预测的记忆——用它单独测**流水线的插入逻辑**。
+    ///
+    /// 它不查任何表：这里要验证的是"预测怎么进候选列表"，
+    /// 而"预测从哪来"是 `stele-memory` 的事（那边有它自己的端到端测试）。
+    struct FixedPredictor(Vec<(&'static str, i32)>);
+
+    impl stele_core::MemoryStore for FixedPredictor {
+        fn record(&self, _commit: &stele_core::Commit) {}
+        fn lookup(&self, _key: &str) -> Vec<stele_core::MemoryEntry> {
+            Vec::new()
+        }
+        fn forget(&self, _key: &str, _text: &str) {}
+        fn predict_next(&self, _context: &stele_core::Context) -> Vec<stele_core::Prediction> {
+            self.0
+                .iter()
+                .map(|(text, ml)| stele_core::Prediction {
+                    text: (*text).to_owned(),
+                    score: stele_core::Score::from_milli_log(*ml),
+                    origin: stele_core::PredictionOrigin::Personal,
+                })
+                .collect()
+        }
+    }
+
+    fn with_predictions(p: PipelineImpl, preds: Vec<(&'static str, i32)>) -> PipelineImpl {
+        p.with_prediction(Some(Arc::new(FixedPredictor(preds))))
+    }
+
+    fn state_after(words: &[&str]) -> SessionState {
+        let mut s = SessionState::default();
+        for w in words {
+            s.context.push(*w);
+        }
+        s
+    }
+
+    #[test]
+    fn predictions_are_inserted_right_after_the_first_input_candidate() {
+        let mut p = with_predictions(build(), vec![("朋友圈", 5_000)]);
+        let mut state = state_after(&["微信"]);
+        for c in "nihao".chars() {
+            p.process_key(&mut state, &Key::ch(c));
+        }
+        let mut out = vec![];
+        p.compose(&mut state, &mut out);
+
+        assert_eq!(out[0].text, "你好", "输入通道的第 1 名仍在最前");
+        assert_eq!(out[1].lane, Lane::Predict, "预测插在第 1 名之后（§4.3.2）");
+        assert_eq!(out[1].text, "朋友圈");
+        assert_eq!(out[1].origin, Origin::Prediction);
+        // 预测没有对应的输入片段 ⇒ 必须是 caret 处的空区间（§3.3 的硬要求）。
+        assert_eq!(out[1].span, Span::empty_at(state.composition.input.len()));
+        assert_eq!(state.predict_start, 1);
+        assert_eq!(state.predict_count, 1);
+    }
+
+    #[test]
+    fn predictions_are_visible_with_no_input_at_all() {
+        // "刚上屏完一个词、还没敲下一个键"这一刻——下一词预测的**主场景**。
+        let mut p = with_predictions(build(), vec![("朋友圈", 5_000)]);
+        let mut state = state_after(&["微信"]);
+        let mut out = vec![];
+        p.compose(&mut state, &mut out);
+
+        assert_eq!(out.len(), 1, "输入为空也该有预测候选");
+        assert_eq!(out[0].lane, Lane::Predict);
+        assert_eq!(out[0].text, "朋友圈");
+        assert_eq!(state.predict_start, 0);
+        assert_eq!(state.candidate_count, 1);
+    }
+
+    #[test]
+    fn without_a_prediction_service_the_lane_is_empty() {
+        let mut p = build();
+        assert!(!p.prediction_enabled());
+        let mut state = state_after(&["微信"]);
+        let mut out = vec![];
+        p.compose(&mut state, &mut out);
+        assert!(out.is_empty());
+        assert_eq!(state.predict_count, 0);
+        assert_eq!(state.predict_start, 0);
+    }
+
+    #[test]
+    fn predictions_are_capped_and_never_duplicate_a_candidate() {
+        // 上限 2 条；第一条与输入候选同文本 ⇒ 不重复显示。
+        let mut p = with_predictions(
+            build(),
+            vec![("你好", 9_000), ("世界", 8_000), ("平安", 7_000)],
+        );
+        let mut state = state_after(&["微信"]);
+        for c in "nihao".chars() {
+            p.process_key(&mut state, &Key::ch(c));
+        }
+        let mut out = vec![];
+        p.compose(&mut state, &mut out);
+
+        let preds: Vec<&str> = out
+            .iter()
+            .filter(|c| c.lane == Lane::Predict)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(preds, ["世界", "平安"], "上限 2 条且不重复已有候选");
+        assert_eq!(state.predict_count, 2);
+    }
+
+    #[test]
+    fn the_keyboard_ordinal_skips_over_the_prediction_block() {
+        // 预测插在中间时，"第 N 个输入候选"仍要指向同一个候选。
+        let mut p = with_predictions(build(), vec![("朋友圈", 5_000), ("文件传输助手", 4_000)]);
+        let mut state = state_after(&["微信"]);
+        for c in "nihao".chars() {
+            p.process_key(&mut state, &Key::ch(c));
+        }
+        let mut out = vec![];
+        p.compose(&mut state, &mut out);
+
+        assert_eq!(state.predict_start, 1);
+        assert_eq!(state.predict_count, 2);
+        // 第 1 个输入候选还是下标 0。
+        assert_eq!(state.selectable_index(0), 0);
+        // 第 2 个输入候选在预测块之后。
+        assert_eq!(state.selectable_index(1), 3);
+        assert_eq!(out[3].lane, Lane::Input);
+    }
+
+    #[test]
+    fn predictions_are_deterministic_across_runs() {
+        let mut p = with_predictions(build(), vec![("甲", 5_000), ("乙", 5_000), ("丙", 4_000)]);
+        let mut run = || {
+            let mut state = state_after(&["微信"]);
+            for c in "nihao".chars() {
+                p.process_key(&mut state, &Key::ch(c));
+            }
+            let mut out = vec![];
+            p.compose(&mut state, &mut out);
+            out.into_iter().map(|c| c.text).collect::<Vec<_>>()
+        };
+        let first = run();
+        for _ in 0..100 {
+            assert_eq!(run(), first, "含预测的候选序列必须逐字节可复现");
+        }
     }
 }

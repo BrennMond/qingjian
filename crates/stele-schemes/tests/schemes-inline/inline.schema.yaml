@@ -1,0 +1,88 @@
+# 内联零件（阶段 A）的端到端测试方案
+#
+# 它存在的理由很具体：这 10 个零件此前**有实现、有单元测试、注册表里标着
+# "已实现"，而 `build_pipeline` 里一次都没引用过**（HANDOFF §5 第 36 条）。
+# 单元测试只证明"零件本身对"，证明不了"它被装配了"——那需要一份
+# **真的声明了它**、并且走完整条链的方案。这就是这一份。
+#
+# 为什么单独一个目录：`p3_pipeline.rs` 用 `load_dir` 装载整个
+# `tests/schemes/`，而它断言默认方案是 `p3-features`（按文件名排序的第一个）。
+# 把这份放进同一个目录会把那个断言挤掉。
+schema:
+  schema_id: inline
+  name: 内联零件（测试）
+  version: "0.1.0"
+
+switches:
+  - name: ascii_mode
+    states: [中, Ａ]
+    reset: 0
+
+engine:
+  tag: code
+  translator: exact_code
+  candidate_cap: 200
+  processors:
+    - speller
+    - editor
+    - selector
+  translators:
+    - table_translator      # 常规查表（提供"词库候选"这个基线）
+    - date_translator       # 内联：日期
+    - calc_translator       # 内联：计算器
+    - unicode_translator    # 内联：Unicode
+    - number_translator     # 内联：中文数字
+    - uuid_translator       # 内联：UUID
+  filters:
+    - autocap_filter        # 内联：英文自动大写
+    - long_word_filter      # 内联：长词优先（排序已移到滤镜之前，它能生效了）
+    - v_filter              # 内联：v 模式单字优先
+    - pin_cand_filter       # 内联：置顶候选
+    - reduce_english_filter # 内联：英文降权
+    - uniquifier
+
+speller:
+  # 字符串写法：每个字符是一个编码单元（RIME 的字形类方案就这么写）。
+  # 大小写都要，才能测"输入码首字母大写"。
+  alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+=-"
+
+recognizer:
+  patterns:
+    unicode: "^U[a-f0-9]+"
+    number: "^R[0-9]+"
+
+translator:
+  dictionary: inline
+
+# ── 内联零件的配置段（字段名按上游 rime-ice 的写法）──
+date_translator:
+  date: rq
+
+long_word_filter:
+  count: 2
+  idx: 4
+
+# 这几个**刻意不写**，用来验收"从 recognizer 模式推前缀"那条上游行为：
+#   unicode / number_translator
+# 而下面两个显式覆盖：
+calculator:
+  prefix: cC
+  show_prefix: false
+
+uuid: uuid-test
+
+v_filter:
+  - Vs.
+
+pin_cand_filter:
+  # 两种写法各占一组编码，**分开验收**。
+  # （同一个编码上写两条是"后写的赢"——上游 `env.pin_cands[k] = ...`
+  #   就是直接赋值，所以那一条语义不在这里测。）
+  - "m n\t丙"            # 上游写法：`编码<TAB>词`
+  - preedit: "p q"        # 我们的写法：显式两个字段
+    texts: ["庚"]
+
+reduce_english_filter:
+  mode: custom
+  idx: 2
+  words: [ab]

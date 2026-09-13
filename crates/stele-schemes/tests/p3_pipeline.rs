@@ -91,7 +91,7 @@ fn the_rime_style_engine_list_is_assembled_in_order() {
 
     // 而编译之后，引擎真的按这个顺序装配。
     let scheme = def.compile().expect("编译");
-    let mut p = scheme.build_pipeline();
+    let mut p = scheme.build_pipeline(&stele_core::Services::none());
     let mut state = stele_core::SessionState::default();
     let mut out = Vec::new();
     // `speller` 在 `punctuator` 之前 —— 字母被输入处理器收走。
@@ -109,7 +109,7 @@ fn every_declared_translator_has_a_segmentor_that_can_call_it() {
     // 这是 ④ 的前置条件，也是"配置看起来正常但永远不生效"那类错误的解药。
     let defs = stele_schemes::load_dir(&dir()).expect("装载");
     let scheme = defs[0].compile().expect("编译");
-    let mut p = scheme.build_pipeline();
+    let mut p = scheme.build_pipeline(&stele_core::Services::none());
     // 输入一段带前缀的东西，看看有没有段带 `chaizi` 标签。
     let mut state = stele_core::SessionState::default();
     type_into(&mut p, &mut state, "uUni");

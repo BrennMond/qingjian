@@ -18,19 +18,24 @@
 use std::sync::Arc;
 use stele_core::{
     Candidate, Commit, Context, Engine, Event, Lane, LoadedSchema, Options, Outcome, PendingCommit,
-    Pipeline, ProcessResult, SchemaCatalog, SchemaError, SchemaInfo, SelectionSource, Session,
-    SessionState, Trigger,
+    Pipeline, ProcessResult, SchemaCatalog, SchemaError, SchemaInfo, SelectionSource, Services,
+    Session, SessionState, Trigger,
 };
 
 use crate::scheme::LoadedScheme;
 
-/// 引擎内部：已装载的方案集合。
+/// 引擎内部：已装载的方案集合 + 装配处注入的服务。
 ///
 /// 用 `Vec` 而不是 `BTreeMap`：方案数量是个位数，线性查找更快，
 /// 而且 `list()` 要返回 `&[SchemaInfo]`——顺序确定（PLAN §5.2）。
 struct EngineInner {
     schemes: Vec<Arc<LoadedScheme>>,
     infos: Vec<SchemaInfo>,
+    /// **装配处注入的服务**（P4a）。每个新会话用它装配流水线。
+    ///
+    /// 放在 `EngineInner` 里而不是 `EngineImpl` 上，是为了让 `SessionImpl`
+    /// 只持有一个 `Arc`——它本来就持有 `inner`，服务顺带就到了手里。
+    services: Services,
 }
 
 impl EngineInner {
@@ -59,13 +64,33 @@ pub struct EngineImpl {
 }
 
 impl EngineImpl {
-    /// 由一组方案声明构造。
+    /// 由一组方案声明构造，**不注入任何服务**（[`Services::none`]）。
+    ///
+    /// # 什么时候该用它
+    ///
+    /// 测试、`--check`、以及"只要方案本身"的场景。它**没有重排器**——
+    /// 也就是没有用户记忆，这恰好是 `--userdb` 默认关闭时的行为。
+    ///
+    /// 生产装配处请用 [`EngineImpl::with_services`]：那里的时钟是真实的，
+    /// 而不是冻结在 Unix 纪元。
     ///
     /// # Errors
     ///
     /// 任一方案编译失败即返回错误——**但错误里带上方案 id**，
     /// 便于调用方做"跳过坏的、加载好的"的降级（PLAN D26）。
     pub fn new(defs: &[crate::scheme::SchemeDef]) -> Result<Self, SchemaError> {
+        Self::with_services(defs, Services::none())
+    }
+
+    /// 由一组方案声明 + 装配处注入的服务构造。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`EngineImpl::new`]。
+    pub fn with_services(
+        defs: &[crate::scheme::SchemeDef],
+        services: Services,
+    ) -> Result<Self, SchemaError> {
         let mut schemes = Vec::with_capacity(defs.len());
         let mut infos = Vec::with_capacity(defs.len());
 
@@ -76,8 +101,18 @@ impl EngineImpl {
         }
 
         Ok(Self {
-            inner: Arc::new(EngineInner { schemes, infos }),
+            inner: Arc::new(EngineInner {
+                schemes,
+                infos,
+                services,
+            }),
         })
+    }
+
+    /// 装配处注入的服务（供测试与调试前端查看"到底挂上了什么"）。
+    #[must_use]
+    pub fn services(&self) -> &Services {
+        &self.inner.services
     }
 
     /// 已装载的方案数量。
@@ -148,7 +183,7 @@ pub struct SessionImpl {
 
 impl SessionImpl {
     fn new(scheme: Arc<LoadedScheme>, inner: Arc<EngineInner>) -> Self {
-        let pipeline = scheme.build_pipeline();
+        let pipeline = scheme.build_pipeline(&inner.services);
         let options = scheme.options().clone();
         let context = Context::with_capacity(8);
         Self {
@@ -164,8 +199,9 @@ impl SessionImpl {
     /// 重新计算候选。
     fn recompose(&mut self) {
         let mut out = std::mem::take(&mut self.candidates);
+        // **只需要 compose**：排序是它的契约的一部分（见 `Pipeline::compose`
+        // 的说明——排序必须在滤镜之前，否则重排型滤镜会被抹掉）。
         self.pipeline.compose(&mut self.state, &mut out);
-        self.pipeline.finalize(&mut out);
         self.candidates = out;
     }
 
@@ -197,6 +233,10 @@ impl SessionImpl {
                 attr: c.attr,
                 lane: c.lane,
                 trigger,
+                // **学习的主键随候选一起出来**（PLAN D42）：翻译器在产生
+                // 它的时候手里就有编码，这里只是原样带走。会话不反查、
+                // 前端不猜——"规范编码"这件事在产生它的地方就定了。
+                key: c.key.clone(),
             };
             return Some(self.finish_commit(commit));
         }
@@ -213,6 +253,8 @@ impl SessionImpl {
                 attr: stele_core::SpellingAttr::NORMAL,
                 lane: Lane::Input,
                 trigger: Trigger::Explicit,
+                // 注释是候选的 `comment`，不由任何编码产出。
+                key: None,
             };
             return Some(self.finish_commit(commit));
         }
@@ -227,6 +269,7 @@ impl SessionImpl {
                 self.events.push(Event::ForgetRequested {
                     input: self.state.composition.input.clone(),
                     text: c.text.clone(),
+                    key: c.key.clone(),
                 });
             }
             return None;
@@ -250,6 +293,7 @@ impl SessionImpl {
             attr: stele_core::SpellingAttr::NORMAL,
             lane: Lane::Input,
             trigger,
+            key: None,
         };
         Some(self.finish_commit(commit))
     }
@@ -258,14 +302,21 @@ impl SessionImpl {
     fn finish_commit(&mut self, commit: Commit) -> Commit {
         // 学习事件（P4a 的实现会消费它）。
         //
-        // **注意传的是原始输入与属性**——接收方必须按 `attr` 把 `input`
-        // 规范化成规范编码再落库，否则会产生"永远检索不到的无效数据"（G10）。
+        // **注意传的是规范编码键与原始输入两者**：键是主键，输入只是
+        // 诊断与兜底。少了键，接收方就只能按拼写记，于是 `nhao` 学到的
+        // 词永远帮不到 `nihao`（G10 / PLAN D42）。
         self.events.push(Event::Learned {
             input: commit.input.clone(),
             text: commit.text.clone(),
             origin: commit.origin,
             attr: commit.attr,
             lane: commit.lane,
+            // 上下文随事件一起出去：`Lane::Predict` 的学习键就是它
+            // （见 `Event::Learned` 的说明）。丢掉它 = 预测学了没记住。
+            context: commit.context.clone(),
+            // **规范编码键**：前端拿它落库，于是 `nhao` 与 `nihao`
+            // 学到的是同一条记录（PLAN D42）。
+            key: commit.key.clone(),
         });
 
         // RIME 的规则：**直出的标点不进上下文**（它不该参与下一词预测）。
@@ -283,7 +334,17 @@ impl SessionImpl {
         // 这里做不到那件事时，宁可把输入清掉，也不要留一段无主的输入。
         self.state.composition.reset();
         self.state.pending_commit = None;
-        self.candidates.clear();
+
+        // **上屏之后立刻重算一次**（P4b）。
+        //
+        // 不重算的话，`Session::candidates()` 在"刚打完一个词"这一刻是空的
+        // ——而下一词预测**恰恰发生在这个时刻**：输入串空了，但上下文刚更新
+        // （`Context` 里已经有刚上屏的那个词）。少了这一步，"微信 → 朋友圈"
+        // 这条能力在会话层就永远看不见。
+        //
+        // 代价可忽略：输入为空时 `compose` 只走预测那一条路，没有预测
+        // 服务时它是一次提前返回（连候选列表都不动）。
+        self.recompose();
 
         commit
     }
@@ -391,7 +452,7 @@ impl Session for SessionImpl {
                 schema_id: schema_id.to_owned(),
             })?;
 
-        let pipeline = target.build_pipeline();
+        let pipeline = target.build_pipeline(&self.inner.services);
         let options = target.options().clone();
 
         self.scheme = target;

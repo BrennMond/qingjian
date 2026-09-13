@@ -10,12 +10,30 @@
 //! RIME 对应的是 `commit_history.cc`。
 
 /// 已上屏内容的滚动窗口。**最新的在末尾**。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Context {
     /// 最近上屏的词。容量由方案配置（例如只保留最近 8 个），避免无界增长。
     recent: Vec<String>,
     /// 容量上限。
     cap: usize,
+}
+
+impl Default for Context {
+    /// 默认容量 1。
+    ///
+    /// # 为什么不能是 `derive(Default)`
+    ///
+    /// 派生出来的 `cap` 是 **0**，而 [`Context::push`] 在 `cap == 0` 时会
+    /// 对一个**空的 `Vec`** 调 `remove(0)` —— **直接 panic**。
+    /// 这条路径此前没被走到：真实会话用 `with_capacity(8)`，
+    /// 而用到 `default()` 的地方（`Query` 的常量视图、测试）
+    /// 恰好从不 `push`。P4b 写预测测试时按了第一次，它就炸了。
+    ///
+    /// **教训与 P3 那批一样**：一个"永远不会被走到"的分支不是安全的，
+    /// 它只是**还没被走到**。让默认值自洽，比依赖调用方记得传容量便宜。
+    fn default() -> Self {
+        Self::with_capacity(1)
+    }
 }
 
 impl Context {
@@ -92,5 +110,16 @@ mod tests {
     fn capacity_zero_is_promoted_to_one() {
         let c = Context::with_capacity(0);
         assert_eq!(c.capacity(), 1);
+    }
+
+    #[test]
+    fn default_context_can_accept_a_push() {
+        // 这条测试是从一个真实的 panic 里长出来的：`derive(Default)` 给出
+        // `cap = 0`，而 `push` 在 cap 为 0 时会对空 `Vec` 调 `remove(0)`。
+        // 症状是"写预测测试时莫名其妙地炸在 Context 里"。
+        let mut c = Context::default();
+        c.push("甲");
+        assert_eq!(c.last(), Some("甲"));
+        assert_eq!(c.recent(), &["甲"]);
     }
 }

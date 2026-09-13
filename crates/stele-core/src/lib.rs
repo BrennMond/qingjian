@@ -51,7 +51,7 @@ pub mod session;
 pub mod sort;
 
 pub use candidate::{
-    is_exact, Candidate, CandidateKind, CandidateSink, Lane, Origin, Span, SpellingAttr,
+    code_key, is_exact, Candidate, CandidateKind, CandidateSink, Lane, Origin, Span, SpellingAttr,
 };
 pub use commit::{Commit, Event, Outcome, PendingCommit, ProcessResult, SelectionSource, Trigger};
 pub use component::{
@@ -68,7 +68,7 @@ pub use segmentor::{Claim, InputScanView};
 pub use service::{
     Clock, CodeAlphabet, CodeUnitId, DeterministicRandom, EmptyLexicon, Expansion, ExpansionSink,
     FrozenClock, Lexicon, LiteralSpelling, MemoryEntry, MemoryStore, NoMemory, Prediction,
-    PredictionOrigin, QueryView, RandomSource, Ranker, Spelling,
+    PredictionOrigin, QueryView, RandomSource, Ranker, Services, Spelling, SystemRandom,
 };
 pub use session::{
     Engine, LoadedSchema, Pipeline, SchemaCatalog, SchemaInfo, Session, SessionState,

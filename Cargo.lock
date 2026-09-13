@@ -7,7 +7,9 @@ name = "stele-bench"
 version = "0.0.0"
 dependencies = [
  "stele-core",
+ "stele-embed",
  "stele-engine",
+ "stele-memory",
  "stele-schemes",
 ]
 
@@ -16,7 +18,9 @@ name = "stele-cli"
 version = "0.0.0"
 dependencies = [
  "stele-core",
+ "stele-embed",
  "stele-engine",
+ "stele-memory",
  "stele-schemes",
 ]
 
@@ -40,10 +44,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "stele-embed"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
+ "stele-engine",
+ "stele-memory",
+ "stele-schemes",
+]
+
+[[package]]
 name = "stele-engine"
 version = "0.0.0"
 dependencies = [
  "stele-core",
+]
+
+[[package]]
+name = "stele-memory"
+version = "0.0.0"
+dependencies = [
+ "stele-core",
+ "stele-engine",
+ "stele-schemes",
 ]
 
 [[package]]

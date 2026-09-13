@@ -818,6 +818,7 @@ impl Translator for CalcTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
             out.push(Candidate {
                 text: format!("{shown}={result}"),
@@ -828,6 +829,7 @@ impl Translator for CalcTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
         } else {
             // 失败路径也是**两条候选**，注释不同（照上游）。
@@ -840,6 +842,7 @@ impl Translator for CalcTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
             out.push(Candidate {
                 text: replace_percent(&replace_factorial(expr)),
@@ -850,12 +853,19 @@ impl Translator for CalcTranslator {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: CandidateKind::Inline,
+                key: None,
             });
         }
     }
 
     fn accepts(&self, tags: &[Tag]) -> bool {
-        tags.iter().any(|t| self.tags.contains(t))
+        // **不绑标签时对全部输入生效**（自己的标签表为空 = "我自己判断"）。
+        //
+        // 上游写的是 `lua_translator@*date_translator`，那个 `*` 是 Lua 的
+        // 命名空间而不是标签——这些零件本来就不绑标签，各自在 `translate()`
+        // 里先认自己的触发词。少了这一句，`accepts` 会对空标签表返回 false，
+        // 于是"装配好了却永远不被调用"。
+        self.tags.is_empty() || tags.iter().any(|t| self.tags.contains(t))
     }
 
     fn targets(&self) -> &[Tag] {

@@ -21,6 +21,7 @@ fn cand(text: &str, milli_log: i32, origin: Origin, lane: Lane) -> Candidate {
         span: Span::new(0, 1),
         lane,
         kind: CandidateKind::Normal,
+        key: None,
     }
 }
 

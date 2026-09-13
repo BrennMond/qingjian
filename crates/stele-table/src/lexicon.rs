@@ -286,6 +286,7 @@ impl Lexicon for TableLexicon {
                 span,
                 lane: Lane::Input,
                 kind: stele_core::CandidateKind::Normal,
+                key: None,
             });
         }
     }

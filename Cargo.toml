@@ -11,6 +11,8 @@ members = [
     "crates/stele-config",
     "crates/stele-dict",
     "crates/stele-table",
+    "crates/stele-memory",
+    "crates/stele-embed",
     "crates/stele-schemes",
     "crates/stele-cli",
     "crates/stele-bench",

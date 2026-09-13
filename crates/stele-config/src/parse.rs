@@ -664,7 +664,12 @@ impl Flow {
                         self.pos += 1;
                         break;
                     }
-                    let key = self.raw_token(&[',', ':', '}'])?;
+                    // 键也要走 `parse_scalar`：它可能是带引号的
+                    // （`{"a b": 1}`），而引号必须剥掉、转义必须解开。
+                    let key_raw = self.raw_token(&[',', ':', '}'])?;
+                    let key = Node::at(parse_scalar(&key_raw), self.no)
+                        .as_str()
+                        .unwrap_or(key_raw);
                     self.skip_ws();
                     if self.peek() != Some(':') {
                         return Err(self.err(format!("流映射里的键 `{key}` 后面缺少 `:`")));
@@ -707,18 +712,23 @@ impl Flow {
         let mut quoted: Option<char> = None;
         while let Some(c) = self.peek() {
             if let Some(q) = quoted {
+                // **引号本身也收进来**，交给 `parse_scalar` 去剥、去解转义。
+                //
+                // 这里曾经把开引号吃掉、闭引号留下，于是流序列里的
+                // `["abc"]` 解析成 `abc"`（多一个引号、**不报错**）；
+                // 而且 `["a\tb"]` 的转义永远不会被解开。两处都是静默错值。
+                // 让 `raw_token` 只负责"哪里是边界"，解析仍只有一处。
+                out.push(c);
                 self.pos += 1;
                 if c == q {
                     quoted = None;
                 } else if c == '\\' && q == '"' {
+                    // 转义的下一个字符照收（包含在标量里，稍后解）。
                     if let Some(e) = self.peek() {
-                        out.push('\\');
                         out.push(e);
                         self.pos += 1;
-                        continue;
                     }
                 }
-                out.push(c);
                 continue;
             }
             if stops.contains(&c) {
@@ -726,6 +736,7 @@ impl Flow {
             }
             if c == '"' || c == '\'' {
                 quoted = Some(c);
+                out.push(c);
                 self.pos += 1;
                 continue;
             }
@@ -933,5 +944,33 @@ mod tests {
         assert_eq!(root.get("a").unwrap().as_str().as_deref(), Some("inf"));
         assert_eq!(root.get("b").unwrap().as_str().as_deref(), Some("infinity"));
         assert_eq!(root.get("c").unwrap().as_str().as_deref(), Some("-inf"));
+    }
+
+    #[test]
+    fn flow_scalars_strip_quotes_and_decode_escapes() {
+        // 曾经的两个静默错值（都在**流式**集合里，块式写法是对的）：
+        //   ① 闭引号被留进值里：`["abc"]` → `abc"`（多一个引号，不报错）
+        //   ② 转义从不被解开：`["a\tb"]` → 字面反斜杠 + t
+        // 它们难查的原因是**值看起来"差不多对"**——直到有人拿它当键用。
+        let n = p("k: [\"abc\"]\n");
+        assert_eq!(
+            n.get("k").unwrap().as_seq().unwrap()[0].as_str().as_deref(),
+            Some("abc")
+        );
+
+        let n = p("k: [\"十\", \"二\"]\n");
+        let seq = n.get("k").unwrap().as_seq().unwrap();
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq[0].as_str().as_deref(), Some("十"));
+
+        let n = p("k: [\"a\\tb\"]\n");
+        assert_eq!(
+            n.get("k").unwrap().as_seq().unwrap()[0].as_str().as_deref(),
+            Some("a\tb")
+        );
+
+        // 流映射的键同样要剥引号，否则键会带着引号，`get` 永远查不到。
+        let n = p("k: {\"a b\": 1}\n");
+        assert!(n.get("k").unwrap().get("a b").is_some());
     }
 }

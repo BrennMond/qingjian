@@ -1,0 +1,18 @@
+[package]
+name = "embed-probe"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "P5 可行性探针：合成向量表的内存与点积成本（不加载任何模型）"
+
+# **不属于 workspace**（与 tools/wordlist-gen 同一条约定）：
+# 它是给"内存预算评审"用的工装，不进 `cargo test --workspace`。
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

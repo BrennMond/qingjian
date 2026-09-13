@@ -33,6 +33,9 @@ pub const TRANSLATE_CAP: usize = 200;
 /// 方案用它。**它证明引擎不强迫所有方案都走拼音那条路。**
 pub struct ExactCodeTranslator {
     lexicon: Arc<dyn Lexicon>,
+    /// 字母表。**保留它是为了把编码渲染成记忆的键**（`code_key`）——
+    /// 只有它知道"编号 3 写作 `hao`"。
+    alphabet: CodeAlphabet,
     /// 单元文本 → 编号。贪心最长匹配时按文本长度降序试。
     by_text: BTreeMap<String, CodeUnitId>,
     /// 单元文本按长度降序（贪心最长匹配）。
@@ -59,6 +62,7 @@ impl ExactCodeTranslator {
 
         Self {
             lexicon,
+            alphabet: alphabet.clone(),
             by_text,
             texts_by_len,
             completion: false,
@@ -107,9 +111,20 @@ impl Translator for ExactCodeTranslator {
                 self.lexicon.prefix_lookup(&code, true, &mut sink);
             }
         }
+        if raw.is_empty() {
+            return;
+        }
+        // **把编码渲染成键，一次即可**——`lookup` 与 `prefix_lookup`
+        // 产出的候选都属于这条输入编码。补全候选的"完整编码"更长，
+        // 但那不影响记忆的语义：用户敲的就是这条键。
+        //
+        // 只在**真有候选**时才渲染：渲染要分配一个字符串，而绝大多数
+        // 展开边查不到任何词条。实测这一步值得——见 HANDOFF 的 P4a 数字。
+        let key = stele_core::code_key(&self.alphabet, &code);
         for mut c in raw {
             // 覆盖整段输入。
             c.span = span;
+            c.key.clone_from(&key);
             out.push(c);
         }
     }
@@ -178,6 +193,16 @@ impl Translator for SpellingGraphTranslator {
                     }
                 }
             }
+            // 没有候选的展开边直接跳过——**键要分配字符串**，
+            // 而简拼会产出大量查不到词的展开边（拼写展开是按代价排序的，
+            // 便宜的边多得多）。
+            if raw.is_empty() {
+                continue;
+            }
+            // **每条展开边一把键**：`nhao` 与 `nihao` 可能展开到**同一条**
+            // 编码 `[ni, hao]`，于是渲染出**同一把**键 `ni'hao`——
+            // 跨拼法共享记忆就是在这里自动成立的，不需要记忆层做反查。
+            let key = stele_core::code_key(self.spelling.alphabet(), &exp.code);
             for mut c in raw {
                 // 候选的分数 = 词条分数 + 这条边的代价。
                 // **这就是"简拼天然排在精确匹配之后"的全部机制**：
@@ -197,6 +222,7 @@ impl Translator for SpellingGraphTranslator {
                     c.attr = c.attr.union(exp.attr);
                 }
                 c.span = span;
+                c.key.clone_from(&key);
                 out.push(c);
             }
             if out.len() >= TRANSLATE_CAP {
@@ -256,6 +282,7 @@ impl Translator for EchoTranslator {
             span,
             lane: Lane::Input,
             kind: stele_core::CandidateKind::Normal,
+            key: None,
         });
     }
 }

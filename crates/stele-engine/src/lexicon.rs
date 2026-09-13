@@ -149,6 +149,7 @@ impl Lexicon for InMemoryLexicon {
                 span,
                 lane: stele_core::Lane::Input,
                 kind: stele_core::CandidateKind::Normal,
+                key: None,
             });
         }
     }
@@ -211,6 +212,7 @@ impl Lexicon for InMemoryLexicon {
                     span,
                     lane: stele_core::Lane::Input,
                     kind: stele_core::CandidateKind::Completion,
+                    key: None,
                 });
             }
         }

@@ -17,8 +17,10 @@ use stele_core::Diagnostic;
 use stele_core::Tag;
 use stele_engine::keyspec::{parse_key_name, KeyChord};
 use stele_engine::spec::{
-    AffixSpec, At, EditorAction, EngineSpec, KeyBinding, NavigatorSpec, PunctuatorSpec,
-    RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TranslatorSpec, WhenPredicate,
+    AffixSpec, At, AutoCapSpec, CalcSpec, DateSpec, EditorAction, EngineSpec, KeyBinding,
+    LongWordSpec, NavigatorSpec, NumberSpec, PinCandSpec, PinEntry, PunctuatorSpec, RecogPattern,
+    RecognizerSpec, ReduceEnglishSpec, ReduceMode, ReverseLookupSpec, SimplifierSpec,
+    TranslatorSpec, UnicodeSpec, UuidSpec, WhenPredicate,
 };
 use stele_engine::tag::TagTable;
 
@@ -717,8 +719,339 @@ pub fn read_translator(node: &Node, component: &str, alias: Option<&str>) -> Tra
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 按键名
+// 内联零件（阶段 A 的那一族）
+//
+// 它们的配置段都是**顶层段**（RIME 里也一样），而且**默认值与上游一致**——
+// 一份从 rime-ice 抄来的方案不写这些段也能得到同样的行为。
+//
+// 下面每个读取器都遵守同一条原则：**字段名按上游写，不按我们的内部命名**。
+// 例如上游用 `datezh` / `dateen`（不是 `date_zh` / `date_en`），
+// 而我们的 spec 字段叫 `date_zh`——两套名字在**这里**对齐，只对齐一次。
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// 读一个字符串字段；没有就保留默认值。
+fn str_field(node: &Node, key: &str, fallback: &str) -> String {
+    node.get(key)
+        .and_then(Node::as_str)
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// 读一个布尔字段；没有就保留默认值。
+fn bool_field(node: &Node, key: &str, fallback: bool) -> bool {
+    node.get(key).map_or(fallback, |n| match &n.value {
+        stele_config::Value::Bool(b) => *b,
+        // 写成 `yes` / `1` 这类"看着像假"的写法不猜——退回默认值，
+        // 而**不合法**的写法会在 `read_*` 的调用方那里被报出来（见 file.rs）。
+        _ => fallback,
+    })
+}
+
+/// 读一个非负整数字段；没有就保留默认值。
+fn usize_field(node: &Node, key: &str, fallback: usize) -> usize {
+    node.get(key).map_or(fallback, |n| match &n.value {
+        stele_config::Value::Int(i) if *i >= 0 => usize::try_from(*i).unwrap_or(fallback),
+        _ => fallback,
+    })
+}
+
+/// `date_translator:` 段——七个触发词。
+///
+/// # 字段名按上游（这一条容易写错）
+///
+/// 上游是 `datezh` / `dateen`（没有下划线），而我们的 spec 字段叫
+/// `date_zh` / `date_en`。**两套命名在这里对齐一次**，而不是让
+/// 方案作者去猜我们内部怎么拼。
+pub fn read_date(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> DateSpec {
+    let d = DateSpec::default();
+    let _ = (&mut *diags, path);
+    DateSpec {
+        date: str_field(node, "date", &d.date),
+        time: str_field(node, "time", &d.time),
+        week: str_field(node, "week", &d.week),
+        datetime: str_field(node, "datetime", &d.datetime),
+        timestamp: str_field(node, "timestamp", &d.timestamp),
+        date_zh: str_field(node, "datezh", &d.date_zh),
+        date_en: str_field(node, "dateen", &d.date_en),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `calculator:` 段——触发前缀。
+///
+/// # 与上游的一处差异（**这是我们的选择，不是 RIME 约定**）
+///
+/// 上游 `rime_ice.schema.yaml` 里**没有** `calculator:` 段：它的 Lua 从
+/// `recognizer/patterns/calculator`（`"^cC.+"`）的**第 2 个字符**取前缀。
+/// 也就是说上游的前缀与"哪条识别模式触发它"绑在一起。
+///
+/// 我们额外支持显式写一段 `calculator:`（`prefix` / `show_prefix`），
+/// 因为"前缀"与"分段模式"是两件事，而显式配置更好排错。
+/// **默认值仍与上游一致**（`cC`），所以抄过来的方案不用改。
+pub fn read_calc(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> CalcSpec {
+    let d = CalcSpec::default();
+    let _ = (&mut *diags, path);
+    CalcSpec {
+        prefix: str_field(node, "prefix", &d.prefix),
+        show_prefix: bool_field(node, "show_prefix", d.show_prefix),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `long_word_filter:` 段——提升几个、提到第几位。
+///
+/// 上游原文：`count: 2` / `idx: 4`（"提升 count 个词语，插入到第 idx 个位置"）。
+pub fn read_long_word(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> LongWordSpec {
+    let d = LongWordSpec::default();
+    let _ = (&mut *diags, path);
+    LongWordSpec {
+        count: usize_field(node, "count", d.count),
+        idx: usize_field(node, "idx", d.idx),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `autocap_filter:` 段——**它没有配置项**。
+///
+/// 之所以仍然要一个读取器：`assets` / `engine:` 里声明了它，装配路径就得有
+/// 一条分支，而这个函数就是"我们知道这一段存在、只是它没有可配的东西"
+/// 的显式写法。返回的 spec 只有来源行号，供 `--dump-config` 标出处。
+#[must_use]
+pub fn read_autocap(node: &Node) -> AutoCapSpec {
+    AutoCapSpec {
+        at: At::new(node.line as usize),
+    }
+}
+
+/// 读一个**单字符**前缀（`unicode` / `number_translator` 的配置）。
+///
+/// 多字符一律当不合法——前缀就是"敲一个字进入那个零件"，
+/// 两个字符的前缀在上游是用 `recognizer` 的模式表达的。
+fn char_field(node: &Node, key: &str) -> Option<char> {
+    node.get(key).and_then(Node::as_str).and_then(|s| {
+        let mut it = s.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        }
+    })
+}
+
+/// `unicode:` 段——一个前缀字符。
+///
+/// 上游没有这一段：它的 Lua「自动获取 `recognizer/patterns/unicode`
+/// 的第 2 个字符」。我们两样都支持——**显式段优先**，
+/// 没有则从识别模式里推（见 `file.rs`）。
+pub fn read_unicode(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> UnicodeSpec {
+    let d = UnicodeSpec::default();
+    let prefix = match node {
+        Node { .. } if !matches!(node.value, stele_config::Value::Map(_)) => {
+            // 直接写一个字符：`unicode: U`
+            node.as_str().and_then(|s| s.chars().next())
+        }
+        _ => char_field(node, "prefix"),
+    };
+    if node.get("prefix").is_some() && char_field(node, "prefix").is_none() {
+        diags.push(
+            Diagnostic::new(path, "`unicode.prefix` 必须是**一个**字符")
+                .with_field("unicode.prefix")
+                .with_entry("上游从 `recognizer/patterns/unicode` 的第 2 个字符取它".to_owned()),
+        );
+    }
+    UnicodeSpec {
+        prefix: prefix.unwrap_or(d.prefix),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `number_translator:` 段——一个前缀字符。与 [`read_unicode`] 同形。
+pub fn read_number(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> NumberSpec {
+    let d = NumberSpec::default();
+    let prefix = if matches!(node.value, stele_config::Value::Map(_)) {
+        char_field(node, "prefix")
+    } else {
+        node.as_str().and_then(|s| s.chars().next())
+    };
+    if node.get("prefix").is_some() && char_field(node, "prefix").is_none() {
+        diags.push(
+            Diagnostic::new(path, "`number_translator.prefix` 必须是**一个**字符")
+                .with_field("number_translator.prefix"),
+        );
+    }
+    NumberSpec {
+        prefix: prefix.unwrap_or(d.prefix),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `uuid:` 段——触发词。
+///
+/// # 上游是**标量**，不是映射
+///
+/// rime-ice 里写的是 `uuid: uuid`（一行一个值）。所以这里两种都收：
+/// 标量直接当触发词，映射读 `trigger:`。**写成映射是我们的扩展**，
+/// 为的是与其它零件的形状一致；标量那条才是上游的写法。
+pub fn read_uuid(node: &Node) -> UuidSpec {
+    let d = UuidSpec::default();
+    let trigger = match &node.value {
+        stele_config::Value::Map(_) => node.get("trigger").and_then(Node::as_str),
+        _ => node.as_str(),
+    };
+    UuidSpec {
+        trigger: trigger.unwrap_or(d.trigger),
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `v_filter:` 段——例外表（这些词即使只有一个字也不提前）。
+///
+/// 上游 `rime_ice.schema.yaml` 里**没有**这一段（它写死在 Lua 里）。
+/// 我们把它提出来当配置：例外表是数据，数据不该埋在代码里。
+#[must_use]
+pub fn read_v_filter(node: &Node) -> Vec<String> {
+    node.as_seq()
+        .map(|seq| seq.iter().filter_map(Node::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// 把一条置顶规则拆成 `(编码, 词列表)`。
+///
+/// # 上游的写法是 `编码<TAB>词1 词2`
+///
+/// 制表符是**必须**的分隔符：词与词之间用的是空格，若代码与词之间也用
+/// 空格，`d 的` 就无法与"一个两字词"区分。
+///
+/// 但制表符有个现实问题——**编辑器会把它悄悄换成空格**，而那样整条规则
+/// 会静默失效。所以这里额外接受"**两个及以上空格**"当分隔符：
+/// 单个空格仍然只分隔词，因此语义没有变宽。
+fn split_pin_entry(line: &str) -> Option<(String, Vec<String>)> {
+    let (code, rest) = if let Some(i) = line.find('\t') {
+        (&line[..i], &line[i + 1..])
+    } else {
+        let i = line.find("  ")?;
+        (&line[..i], &line[i..])
+    };
+    let code = code.trim();
+    if code.is_empty() {
+        return None;
+    }
+    let texts: Vec<String> = rest.split_whitespace().map(str::to_owned).collect();
+    if texts.is_empty() {
+        return None;
+    }
+    Some((code.to_owned(), texts))
+}
+
+/// `pin_cand_filter:` 段——置顶规则列表。
+///
+/// 两种写法都收：
+///
+/// ```yaml
+/// pin_cand_filter:
+///   - d<TAB>的            # 上游的形状：字符串 + 制表符分隔
+///   - preedit: d          # 我们的形状：显式两个字段
+///     texts: [的]
+/// ```
+pub fn read_pin_cand(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> PinCandSpec {
+    let mut entries = Vec::new();
+    let Some(seq) = node.as_seq() else {
+        diags.push(
+            Diagnostic::new(path, "`pin_cand_filter` 必须是一个列表")
+                .with_field("pin_cand_filter")
+                .with_entry("每项写 `编码<TAB>词`，或写 `{preedit, texts}`".to_owned()),
+        );
+        return PinCandSpec::default();
+    };
+    for item in seq {
+        // 形状一：映射 `{preedit, texts}`
+        if matches!(item.value, stele_config::Value::Map(_)) {
+            let Some(preedit) = item.get("preedit").and_then(Node::as_str) else {
+                diags.push(
+                    Diagnostic::new(path, "`pin_cand_filter` 的这一项缺少 `preedit`")
+                        .with_field("pin_cand_filter.preedit"),
+                );
+                continue;
+            };
+            let texts: Vec<String> = item
+                .get("texts")
+                .and_then(Node::as_seq)
+                .map(|s| s.iter().filter_map(Node::as_str).collect())
+                .unwrap_or_default();
+            if texts.is_empty() {
+                diags.push(
+                    Diagnostic::new(path, "`pin_cand_filter` 的这一项 `texts` 是空的")
+                        .with_field("pin_cand_filter.texts"),
+                );
+                continue;
+            }
+            entries.push(PinEntry {
+                preedit,
+                texts,
+                at: At::new(item.line as usize),
+            });
+            continue;
+        }
+        // 形状二：字符串（上游）
+        let Some(line) = item.as_str() else {
+            continue;
+        };
+        match split_pin_entry(&line) {
+            Some((preedit, texts)) => entries.push(PinEntry {
+                preedit,
+                texts,
+                at: At::new(item.line as usize),
+            }),
+            None => diags.push(
+                Diagnostic::new(
+                    path,
+                    format!("`pin_cand_filter` 的这一项读不出「编码 + 词」：`{line}`"),
+                )
+                .with_field("pin_cand_filter")
+                .with_entry("写法是 `编码<TAB>词1 词2`（制表符分隔；两个以上空格也行）".to_owned()),
+            ),
+        }
+    }
+    PinCandSpec {
+        entries,
+        at: At::new(node.line as usize),
+    }
+}
+
+/// `reduce_english_filter:` 段——模式 / 位置 / 自定义词表。
+pub fn read_reduce_english(
+    node: &Node,
+    diags: &mut Vec<Diagnostic>,
+    path: &str,
+) -> ReduceEnglishSpec {
+    let d = ReduceEnglishSpec::default();
+    let mode = if let Some(name) = node.get("mode").and_then(Node::as_str) {
+        if let Some(m) = ReduceMode::parse(&name) {
+            m
+        } else {
+            diags.push(
+                Diagnostic::new(
+                    path,
+                    format!("`reduce_english_filter.mode` 不认识 `{name}`"),
+                )
+                .with_field("reduce_english_filter.mode")
+                .with_entry(format!("可选：{}", ReduceMode::all_names().join(" | "))),
+            );
+            d.mode
+        }
+    } else {
+        d.mode
+    };
+    let words = node
+        .get("words")
+        .and_then(Node::as_seq)
+        .map(|s| s.iter().filter_map(Node::as_str).collect())
+        .unwrap_or_default();
+    ReduceEnglishSpec {
+        mode,
+        idx: usize_field(node, "idx", d.idx),
+        words,
+        at: At::new(node.line as usize),
+    }
+}
 
 #[cfg(test)]
 mod tests {

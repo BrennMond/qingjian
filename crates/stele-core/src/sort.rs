@@ -150,6 +150,11 @@ pub fn origin_rank(origin: Origin) -> u8 {
         Origin::SystemWord => 1,
         Origin::Literal => 2,
         Origin::Sentence => 3,
+        // 预测候选住在 `Lane::Predict` 里，那里的排序**不看**来源优先级
+        // （`compare` 只在两个候选都是 `Lane::Input` 时才比 origin）。
+        // 这个位次存在的意义是"给每个变体一个确定的值"，
+        // 而不是"预测在输入通道里排最后"——后者不该发生。
+        Origin::Prediction => 4,
     }
 }
 
@@ -169,6 +174,7 @@ mod tests {
             span: Span::new(0, 1),
             lane,
             kind: crate::candidate::CandidateKind::Normal,
+            key: None,
         }
     }
 

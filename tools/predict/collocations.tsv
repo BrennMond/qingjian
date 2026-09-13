@@ -1,0 +1,43 @@
+# 下一词预测的对比集（P4b / HANDOFF §7.7.2 ①）
+#
+# 「常见搭配排序改善」没有对比集就是一句无法证伪的话。这张表就是那条验收线：
+# 它是**数据**，可以被重新跑一遍（做法照抄 tools/oracle/*.expected.txt）。
+#
+# 格式：每行一条「常见搭配链」，列之间用 TAB 分隔，
+#       内容是**交替的 (编码, 词) 对**，至少两对：
+#
+#     编码1 <TAB> 词1 <TAB> 编码2 <TAB> 词2 [<TAB> 编码3 <TAB> 词3 ...]
+#
+#   · 「编码」是拼音音节，用**空格**分隔（`wei xin`）——测试用一份
+#     按本表生成的方案来装载它，因此编码是方案数据，不是内核知识（D20）。
+#   · 「词」是要上屏的文本。
+#
+# 断言（crates/stele-memory/tests/predict_next.rs）：
+#   把链的**前面那些词**依次上屏之后，链的**最后一个词**必须出现在
+#   预测通道（lane=Predict）的**第 1 位**。
+#
+# 两类行各自守一件事：
+#   · 两对的行（bigram）：看"上一个词"。
+#   · 三对的行（trigram）：看"上两个词"——更具体的搭配必须压倒更泛的。
+#
+# 每一行用**各自独立的一份记忆**跑，因此行与行之间不会互相污染——
+# 否则"今天 → 天气"会被另一行的"今天 → 微信"悄悄顶掉，
+# 而那条断言就会变成对**处理顺序**的隐式依赖（不好查，也不是我们要测的）。
+#
+# 加一行 = 加一条用例。跑：cargo test -p stele-memory --test predict_next
+
+wei xin	微信	peng you quan	朋友圈
+jin tian	今天	tian qi	天气
+ming tian	明天	shang ban	上班
+dian nao	电脑	ping mu	屏幕
+shou ji	手机	dian liang	电量
+xia yu	下雨	dai san	带伞
+wan shang	晚上	chi fan	吃饭
+zao shang	早上	qi chuang	起床
+gong zuo	工作	xiao lv	效率
+xue xi	学习	jin bu	进步
+ni hao	你好	shi jie	世界
+zhong guo	中国	ren min	人民
+jin tian	今天	wei xin	微信	peng you quan	朋友圈
+ming tian	明天	zao shang	早上	qi chuang	起床
+zhong guo	中国	ren min	人民	gong he guo	共和国

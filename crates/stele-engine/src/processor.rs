@@ -616,8 +616,10 @@ impl stele_core::Processor for KeyBinder {
                 crate::spec::WhenPredicate::Composing => state.composition.is_active(),
                 crate::spec::WhenPredicate::Paging => state.candidate_pages > 1,
                 crate::spec::WhenPredicate::HasMenu => state.candidate_count > 0,
-                // 下一词预测是 P4b 的内容；现在永远为假（见 `WhenPredicate`）。
-                crate::spec::WhenPredicate::Predicting => false,
+                // 下一词预测通道里有没有候选（P4b）。
+                // `predict_count` 由流水线在 `compose` 里写回——处理器看不见
+                // 候选列表，所以这是它唯一能问的地方（见 `SessionState`）。
+                crate::spec::WhenPredicate::Predicting => state.predict_count > 0,
             };
             if !ok || !b.accept.iter().any(|c| c.matches(key)) {
                 continue;
@@ -723,7 +725,18 @@ impl stele_core::Processor for Selector {
             KeyCode::Named(NamedKey::Space) => Some(PendingCommit::keyboard(0, Trigger::Space)),
             KeyCode::Named(NamedKey::Enter) => Some(PendingCommit::keyboard(0, Trigger::Enter)),
             KeyCode::Named(NamedKey::Digit(d)) if (1..=9).contains(&d) => Some(
-                PendingCommit::keyboard(usize::from(d - 1), Trigger::Explicit),
+                // **数字键数的是"第几个输入候选"，不是"列表第几项"**（P4b）。
+                //
+                // 预测候选插在列表中间（`docs/engine-design.md` §4.3.2 的默认
+                // 位置是第 1 名之后），而它们**不参与盲选**（§4.3.1）。
+                // 若这里直接用 `d - 1`，插进来的预测会把后面所有输入候选的
+                // 编号整体推后一位：用户按 2，命中的却是原来的第 1 名之后的
+                // 那一条（而且在预测上时还会被会话拒掉，表现为"按了没反应"）。
+                // 换算一次之后，输入候选的编号**永远等于它的名次**。
+                PendingCommit::keyboard(
+                    state.selectable_index(usize::from(d - 1)),
+                    Trigger::Explicit,
+                ),
             ),
             _ => None,
         };
@@ -1061,5 +1074,52 @@ mod tests {
         // 反引号 → 切开关。
         assert_eq!(kb.process(&mut s, &Key::ch('`')), ProcessResult::Accepted);
         assert!(s.options.get("ascii_mode"));
+    }
+
+    #[test]
+    fn selector_counts_only_input_candidates() {
+        // 已渲染列表：`[输入#1, 预测, 预测, 输入#2, 输入#3]`。
+        // 数字键数的是**输入候选的名次**，因此：
+        //   1 → 下标 0（输入#1）
+        //   2 → 下标 3（输入#2，跳过中间两条预测）
+        //   3 → 下标 4（输入#3）
+        // 少了这层换算，用户按 2 会命中一条预测，而预测候选不参与盲选
+        // ——表现为"按了没反应"，正是 §4.3.1 要防的那种破坏。
+        let mut s = state();
+        s.composition.input = "ni".into();
+        s.predict_start = 1;
+        s.predict_count = 2;
+        let mut sel = Selector;
+        let digit = |d: u8| Key::press(KeyCode::Named(NamedKey::Digit(d)), Modifiers::NONE);
+
+        assert_eq!(sel.process(&mut s, &digit(1)), ProcessResult::Accepted);
+        assert_eq!(
+            s.pending_commit,
+            Some(PendingCommit::keyboard(0, Trigger::Explicit))
+        );
+        assert_eq!(sel.process(&mut s, &digit(2)), ProcessResult::Accepted);
+        assert_eq!(
+            s.pending_commit,
+            Some(PendingCommit::keyboard(3, Trigger::Explicit))
+        );
+        assert_eq!(sel.process(&mut s, &digit(3)), ProcessResult::Accepted);
+        assert_eq!(
+            s.pending_commit,
+            Some(PendingCommit::keyboard(4, Trigger::Explicit))
+        );
+    }
+
+    #[test]
+    fn selector_is_unchanged_without_predictions() {
+        // 没有预测块时，数字键就是"列表第 n 项"——既有行为一字不变。
+        let mut s = state();
+        s.composition.input = "ni".into();
+        let mut sel = Selector;
+        let digit = Key::press(KeyCode::Named(NamedKey::Digit(3)), Modifiers::NONE);
+        assert_eq!(sel.process(&mut s, &digit), ProcessResult::Accepted);
+        assert_eq!(
+            s.pending_commit,
+            Some(PendingCommit::keyboard(2, Trigger::Explicit))
+        );
     }
 }

@@ -40,6 +40,12 @@ Stele-IME（石经）命令行调试前端
       --check           运行内核自检（不变式）
       --dump-config     打印合并后的完整方案，并标注每个值的来源
       --components      打印零件注册表（认识了什么、缺什么）
+      --userdb <路径>   打开用户记忆（**默认关闭**：给了它才学、才记）
+      --predict         打开下一词预测（P4b；**默认关闭**，且需要 `--userdb`）
+      --embed           打开本地向量偏好记忆（P5/D46；**默认关闭**，需要 `--userdb`）
+      --commit-seq=<甲,乙> 依次上屏每一段按键（验证需要多个上下文的功能）
+      --dump-memory     打印用户记忆里学到的全部条目（含预测表）
+      --select=<n>      上屏第 n 个候选（默认按空格选第 1 个；视为明确点选）
       --option=<名>     打开方案里的一个开关（`--option=emoji`）
       --option=<名>=off 关掉它（`--option=traditionalization=off`）
 
@@ -51,10 +57,25 @@ Stele-IME（石经）命令行调试前端
   stele --scheme-dir ./my-schemes --list    装载自己的方案目录
   stele --scheme-dir schemes/stele-default --option=emoji weixiao
                                             开 emoji 开关，看候选里有没有 😄
+  stele --userdb /tmp/u.mem --select=3 shi  把第 3 个候选上屏并**记住**
+  stele --userdb /tmp/u.mem --dump-memory   看记住了什么（两张表）
+  stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem \
+      --predict --commit-seq=jintian,tianqi,jintian
+                                            连续上屏，看「今天 → 天气」的预测
 
 说明：
-  本程序是开发期的调试前端。真实的输入法前端是 platforms/windows（TSF）
-  与 platforms/android（IME）。
+  · 用户记忆**默认关闭**：不给 `--userdb` 就没有记忆，于是「刚克隆下来」
+    的行为逐字节可复现（产品决定，见 HANDOFF §7.6.2 第 6 步）。
+  · **下一词预测也默认关闭**，而且要 `--userdb` 与 `--predict` 同时给：
+    它消费的是用户记忆里的第二张表（上下文 n-gram），
+    没有记忆就没有数据（HANDOFF §7.7.3 第 6 步的产品决定）。
+  · **本地向量偏好记忆同样默认关闭**（D46 第①条）。它不上网、不加载外部模型，
+    只用 `--userdb` 里的本地历史学出一组整数向量（`docs/embed-design.md`）；
+    内存上限见那一页与称重台的报告。
+  · `--userdb` 指向的文件在**按键路径上一次都不碰**——只有退出时才落盘。
+    这条红线有测试：`crates/stele-memory/tests/no_disk_io_on_keypath.rs`。
+  · 本程序是开发期的调试前端。真实的输入法前端是 platforms/windows（TSF）
+    与 platforms/android（IME）。
 ";
 
 fn main() -> ExitCode {
@@ -113,13 +134,128 @@ fn main() -> ExitCode {
         }
     };
     let defs: Vec<_> = loaded.iter().map(|l| l.def.for_engine()).collect();
-    let engine = match stele_engine::EngineImpl::new(&defs) {
+
+    // ── 用户记忆（P4a）─────────────────────────────────────────────────
+    //
+    // **默认关闭**：不给 `--userdb` 就没有记忆。这是产品决定（HANDOFF
+    // §7.6.2 第 6 步）：刚克隆下来的行为必须**逐字节可复现**，
+    // 而记忆会让"同一串键"在两个不同的机器上给出不同的候选顺序。
+    //
+    // 给了路径才挂重排器、才消费学习事件——于是"记忆"这件事在默认路径上
+    // **完全不存在**，而不是"存在但空着"。
+    let userdb = args
+        .iter()
+        .position(|a| a == "--userdb")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    // 下一词预测：**独立的开关**，默认关（见下面的服务装配处）。
+    let predict = args.iter().any(|a| a == "--predict");
+    // 本地向量偏好记忆（P5 / D46）：**独立的开关，默认关**。
+    let embed = args.iter().any(|a| a == "--embed");
+    let clock: std::sync::Arc<dyn stele_core::Clock> =
+        std::sync::Arc::new(stele_memory::SystemClock::new());
+    let memory: Option<std::sync::Arc<stele_memory::FileMemory>> = userdb.as_ref().map(|p| {
+        // 坏文件 = 降级成"没有记忆" + 一行警告，绝不阻止启动（D26）。
+        let (m, warn) = stele_memory::FileMemory::open_or_degrade(
+            p,
+            std::sync::Arc::clone(&clock),
+            stele_memory::DEFAULT_CAPACITY,
+        );
+        if let Some(w) = warn {
+            eprintln!("⚠ {w}");
+        }
+        std::sync::Arc::new(m)
+    });
+    let services = {
+        let base = stele_core::Services::new(std::sync::Arc::clone(&clock))
+            // **真随机**（`uuid_translator` 用）。`Services::new` 的默认值是
+            // 确定性的，那是给测试的；装出来的输入法每次生成同一个 UUID
+            // 就是一个真缺陷，所以生产装配处必须显式换掉。
+            .with_random(std::sync::Arc::new(|| {
+                Box::new(stele_core::SystemRandom::new())
+            }));
+        let base = match &memory {
+            Some(m) => base.with_ranker(std::sync::Arc::new(stele_memory::MemoryRanker::new(
+                std::sync::Arc::clone(m) as std::sync::Arc<dyn stele_core::MemoryStore>,
+            ))),
+            None => base,
+        };
+        // ── 下一词预测（P4b）──
+        //
+        // **默认关**，而且与记忆是**两个开关**：给了 `--userdb` 只代表
+        // "记下来"，预测要再加 `--predict`。理由是这两件事回答两个不同的问题
+        // （"这个编码想要哪个词" vs "你接下来想打什么"），而后者会改变
+        // 候选列表的形状——照 P4a 的先例，默认路径必须逐字节可复现。
+        //
+        // 没有记忆就没有预测数据：`--predict` 单独给出时只警告，不静默忽略。
+        let base = match (predict, &memory) {
+            (true, Some(m)) => base.with_prediction(
+                std::sync::Arc::clone(m) as std::sync::Arc<dyn stele_core::MemoryStore>
+            ),
+            (true, None) => {
+                eprintln!("⚠ --predict 需要 --userdb <路径>：预测数据来自用户记忆，没有它无处可查");
+                base
+            }
+            (false, _) => base,
+        };
+
+        // ── 本地向量偏好记忆（P5 · D46）──
+        //
+        // **默认关**（D46 的第①条），而且要 `--userdb`：向量是从**本地历史**
+        // 学出来的，没有历史就没有向量。它接在记忆重排器**之后**，
+        // 于是它的作用是在"精确历史没给出信号"的地方打破僵局。
+        match (embed, &memory) {
+            (true, Some(m)) => {
+                // 学习材料就是预测表那批 `(上下文 → 下一个词, 次数)`——
+                // 它本来就是"本地历史与偏好"的计数形式（`stele-memory`）。
+                let samples = m
+                    .prediction_snapshot()
+                    .into_iter()
+                    .map(|e| (e.context, e.text, e.count));
+                let trained =
+                    stele_embed::VectorMemory::train(samples, stele_embed::VectorConfig::default());
+                if let Some(model) = trained {
+                    // **D46 的第②条**：把上限打出来（称重台那边也打）。
+                    eprintln!(
+                        "· 本地向量记忆：{} 个词 × {} 维（{} KiB，最多给前 {} 名加 {} 毫对数）",
+                        model.len(),
+                        model.dim(),
+                        model.bytes() / 1024,
+                        stele_embed::EmbedRanker::DEFAULT_MAX_BOOSTED,
+                        stele_embed::EmbedRanker::DEFAULT_LIMIT_ML,
+                    );
+                    base.with_ranker(std::sync::Arc::new(stele_embed::EmbedRanker::new(
+                        std::sync::Arc::new(model),
+                    )))
+                } else {
+                    eprintln!("· 本地向量记忆：历史还是空的，本次不加向量分");
+                    base
+                }
+            }
+            (true, None) => {
+                eprintln!("⚠ --embed 需要 --userdb <路径>：向量由本地历史学出来，没有历史无从谈起");
+                base
+            }
+            (false, _) => base,
+        }
+    };
+    let engine = match stele_engine::EngineImpl::with_services(&defs, services) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("编译默认方案失败：{e}");
             return ExitCode::FAILURE;
         }
     };
+    if let Some(m) = &memory {
+        if let Some(p) = m.path() {
+            eprintln!(
+                "· 用户记忆已打开：{}（已装载 {} 条，上限 {} 条）",
+                p.display(),
+                m.len(),
+                m.capacity()
+            );
+        }
+    }
 
     // **降级警告**：方案装上了，但有零件没生效（典型是外部数据没取回）。
     //
@@ -144,6 +280,7 @@ fn main() -> ExitCode {
     let schema_pos = args.iter().position(|a| a == "--schema");
     let schema_id = schema_pos.and_then(|i| args.get(i + 1)).cloned();
     let dir_pos = args.iter().position(|a| a == "--scheme-dir");
+    let userdb_pos = args.iter().position(|a| a == "--userdb");
     // `--candidates`（按页，默认）或 `--candidates=N` / `--candidates=all`。
     //
     // **为什么要有 `=N`**：候选是分页显示的（默认每页 9 个），而
@@ -184,7 +321,7 @@ fn main() -> ExitCode {
         .iter()
         .enumerate()
         .filter(|(i, a)| {
-            let is_option_value = [schema_pos, dir_pos]
+            let is_option_value = [schema_pos, dir_pos, userdb_pos]
                 .into_iter()
                 .flatten()
                 .any(|p| *i == p + 1);
@@ -195,6 +332,68 @@ fn main() -> ExitCode {
 
     if args.iter().any(|a| a == "--dump-config") {
         return dump_config(&engine, &loaded, schema_id.as_deref());
+    }
+
+    // `--dump-memory`：把记忆里学到的条目摊开。
+    //
+    // 为什么值得有一条命令：这是"我到底记住了什么"唯一可回答的地方，
+    // 而 `--dump-config` 已经证明了这种"可观察出口"的价值
+    // （"装进来了"不等于"生效了"，见 HANDOFF §3）。
+    if args.iter().any(|a| a == "--dump-memory") {
+        let Some(m) = &memory else {
+            println!("# 用户记忆未打开（没有给 `--userdb <路径>`）");
+            return ExitCode::SUCCESS;
+        };
+        let snapshot = m.snapshot();
+        println!(
+            "# 用户记忆：{} 条（上限 {}）{}",
+            snapshot.len(),
+            m.capacity(),
+            m.path().map_or_else(
+                || "，只在内存里".to_owned(),
+                |p| format!("，文件 {}", p.display()),
+            )
+        );
+        println!(
+            "# {:<24} {:<12} {:>6} {:>9}  最后使用",
+            "输入(键)", "词", "次数", "加成"
+        );
+        for e in &snapshot {
+            println!(
+                "  {:<24} {:<12} {:>6} {:>9}  {}",
+                e.input,
+                e.text,
+                e.count,
+                e.bonus.as_milli_log(),
+                e.last_used
+            );
+        }
+
+        // **预测表单独打**（P4b）：它的键是上下文，与上面那张表的键空间
+        // 完全不同（`docs/engine-design.md` §4.3）。不分开打的话，
+        // "预测怎么不生效"这个问题只能靠猜——而两张表混在一起看
+        // 恰好会让人以为是同一张表。
+        let preds = m.prediction_snapshot();
+        println!(
+            "\n# 预测表（下一词，P4b）：{} 条（上限 {}）",
+            preds.len(),
+            m.prediction_capacity()
+        );
+        println!(
+            "# {:<20} {:<12} {:>6} {:>9}  最后使用",
+            "上下文", "下一个词", "次数", "加成"
+        );
+        for e in &preds {
+            println!(
+                "  {:<20} {:<12} {:>6} {:>9}  {}",
+                e.context.join(" "),
+                e.text,
+                e.count,
+                e.bonus.as_milli_log(),
+                e.last_used
+            );
+        }
+        return ExitCode::SUCCESS;
     }
 
     let mut session = engine.create_session();
@@ -210,6 +409,45 @@ fn main() -> ExitCode {
         session.set_option(name, *on);
     }
 
+    // ── `--commit-seq=甲,乙,丙`：连续上屏，用来手工验证**需要多个上下文**
+    //    才成立的功能（下一词预测是第一个这样的功能）──
+    //
+    // 为什么需要它：**候选与上下文都是会话状态**，而一次 CLI 调用只在末尾
+    // 上屏一次。于是"今天 → 天气"这种跨两次上屏的搭配在命令行上
+    // **根本无法产生**——预置好的记忆文件也帮不上忙，因为
+    // `Commit.context` 每次都还是空的。这条开关把"多打几个词"变成一句话。
+    if let Some(seq) = args.iter().find_map(|a| a.strip_prefix("--commit-seq=")) {
+        for part in seq.split(',').filter(|s| !s.is_empty()) {
+            for c in part.chars() {
+                session.process_key(Key::ch(c));
+                feed_memory(&mut session, memory.as_deref());
+            }
+            let outcome = session.select(0, stele_core::SelectionSource::Keyboard);
+            let events = feed_memory(&mut session, memory.as_deref());
+            match outcome {
+                Outcome::Committed(commit) => {
+                    println!("{}", commit.text);
+                    print_learned(&events);
+                }
+                other => {
+                    eprintln!("未能上屏（{part:?}）：{other:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        if predict {
+            print_predictions(&*session);
+        }
+        if let Some(m) = &memory {
+            match m.flush() {
+                Ok(true) => eprintln!("· 用户记忆已落盘：{} 条", m.len()),
+                Ok(false) => {}
+                Err(e) => eprintln!("⚠ 用户记忆落盘失败（本次学习没有保存）：{e}"),
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
     if keys.is_empty() {
         print!("{HELP}");
         return ExitCode::SUCCESS;
@@ -218,6 +456,12 @@ fn main() -> ExitCode {
     // ── 按键 ──
     for c in keys.chars() {
         session.process_key(Key::ch(c));
+        // **每个按键之后**都要把事件取干净并喂给记忆。
+        //
+        // 漏掉这一步的症状是"学了没记住"，而且**不报错**——
+        // HANDOFF §7.6.3 把这条列为 P4a 最容易漏的坑。把它写在这里而不是
+        // 只写在文档里，是因为这一行是"接线真的被走到"的唯一证据。
+        feed_memory(&mut session, memory.as_deref());
     }
 
     if show_candidates {
@@ -248,30 +492,36 @@ fn main() -> ExitCode {
     }
 
     // ── 提交 ──
-    let space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE);
-    match session.process_key(space) {
+    //
+    // 默认按空格选第 1 个；`--select=<n>` 选第 n 个（1 起数）。
+    // 后者是**验证用户记忆的唯一手动手段**：不选中一个"不是第一个"的候选，
+    // 就永远观察不到"学过的词下次优先"。
+    let selected: Option<usize> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--select="))
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1);
+    let outcome = if let Some(n) = selected {
+        // `--select=<n>` 是命令行上的**明确选择**，因此报
+        // `SelectionSource::Pointer`：预测候选只允许被明确点选
+        // （`docs/engine-design.md` §4.3.3），而这条命令正是验证
+        // "预测候选能被选上并学习"的唯一手动手段。
+        session.select(n - 1, stele_core::SelectionSource::Pointer)
+    } else {
+        let space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE);
+        session.process_key(space)
+    };
+    let events = feed_memory(&mut session, memory.as_deref());
+
+    let code = match outcome {
         Outcome::Committed(commit) => {
             println!("{}", commit.text);
-
-            let mut events = Vec::new();
-            session.drain_events(&mut events);
-            for e in &events {
-                if let stele_core::Event::Learned {
-                    input, text, attr, ..
-                } = e
-                {
-                    eprintln!(
-                        "  [学习] 输入 {:?} → {:?}（属性 {:?}{}）",
-                        input,
-                        text,
-                        attr,
-                        if attr.is_derived() {
-                            "，落库前必须先规范化成规范编码"
-                        } else {
-                            ""
-                        }
-                    );
-                }
+            print_learned(&events);
+            // **上屏之后立刻看预测**（P4b）：会话在 `finish_commit` 里
+            // 已经重算过一次，因此这里读到的是"以刚上屏的词为上下文"的预测。
+            // 这条输出是 CLI 上唯一能看见「今天 → 天气」的地方。
+            if predict {
+                print_predictions(&*session);
             }
             ExitCode::SUCCESS
         }
@@ -279,6 +529,66 @@ fn main() -> ExitCode {
             eprintln!("未能上屏：{other:?}");
             ExitCode::FAILURE
         }
+    };
+
+    // 落盘**只在这里**发生——按键路径上一次 I/O 都没有。
+    if let Some(m) = &memory {
+        match m.flush() {
+            Ok(true) => eprintln!("· 用户记忆已落盘：{} 条", m.len()),
+            Ok(false) => {}
+            Err(e) => eprintln!("⚠ 用户记忆落盘失败（本次学习没有保存）：{e}"),
+        }
+    }
+    code
+}
+
+/// 把会话事件取干净并喂给记忆，返回这一批事件的副本（供打印诊断）。
+///
+/// # 为什么事件要"每个按键之后"取，而不是"退出时一次"
+///
+/// `drain_events` 是**读取即清空**的（与会话的候选列表不同）。攒着不取，
+/// 事件会一直堆在会话里；而 P4a 的学习发生在**每次上屏**时，
+/// 所以每键取一次是唯一不会漏的时机。
+fn feed_memory(
+    session: &mut Box<dyn stele_core::Session + Send>,
+    memory: Option<&stele_memory::FileMemory>,
+) -> Vec<stele_core::Event> {
+    let mut events = Vec::new();
+    session.drain_events(&mut events);
+    if let Some(m) = memory {
+        stele_memory::apply_events(m, &events);
+    }
+    events
+}
+
+/// 把一批事件里的学习记录打出来（两种上屏路径共用）。
+fn print_learned(events: &[stele_core::Event]) {
+    for e in events {
+        if let stele_core::Event::Learned {
+            input, text, attr, ..
+        } = e
+        {
+            eprintln!("  [学习] 输入 {input:?} → {text:?}（属性 {attr:?}）");
+        }
+    }
+}
+
+/// 把当前会话的**预测候选**打出来（P4b）。
+///
+/// 空列表也说话：**"没有预测"与"预测没接上"是两件不同的事**，
+/// 而命令行上唯一的区别就是这行输出——静默什么都不打的话，
+/// 使用者分不清"还没学过"与"功能坏了"。
+fn print_predictions(session: &(dyn stele_core::Session + Send)) {
+    let preds: Vec<String> = session
+        .candidates()
+        .iter()
+        .filter(|c| c.lane == stele_core::Lane::Predict)
+        .map(|c| format!("{}（{}）", c.text, c.score.as_milli_log()))
+        .collect();
+    if preds.is_empty() {
+        eprintln!("  [预测] （这个上下文还没有学过的搭配）");
+    } else {
+        eprintln!("  [预测] 接下来可能打：{}", preds.join("、"));
     }
 }
 
@@ -534,6 +844,7 @@ fn self_check() -> ExitCode {
         span: Span::new(0, 1),
         lane: Lane::Input,
         kind: stele_core::CandidateKind::Normal,
+        key: None,
     };
     // 输入顺序特意打乱，让平局规则必须真的起作用。
     let build = || {
@@ -587,8 +898,86 @@ fn self_check() -> ExitCode {
         failures.push(e);
     }
 
+    // 不变式 8（P4a 新增）：用户记忆的量纲、上界与**键可复现**。
+    //
+    // 为什么它值得进 `--check`：G10 那颗地雷的症状（"学过的词有时出现
+    // 有时不出现"）没有任何报错，只有"写进去的键查得回来"这条性质能证伪它。
+    {
+        use stele_core::{Commit, FrozenClock, MemoryStore, Origin, SpellingAttr, Trigger};
+        use stele_memory::{bonus_ml, normalize_key, FileMemory, MAX_BONUS_ML};
+
+        if bonus_ml(0) != 0 {
+            failures.push("记忆：零频次的加成不是零".into());
+        }
+        if bonus_ml(1_000_000) > MAX_BONUS_ML {
+            failures.push("记忆：加成越过了声明的上界".into());
+        }
+        let mut prev = -1;
+        for f in [0_u64, 1_000, 10_000, 1_000_000] {
+            let ml = bonus_ml(f);
+            if ml < prev {
+                failures.push("记忆：加成不随频次单调".into());
+                break;
+            }
+            prev = ml;
+        }
+        if normalize_key("ni'hao") != "nihao" || normalize_key("NI HAO") != "nihao" {
+            failures.push("记忆：键的规范化没有去掉分隔符 / 统一大小写".into());
+        }
+
+        let clock = std::sync::Arc::new(FrozenClock {
+            secs: 1_767_225_600,
+            ms: 0,
+            offset_secs: 0,
+        });
+        let memory = FileMemory::in_memory(clock, 64);
+        memory.record(&Commit {
+            text: "你好".into(),
+            input: "ni'hao".into(),
+            context: Vec::new(),
+            origin: Origin::SystemWord,
+            attr: SpellingAttr::NORMAL,
+            lane: stele_core::Lane::Input,
+            trigger: Trigger::Space,
+            // **故意不给 key**：这条自检要证的正是"拿不到编码时的兜底
+            // 路径也不会写出检索不到的数据"（G10 那颗地雷）。
+            key: None,
+        });
+        if memory.lookup("nihao").is_empty() {
+            failures.push("记忆：record 之后 lookup 查不到（G10 的无效数据）".into());
+        }
+
+        // ② 引擎给键时（D42 的真实形态）：键**不被加工**，
+        //    而且它与拼写键是两把不同的键——编码里的 `'` 是分隔符，
+        //    不是可以顺手去掉的装饰。
+        let keyed = FileMemory::in_memory(
+            std::sync::Arc::new(FrozenClock {
+                secs: 1_767_225_600,
+                ms: 0,
+                offset_secs: 0,
+            }),
+            64,
+        );
+        keyed.record(&Commit {
+            text: "你好".into(),
+            input: "nhao".into(),
+            context: Vec::new(),
+            origin: Origin::SystemWord,
+            attr: SpellingAttr::ABBREV,
+            lane: stele_core::Lane::Input,
+            trigger: Trigger::Space,
+            key: Some("ni'hao".into()),
+        });
+        if keyed.lookup("ni'hao").is_empty() {
+            failures.push("记忆：规范编码键 record 之后查不到".into());
+        }
+        if !keyed.lookup("nihao").is_empty() {
+            failures.push("记忆：编码键被当成拼写规范化了（两把键串了）".into());
+        }
+    }
+
     if failures.is_empty() {
-        println!("内核自检通过：7 组不变式全部成立。");
+        println!("内核自检通过：8 组不变式全部成立。");
         ExitCode::SUCCESS
     } else {
         eprintln!("内核自检失败：{}", failures.len());
@@ -600,10 +989,31 @@ fn self_check() -> ExitCode {
 }
 
 /// 端到端冒烟：用**同一个引擎**跑两个方案，覆盖两族翻译器。
+///
+/// # 它曾经写死过方案 id，然后静默失效了很久
+///
+/// 这里原本写的是 `run("pinyin", …)`。P3.5 把内嵌演示方案的 id 改成
+/// `pinyin-demo`（见 `z-pinyin-demo.schema.yaml` 顶部的说明），
+/// **漏改了这一处**——于是自检从那时起就一直在报"方案不存在：pinyin"。
+///
+/// 教训与铁律第 5 条同形：**"接线在、但没被走到"**。修法不是把字符串改对，
+/// 而是**从实际装载到的方案里取 id**：这样重命名再也不会悄悄打断自检。
 fn engine_smoke_test() -> Result<(), String> {
+    use stele_engine::scheme::TranslatorKind;
+
     let defs = stele_schemes::all().map_err(|e| format!("默认方案装载失败：{e}"))?;
     let engine =
         stele_engine::EngineImpl::new(&defs).map_err(|e| format!("默认方案编译失败：{e}"))?;
+
+    // 按**翻译器族**挑方案，而不是按写死的名字。
+    let pick = |kind: TranslatorKind, what: &str| -> Result<String, String> {
+        defs.iter()
+            .find(|d| d.translator == kind)
+            .map(|d| d.info.schema_id.clone())
+            .ok_or_else(|| format!("内置方案里没有任何{what}族的方案"))
+    };
+    let spelling = pick(TranslatorKind::SpellingGraph, "拼写图")?;
+    let exact = pick(TranslatorKind::ExactCode, "精确编码")?;
 
     let run = |schema: &str, keys: &str| -> Result<String, String> {
         let mut s = engine.create_session();
@@ -620,19 +1030,26 @@ fn engine_smoke_test() -> Result<(), String> {
     };
 
     // ① 拼写图族：规范拼写。
-    let a = run("pinyin", "nihao")?;
+    let a = run(&spelling, "nihao")?;
     if a != "你好" {
-        return Err(format!("pinyin-demo/nihao 应当上屏「你好」，得到「{a}」"));
+        return Err(format!("{spelling}/nihao 应当上屏「你好」，得到「{a}」"));
     }
     // ② 拼写图族：变体拼写（简拼）。
-    let b = run("pinyin", "nh")?;
+    //
+    // **为什么是 `nhao` 而不是 `nh`**：简拼的边界在 P3.5 就写清楚了
+    // （HANDOFF §7 第 6 条与 §5 第 28 条）——拼写展开是带硬上限的深搜，
+    // `nh` 这种"每个音节只留首字母"的极端缩写要和大量词争名额，
+    // 于是 `[ni][hao]` 这条**完整**切分不一定被生成（实测：得到字面量）。
+    // 自检要守的是"变体拼写确实能上屏"这条不变式，而不是某一个缩写串；
+    // 用 `nhao` 表达它，才不会把一条**已知边界**当成回归。
+    let b = run(&spelling, "nhao")?;
     if b != "你好" {
-        return Err(format!("pinyin-demo/nh 应当上屏「你好」，得到「{b}」"));
+        return Err(format!("{spelling}/nhao 应当上屏「你好」，得到「{b}」"));
     }
     // ③ 精确编码族：完全不同的输入法，同一个引擎。
-    let c = run("shape", "ab")?;
+    let c = run(&exact, "ab")?;
     if c != "十" {
-        return Err(format!("shape-demo/ab 应当上屏「十」，得到「{c}」"));
+        return Err(format!("{exact}/ab 应当上屏「十」，得到「{c}」"));
     }
     Ok(())
 }

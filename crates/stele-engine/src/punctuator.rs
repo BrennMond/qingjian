@@ -245,6 +245,7 @@ impl PunctTranslator {
             span,
             lane: Lane::Input,
             kind: stele_core::CandidateKind::Punct,
+            key: None,
         });
     }
 }
@@ -294,6 +295,7 @@ impl Translator for PunctTranslator {
                         span,
                         lane: Lane::Input,
                         kind: stele_core::CandidateKind::Punct,
+                        key: None,
                     });
                 }
                 return;

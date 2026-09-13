@@ -18,10 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: 内核里不得有输入法专属词汇（D20）
         run: bash scripts/verify-no-ime-vocab.sh
-      - name: stele-core 必须零依赖（D9）
+      - name: 内核必须零依赖（D9）
         run: bash scripts/verify-zero-deps.sh
       - name: 内核与方案数据必须分离（D20/D24）
         run: bash scripts/verify-no-scheme-data.sh
+      - name: 依赖许可审查（PLAN §4.8 / D9）
+        run: bash scripts/verify-deps.sh
 
   # ── 格式、lint、测试 ──────────────────────────────────────────────
   test:
