@@ -41,11 +41,57 @@
 //!
 //! # 匹配方式
 //!
-//! 回溯法（continuation-passing），不是自动机。对拼写规则这种**短模式、
-//! 短文本**的场景，回溯法更简单也更容易读；不存在指数爆炸的风险面
-//! （模式是方案作者写死的，输入是一个音节，几个字符）。
+//! 回溯法（continuation-passing），不是自动机。
+//!
+//! # ⚠️ 复杂度与预算（P0-H 的教训）
+//!
+//! 旧版本的这一节写着「不存在指数爆炸的风险面（模式是方案作者写死的，
+//! 输入是一个音节，几个字符）」。**那句话是错的，而且被实测证伪**：
+//!
+//! | 模式 | 输入 | 实测 |
+//! | --- | --- | --- |
+//! | `^(a+)+$` | 20 个 `a` + `b` | 约 54 ms |
+//! | 同上 | 24 个 | 约 848 ms |
+//! | 同上 | 28 个 | 3 秒超时（审计的中止线） |
+//!
+//! 问题不在"模式是谁写的"，而在**同一份实现也被 `recognizer` 用**——
+//! 那里的输入是用户敲的任意长度字符串，不是音节。注释里的假设
+//! 与真实的调用点不一致，这就是缺陷本身。
+//!
+//! 现在有三道闸：
+//!
+//! 1. **编译期**拒绝"重复套重复"（[`RegexError::NestedRepeat`]）——
+//!    指数爆炸的经典形态。这是保守规则：真实方案的规则里没有这种写法。
+//! 2. **运行期**步数与深度预算（[`Regex::with_step_budget`]）：超限时
+//!    **当作不匹配**并置位，绝不无声地跑上三秒。
+//! 3. 递归深度上限，避免栈溢出。
+//!
+//! 第 1、2 条是**缓解**，不是终点：最终的替换是"保证多项式时间的
+//! 自动机（NFA/DFA）或经审计的正则引擎"，设计见
+//! `docs/regex-engine-design.md`。在那一页落地之前，这道闸必须留着。
 
 use std::collections::BTreeMap;
+
+/// 一次匹配默认允许的回溯步数。
+///
+/// 取值依据：真实方案的规则在短音节上只需个位数到几十步；
+/// `recognizer` 的输入最长也就是一条输入行（几十个字符）。
+/// `100_000` 比真实需要宽三到四个数量级，同时把最坏耗时锁在毫秒级。
+pub const DEFAULT_STEP_BUDGET: u64 = 100_000;
+
+/// 递归深度上限。
+///
+/// # 它为什么必须存在，以及它的代价
+///
+/// 回溯匹配的"迭代"是靠递归实现的：`a+` 每多吃一个字符就深一层。
+/// 没有上限时，一条 20 万字符的输入会在触发步数预算**之前**先把栈打穿
+/// （实测：`^a+$` 对 20 万个 `a` 直接 SIGABRT）。
+///
+/// 代价是明确的：**超过这个长度的输入不会被量词匹配上**。
+/// 对 `recognizer` 的前缀模式（`^uU[a-f0-9]+$` 这类）这不构成问题——
+/// 真实输入是几个到几十个字符。等到把回溯引擎换成自动机
+/// （见 `docs/regex-engine-design.md`），这条限制会一起消失。
+const MAX_DEPTH: u32 = 1024;
 
 /// 编译后的正则。
 #[derive(Clone, Debug)]
@@ -55,6 +101,8 @@ pub struct Regex {
     pub groups: usize,
     /// 原模式（诊断用）。
     pub source: String,
+    /// 一次匹配的步数预算（见模块文档的复杂度一节）。
+    pub step_budget: u64,
 }
 
 /// 编译错误。
@@ -69,6 +117,8 @@ pub enum RegexError {
     DanglingQuantifier,
     /// 语法本身不支持。
     Unsupported(String),
+    /// **重复套重复**：指数回溯的经典形态。
+    NestedRepeat,
     /// 模式为空。
     Empty,
 }
@@ -83,6 +133,14 @@ impl std::fmt::Display for RegexError {
                 f,
                 "不支持的正则语法：{m}。本引擎只实现拼写代数用得上的子集——\
                  遇到不支持的语法一律报错，而不是'大概能跑'"
+            ),
+            Self::NestedRepeat => write!(
+                f,
+                "不支持**重复套重复**（例如 `(a+)+`、`(ab*)*`）：这种写法会让\
+                 回溯匹配的耗时随输入长度指数增长（实测 `^(a+)+$` 对 24 个 a \
+                 要 848 ms，28 个超过 3 秒）。同一份实现也被 `recognizer` 用，\
+                 而那里的输入长度由用户决定。请把它改写成不含嵌套量词的形式，\
+                 或拆成多条规则。"
             ),
             Self::Empty => write!(f, "空模式"),
         }
@@ -153,11 +211,49 @@ impl Regex {
             // 只剩一个 `)` 会出现这种情况。
             return Err(RegexError::UnbalancedParen);
         }
+        // 编译期闸门：重复套重复会让回溯爆炸（P0-H）。宁可装载期响亮失败，
+        // 也不要运行期在某次按键上卡三秒。
+        if contains_nested_repeat(&root, false) {
+            return Err(RegexError::NestedRepeat);
+        }
         Ok(Self {
             root,
             groups: p.groups,
             source: pattern.to_owned(),
+            step_budget: DEFAULT_STEP_BUDGET,
         })
+    }
+
+    /// 改小/改大步数预算（测试与压力回归用）。
+    #[must_use]
+    pub fn with_step_budget(mut self, steps: u64) -> Self {
+        self.step_budget = steps.max(1);
+        self
+    }
+
+    /// **全部匹配都必须以这个字面串开头**——保守地取，拿不准就返回空串。
+    ///
+    /// # 这是 `recognizer` 的"字面前缀"快路径的正确版本
+    ///
+    /// 旧版本用字符串扫描近似抽取（`^` 之后到第一个元字符之前），
+    /// 于是把"某一分支/可选项的首字符"当成了必需前缀，**漏识别**：
+    ///
+    /// | 正则 | 输入 | 正则自己 | 旧 `leading` | 后果 |
+    /// | --- | --- | --- | --- | --- |
+    /// | `^(a\|b)+$` | `bbb` | 匹配 | `"a"` | 未认领 |
+    /// | `^https?://.*$` | `http://x` | 匹配 | `"https"` | 未认领 |
+    /// | `^a?b$` | `b` | 匹配 | `"a"` | 未认领 |
+    ///
+    /// 正确版本直接从**语法树**上取：跳过开头的 `^`，然后连续吃掉
+    /// 字面 `Char` 节点，遇到任何别的节点（分组、量词、选择、字符类、
+    /// 锚点…）就停。这**可证明**是全部匹配的公共必需前缀——
+    /// `Concat` 要求各元素从左到右依次匹配，而 `Char` 只匹配它自己。
+    ///
+    /// 只对"从位置 0 开始匹配"成立（[`Regex::match_prefix_len`] 的语义）；
+    /// [`Regex::find`] 会从任意位置起匹配，不能用它做剪枝。
+    #[must_use]
+    pub fn required_prefix(&self) -> String {
+        required_prefix_of(&self.root)
     }
 
     /// 是否**整串**匹配（`erase` 用的是这个语义）。
@@ -165,9 +261,16 @@ impl Regex {
     pub fn is_full_match(&self, text: &str) -> bool {
         let chars: Vec<char> = text.chars().collect();
         let mut caps = vec![None; self.groups + 1];
-        if !match_node(&self.root, &chars, 0, &mut caps, &mut |pos, _caps| {
-            pos == chars.len()
-        }) {
+        let b = Budget::new(self.step_budget);
+        if !match_node(
+            &self.root,
+            &chars,
+            0,
+            &mut caps,
+            &b,
+            0,
+            &mut |pos, _caps| pos == chars.len(),
+        ) {
             return false;
         }
         true
@@ -180,10 +283,19 @@ impl Regex {
         for start in 0..=chars.len() {
             let mut caps = vec![None; self.groups + 1];
             let mut end: Option<usize> = None;
-            if match_node(&self.root, &chars, start, &mut caps, &mut |pos, _caps| {
-                end = Some(pos);
-                true
-            }) {
+            let b = Budget::new(self.step_budget);
+            if match_node(
+                &self.root,
+                &chars,
+                start,
+                &mut caps,
+                &b,
+                0,
+                &mut |pos, _caps| {
+                    end = Some(pos);
+                    true
+                },
+            ) {
                 if let Some(e) = end {
                     return Some(Match {
                         start,
@@ -217,13 +329,22 @@ impl Regex {
         let chars: Vec<char> = text.chars().collect();
         let mut caps = vec![None; self.groups + 1];
         let mut end: Option<usize> = None;
-        let hit = match_node(&self.root, &chars, 0, &mut caps, &mut |pos, _caps| {
-            if require_to_end && pos != chars.len() {
-                return false;
-            }
-            end = Some(pos);
-            true
-        });
+        let b = Budget::new(self.step_budget);
+        let hit = match_node(
+            &self.root,
+            &chars,
+            0,
+            &mut caps,
+            &b,
+            0,
+            &mut |pos, _caps| {
+                if require_to_end && pos != chars.len() {
+                    return false;
+                }
+                end = Some(pos);
+                true
+            },
+        );
         if hit {
             end
         } else {
@@ -242,10 +363,19 @@ impl Regex {
             for start in pos..=chars.len() {
                 let mut caps = vec![None; self.groups + 1];
                 let mut end: Option<usize> = None;
-                if match_node(&self.root, &chars, start, &mut caps, &mut |p, _caps| {
-                    end = Some(p);
-                    true
-                }) {
+                let b = Budget::new(self.step_budget);
+                if match_node(
+                    &self.root,
+                    &chars,
+                    start,
+                    &mut caps,
+                    &b,
+                    0,
+                    &mut |p, _caps| {
+                        end = Some(p);
+                        true
+                    },
+                ) {
                     if let Some(e) = end {
                         found = Some((
                             start,
@@ -576,8 +706,15 @@ fn match_node(
     text: &[char],
     pos: usize,
     caps: &mut Caps,
+    budget: &Budget,
+    depth: u32,
     k: &mut dyn FnMut(usize, &mut Caps) -> bool,
 ) -> bool {
+    // 预算/深度闸门。超限 ⇒ 当作**不匹配**（调用方看到的是"没匹配上"），
+    // 而不是 panic、也不是继续跑到三秒。见模块文档的复杂度一节。
+    if !budget.enter(depth) {
+        return false;
+    }
     match node {
         Node::Empty => k(pos, caps),
         Node::Char(c) => {
@@ -615,19 +752,27 @@ fn match_node(
         Node::Group(inner, idx) => {
             let saved = caps.get(*idx).copied().flatten();
             let start = pos;
-            let ok = match_node(inner, text, pos, caps, &mut |end, caps| {
-                let prev = caps.get(*idx).copied().flatten();
-                if let Some(slot) = caps.get_mut(*idx) {
-                    *slot = Some((start, end));
-                }
-                if k(end, caps) {
-                    return true;
-                }
-                if let Some(slot) = caps.get_mut(*idx) {
-                    *slot = prev;
-                }
-                false
-            });
+            let ok = match_node(
+                inner,
+                text,
+                pos,
+                caps,
+                budget,
+                depth + 1,
+                &mut |end, caps| {
+                    let prev = caps.get(*idx).copied().flatten();
+                    if let Some(slot) = caps.get_mut(*idx) {
+                        *slot = Some((start, end));
+                    }
+                    if k(end, caps) {
+                        return true;
+                    }
+                    if let Some(slot) = caps.get_mut(*idx) {
+                        *slot = prev;
+                    }
+                    false
+                },
+            );
             if !ok {
                 if let Some(slot) = caps.get_mut(*idx) {
                     *slot = saved;
@@ -635,18 +780,20 @@ fn match_node(
             }
             ok
         }
-        Node::Concat(items) => match_seq(items, text, pos, caps, k),
+        Node::Concat(items) => match_seq(items, text, pos, caps, budget, depth, k),
         Node::Alt(branches) => {
             for b in branches {
                 let saved = caps.clone();
-                if match_node(b, text, pos, caps, k) {
+                if match_node(b, text, pos, caps, budget, depth + 1, k) {
                     return true;
                 }
                 *caps = saved;
             }
             false
         }
-        Node::Repeat { node, min, max } => match_repeat(node, text, pos, caps, *min, *max, 0, k),
+        Node::Repeat { node, min, max } => {
+            match_repeat(node, text, pos, caps, budget, depth, *min, *max, 0, k)
+        }
     }
 }
 
@@ -655,12 +802,14 @@ fn match_seq(
     text: &[char],
     pos: usize,
     caps: &mut Caps,
+    budget: &Budget,
+    depth: u32,
     k: &mut dyn FnMut(usize, &mut Caps) -> bool,
 ) -> bool {
     match items.split_first() {
         None => k(pos, caps),
-        Some((head, rest)) => match_node(head, text, pos, caps, &mut |p, caps| {
-            match_seq(rest, text, p, caps, &mut *k)
+        Some((head, rest)) => match_node(head, text, pos, caps, budget, depth, &mut |p, caps| {
+            match_seq(rest, text, p, caps, budget, depth, &mut *k)
         }),
     }
 }
@@ -671,6 +820,8 @@ fn match_repeat(
     text: &[char],
     pos: usize,
     caps: &mut Caps,
+    budget: &Budget,
+    depth: u32,
     min: u32,
     max: Option<u32>,
     done: u32,
@@ -680,12 +831,25 @@ fn match_repeat(
     let can_more = max.is_none_or(|m| done < m);
     if can_more {
         let saved = caps.clone();
-        let advanced = match_node(node, text, pos, caps, &mut |p, caps| {
+        let advanced = match_node(node, text, pos, caps, budget, depth + 1, &mut |p, caps| {
             if p == pos {
                 // 零宽重复：不再递归，避免死循环。
                 return false;
             }
-            match_repeat(node, text, p, caps, min, max, done + 1, &mut *k)
+            // **深度必须随迭代增长**：否则 `a+` 的迭代深度永远停在 0，
+            // 深度上限形同虚设，一条长输入就能把栈打穿（实测过）。
+            match_repeat(
+                node,
+                text,
+                p,
+                caps,
+                budget,
+                depth + 1,
+                min,
+                max,
+                done + 1,
+                &mut *k,
+            )
         });
         if advanced {
             return true;
@@ -696,6 +860,93 @@ fn match_repeat(
         return k(pos, caps);
     }
     false
+}
+
+/// 回溯预算：步数与递归深度。
+///
+/// 步数在**每一次 `match_node` 进入**时扣一。这样"最坏耗时"就与模式、
+/// 输入长度都无关——超限只是"这次没匹配上"，绝不会卡住按键路径。
+/// 调用方在公开入口处各建一个，因此预算是**每次公开调用**的总量，
+/// 不是每次 `match_node` 调用各自的。
+struct Budget {
+    steps: std::cell::Cell<u64>,
+    exhausted: std::cell::Cell<bool>,
+    max_depth: u32,
+}
+
+impl Budget {
+    fn new(steps: u64) -> Self {
+        Self {
+            steps: std::cell::Cell::new(steps),
+            exhausted: std::cell::Cell::new(false),
+            max_depth: MAX_DEPTH,
+        }
+    }
+
+    /// 还能继续吗？扣一步并检查深度。
+    ///
+    /// 用 `Cell` 做内部可变性，是为了让递归调用点**共享**一个预算
+    /// （`&Budget`），而不是把 `&mut Budget` 借进闭包——那会让
+    /// "续延 + 预算"的组合借不出来（实测的编译错误）。
+    fn enter(&self, depth: u32) -> bool {
+        if self.steps.get() == 0 || depth > self.max_depth {
+            self.exhausted.set(true);
+            return false;
+        }
+        self.steps.set(self.steps.get() - 1);
+        true
+    }
+}
+
+/// 模式里是否存在"重复套重复"（例如 `(a+)+`、`(ab*)*`、`(a?){2,}`）。
+///
+/// # 为什么是"保守拒绝"而不是精确判定
+///
+/// 精确判定"哪个模式会指数回溯"需要分析字符集重叠与歧义性，
+/// 而那本身是一件容易判错的事（判错的方向是**放过**，代价是卡顿）。
+/// 真实方案的拼写规则里没有任何嵌套量词（只有 `^([a-z]{2}).+$`
+/// 这种平铺写法），因此"一律拒绝"的代价接近零，收益是**可证明**的：
+/// 没有嵌套重复就没有经典的指数回溯路径。
+///
+/// 这仍然是**缓解**——最终替换是自动机实现（见模块文档）。
+fn contains_nested_repeat(node: &Node, inside_repeat: bool) -> bool {
+    match node {
+        Node::Empty | Node::Char(_) | Node::Any | Node::Class { .. } | Node::Start | Node::End => {
+            false
+        }
+        Node::Group(inner, _) => contains_nested_repeat(inner, inside_repeat),
+        Node::Concat(items) | Node::Alt(items) => items
+            .iter()
+            .any(|n| contains_nested_repeat(n, inside_repeat)),
+        Node::Repeat { node, .. } => {
+            if inside_repeat {
+                return true;
+            }
+            contains_nested_repeat(node, true)
+        }
+    }
+}
+
+/// 全部匹配的公共字面前缀（从语法树上取，见 `Regex::required_prefix`）。
+fn required_prefix_of(node: &Node) -> String {
+    let Node::Concat(items) = node else {
+        // 单个 `Char`（`a`）或任何别的形状：只有 Char 有必需前缀。
+        return match node {
+            Node::Char(c) => c.to_string(),
+            _ => String::new(),
+        };
+    };
+    let mut out = String::new();
+    for (i, it) in items.iter().enumerate() {
+        match it {
+            // 开头的 `^` 不消费字符，跳过它继续取字面量。
+            Node::Start if i == 0 => {}
+            Node::Char(c) => out.push(*c),
+            // 其余一律停：分组、量词、字符类、选择、`$`……
+            _ => break,
+        }
+    }
+    out
 }
 
 fn class_matches(neg: bool, items: &[ClassItem], c: char) -> bool {

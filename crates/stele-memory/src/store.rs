@@ -26,7 +26,9 @@
 //! 一个曾经 panic 过的线程不该让之后每一次按键都跟着死。
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use stele_core::{
@@ -205,8 +207,28 @@ struct Inner {
     /// 上下文里的词不可能是空串（`Context::push` 丢弃空串），
     /// 因此空串是安全的保留值。
     predictions: BTreeMap<(String, String, String), Entry>,
-    /// 有没有尚未落盘的改动。
-    dirty: bool,
+    /// **内存状态的代次**：任何一次修改都 +1。
+    ///
+    /// 为什么要代次而不是一个布尔 `dirty`：落盘要先把快照编码，再做
+    /// 一段可能失败的 I/O。用布尔量时，"快照之后、清 dirty 之前"发生的
+    /// 并发写入会被**一并当成已保存**而丢掉（P0-D 的复现之一）。
+    /// 有了代次，落盘完成时只把 `saved` 推进到**快照那一刻**的代次：
+    /// 之后的新写入让 `generation > saved`，`dirty` 自然仍为真。
+    generation: u64,
+    /// 最后一次**确认写成功**的代次。
+    saved: u64,
+}
+
+impl Inner {
+    /// 有任何未落盘的改动吗？
+    fn is_dirty(&self) -> bool {
+        self.generation != self.saved
+    }
+
+    /// 标记一次修改。
+    fn touch(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
 }
 
 /// 用户记忆：全量放内存，落盘是一条显式调用。
@@ -274,6 +296,8 @@ impl FileMemory {
         predict_cap: usize,
     ) -> Result<Self, MemoryError> {
         let path = path.as_ref().to_path_buf();
+        let cap = cap.max(1);
+        let predict_cap = predict_cap.max(1);
         let mut inner = Inner::default();
         if path.exists() {
             let bytes = std::fs::read(&path).map_err(MemoryError::Io)?;
@@ -300,11 +324,22 @@ impl FileMemory {
                 );
             }
         }
+        // **加载之后也要遵守上限**（P0-D 第 5 条）。
+        //
+        // 旧实现只在"新记录导致超限"时淘汰，于是 `cap=1` 打开一份含 10 条
+        // 的文件会加载 10 条——上限在恢复路径上是**不成立**的，而恢复
+        // 正好是内存最敏感的时刻（前端在启动时打开记忆）。
+        if inner.entries.len() > cap {
+            Self::evict(&mut inner, cap);
+        }
+        if inner.predictions.len() > predict_cap {
+            Self::evict_predictions(&mut inner, predict_cap);
+        }
         Ok(Self {
             path: Some(path),
             clock,
-            cap: cap.max(1),
-            predict_cap: predict_cap.max(1),
+            cap,
+            predict_cap,
             writable: true,
             inner: RwLock::new(inner),
         })
@@ -372,7 +407,7 @@ impl FileMemory {
     /// 是否有尚未落盘的改动。
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.read().dirty
+        self.read().is_dirty()
     }
 
     /// 是否允许落盘（加载失败时为 `false`）。
@@ -461,6 +496,28 @@ impl FileMemory {
     /// # Errors
     ///
     /// 建目录、写临时文件或改名失败时返回 [`MemoryError::Io`]。
+    /// **任何失败都保留 dirty**，因此调用方可以排除障碍后显式重试。
+    ///
+    /// # 原子性的确切含义（P0-D）
+    ///
+    /// 一次 `flush` 是一台状态机，顺序**不能**调换：
+    ///
+    /// ```text
+    /// ① 拿文件锁（<path>.lock，跨进程互斥）
+    /// ② 读盘上的当前文件并**合并**进内存（多写者不互相覆盖）
+    /// ③ 取快照：编码成字节，记下快照代次 g
+    /// ④ 写同目录唯一临时文件 → fsync → rename → fsync 目录
+    /// ⑤ 成功之后才 saved = g（只推进到快照那一刻）
+    /// ⑥ 放锁
+    /// ```
+    ///
+    /// 旧实现在 ③ 之前就把 `dirty` 清成 `false`，于是：
+    /// `write(tmp)` 失败 → 返回 `Err` → 但 `dirty == false` →
+    /// 再调 `flush()` 直接返回 `Ok(false)`，**磁盘上什么都没有**。
+    /// 用户学到的东西就这样一次次丢掉，而且没有任何提示。
+    ///
+    /// `saved = g`（而不是 `saved = generation`）是另一半：快照之后
+    /// 新学的词不会因为"某次落盘成功了"而被当成已保存。
     pub fn flush(&self) -> Result<bool, MemoryError> {
         let Some(path) = self.path.as_deref() else {
             return Ok(false);
@@ -468,10 +525,63 @@ impl FileMemory {
         if !self.writable {
             return Ok(false);
         }
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir).map_err(MemoryError::Io)?;
+            }
+        }
 
-        let bytes = {
+        // ① 文件锁。同目录的 `<name>.lock` 充当互斥量。
+        //
+        // 为什么需要它：两个 `FileMemory` 句柄（或两个进程）依次落盘时，
+        // 后写者会用**自己**的全量快照覆盖先写者的记录——先写者刚学到的
+        // 东西静默消失。加锁 + ② 的合并把"最后一次写赢"变成"并集"。
+        let lock = Self::lock_file(path)?;
+        // 提前放锁的路径都在下面显式 `unlock`；用守卫保证异常路径也放。
+        let _guard = LockGuard { file: Some(&lock) };
+
+        // ② 读盘上的当前内容并合并。
+        //
+        // 合并策略是**逐键取更大值**（次数、衰减频次、最后使用时间），
+        // 而不是相加：相加会让"同一份数据加载两次"凭空翻倍，而取更大值
+        // 是**幂等**的——合并自己刚写过的文件不改变任何数字。
+        // 读不懂的文件**不动它**（坏文件不覆盖），报错并保留 dirty。
+        if path.exists() {
+            let bytes = std::fs::read(path).map_err(MemoryError::Io)?;
+            let (records, preds) =
+                file::decode(&bytes).map_err(|e| MemoryError::Corrupt(e.to_string()))?;
             let mut inner = self.write();
-            if !inner.dirty {
+            for r in records {
+                // 先取出标量，再把两个 `String` 移进键（否则是部分移动）。
+                let entry = Entry {
+                    count: r.count,
+                    decayed_milli: r.decayed_milli,
+                    last_used: r.last_used,
+                };
+                merge_entry(&mut inner.entries, (r.input, r.text), entry);
+            }
+            for p in preds {
+                let entry = Entry {
+                    count: p.count,
+                    decayed_milli: p.decayed_milli,
+                    last_used: p.last_used,
+                };
+                merge_entry(&mut inner.predictions, (p.ctx1, p.ctx2, p.text), entry);
+            }
+            inner.touch();
+            // 合并可能把表推过上限（磁盘上有别的进程写的条目）。
+            if inner.entries.len() > self.cap {
+                Self::evict(&mut inner, self.cap);
+            }
+            if inner.predictions.len() > self.predict_cap {
+                Self::evict_predictions(&mut inner, self.predict_cap);
+            }
+        }
+
+        // ③ 快照 + 编码。**锁只在这一小段里持有**，文件 I/O 在锁外。
+        let (bytes, snapshot) = {
+            let inner = self.write();
+            if !inner.is_dirty() {
                 return Ok(false);
             }
             let records: Vec<Record> = inner
@@ -500,20 +610,46 @@ impl FileMemory {
             // **两张表一起写、一起替换**：分成两个文件时，
             // "输入表写成功、预测表写失败"会留下一个没有任何自校验
             // 能发现的自相矛盾状态（见 `file` 的模块文档）。
-            let bytes = file::encode(&records, &preds);
-            inner.dirty = false;
-            bytes
+            (file::encode(&records, &preds), inner.generation)
         };
 
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir).map_err(MemoryError::Io)?;
-            }
-        }
+        // ④ 唯一临时文件 → fsync → rename。
         let tmp = tmp_path(path);
-        std::fs::write(&tmp, &bytes).map_err(MemoryError::Io)?;
-        std::fs::rename(&tmp, path).map_err(MemoryError::Io)?;
+        let write_result = (|| -> Result<(), MemoryError> {
+            write_private(&tmp, &bytes)?;
+            std::fs::rename(&tmp, path).map_err(MemoryError::Io)?;
+            sync_dir(path);
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            // 失败：清掉临时文件，**保留 dirty**，把错误原样报出去。
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+
+        // ⑤ 只有到这里才承认"保存过了"，而且只推进到快照代次。
+        {
+            let mut inner = self.write();
+            inner.saved = snapshot;
+        }
         Ok(true)
+    }
+
+    /// 打开（或创建）互斥用的锁文件。
+    ///
+    /// 锁文件独立于数据文件：数据文件的 `rename` 会换 inode，
+    /// 而锁必须挂在**一个稳定的名字**上，否则两个写者会各锁各的。
+    fn lock_file(path: &Path) -> Result<std::fs::File, MemoryError> {
+        let lock_path = lock_path(path);
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(MemoryError::Io)?;
+        f.lock().map_err(MemoryError::Io)?;
+        Ok(f)
     }
 
     /// 读锁。中毒也继续（见模块文档）。
@@ -582,10 +718,121 @@ impl FileMemory {
 }
 
 /// 临时文件路径：与目标同目录（**必须同文件系统**，否则 `rename` 不是原子的）。
+///
+/// 名字里带 pid 与进程内计数器。**不能固定为 `<name>.tmp`**：
+/// 那样两个写者会往同一个临时文件里写，交错出一份谁的内容都不对的
+/// 产物；而且 `<name>.tmp` 若恰好已存在（比如是个目录），
+/// `write` 会稳定失败——旧实现正是被这一点卡住且**无法重试**。
 fn tmp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
+    name.push(format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     path.with_file_name(name)
+}
+
+/// 进程内的临时文件计数器。
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// 与数据文件同目录、名字稳定的锁文件。
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    path.with_file_name(name)
+}
+
+/// 持有文件锁的守卫：`Drop` 时解锁。
+///
+/// 显式写它而不是靠 `File` 的析构，是因为"锁有没有被放掉"必须一眼可见：
+/// 漏放的后果是**之后每一次落盘都永久卡住**，而输入法会安静地停止保存。
+struct LockGuard<'a> {
+    file: Option<&'a std::fs::File>,
+}
+
+impl Drop for LockGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = self.file.take() {
+            let _ = f.unlock();
+        }
+    }
+}
+
+/// 写一个**只有所有者可读写**（Unix `0600`）的文件，并 `fsync` 它。
+///
+/// 记忆里有上屏文本、编码、上下文与时间——是敏感的本机行为历史。
+/// 权限不是完整的隐私方案（父目录、备份、日志都在范围外），
+/// 但"默认给同机其他用户可读"没有任何理由（P0-D 第 7 条）。
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), MemoryError> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(MemoryError::Io)?;
+    f.write_all(bytes).map_err(MemoryError::Io)?;
+    f.sync_all().map_err(MemoryError::Io)?;
+    Ok(())
+}
+
+/// `rename` 之后把目录项也刷下去。
+///
+/// 只 `fsync` 文件是不够的：断电时目录项可能还没落盘，于是"改名成功"
+/// 这个事实本身会丢。目录 fsync 在 Windows 上没有对应语义，跳过。
+fn sync_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        if let Some(dir) = path.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// 把盘上读到的一条记录**并**进内存表：逐字段取更大值。
+///
+/// 取更大值而不是相加：相加会让"同一份数据加载两次"翻倍，而取更大值是
+/// **幂等**的——合并自己刚写的文件不改变任何数字，因此正常单写者场景下
+/// 合并是恒等变换。多写者场景下它是并集，谁都不丢。
+fn merge_entry<K: Ord>(map: &mut BTreeMap<K, Entry>, key: K, incoming: Entry) {
+    match map.get_mut(&key) {
+        Some(e) => {
+            e.count = e.count.max(incoming.count);
+            e.decayed_milli = e.decayed_milli.max(incoming.decayed_milli);
+            e.last_used = e.last_used.max(incoming.last_used);
+        }
+        None => {
+            map.insert(key, incoming);
+        }
+    }
+}
+
+impl From<Record> for Entry {
+    fn from(r: Record) -> Self {
+        Self {
+            count: r.count,
+            decayed_milli: r.decayed_milli,
+            last_used: r.last_used,
+        }
+    }
+}
+
+impl From<PredRecord> for Entry {
+    fn from(p: PredRecord) -> Self {
+        Self {
+            count: p.count,
+            decayed_milli: p.decayed_milli,
+            last_used: p.last_used,
+        }
+    }
 }
 
 /// 一个把"降级"路径也写清楚的占位时钟。
@@ -674,7 +921,7 @@ impl MemoryStore for FileMemory {
             .remove(&(key.to_owned(), text.to_owned()))
             .is_some()
         {
-            inner.dirty = true;
+            inner.touch();
         }
     }
 
@@ -726,7 +973,7 @@ impl FileMemory {
         let now = self.clock.now_secs();
         let mut inner = self.write();
         Self::bump(&mut inner.entries, (key, commit.text.clone()), now);
-        inner.dirty = true;
+        inner.touch();
 
         if inner.entries.len() > self.cap {
             Self::evict(&mut inner, self.cap);
@@ -771,7 +1018,7 @@ impl FileMemory {
                 now,
             );
         }
-        inner.dirty = true;
+        inner.touch();
 
         if inner.predictions.len() > self.predict_cap {
             Self::evict_predictions(&mut inner, self.predict_cap);

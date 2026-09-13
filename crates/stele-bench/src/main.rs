@@ -134,9 +134,27 @@ fn per_entry(bytes: u64, entries: usize) -> f64 {
 /// 从 `/proc/self/status` 的 `VmRSS` 读——比 `statm` 好，因为它已经是 KB，
 /// 不必假设页大小。非 Linux 平台返回 `None`（**我们不猜**）。
 fn rss_kib() -> Option<u64> {
+    status_kib("VmRSS:")
+}
+
+/// 读取**峰值**常驻内存（KiB，Linux 的 `VmHWM`）。
+///
+/// # 为什么它与 `VmRSS` 都要报
+///
+/// `VmRSS` 是**采样那一刻**的常驻，`VmHWM` 是**进程启动以来的最高水位**。
+/// 审计对 `ssss` 的复现（209 MiB）报的是 `VmHWM`，而只报 `VmRSS`
+/// 会完全看不到那次瞬时爆炸——测量结束后分配器早就把内存还回去了。
+/// 两者混用会让"峰值"变成一个随时机漂移的数字（PLAN §5.1 的要求）。
+///
+/// 非 Linux 平台返回 `None`。
+fn hwm_kib() -> Option<u64> {
+    status_kib("VmHWM:")
+}
+
+fn status_kib(prefix: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
+        if let Some(rest) = line.strip_prefix(prefix) {
             let num: String = rest.chars().filter(char::is_ascii_digit).collect();
             return num.parse().ok();
         }
@@ -144,7 +162,48 @@ fn rss_kib() -> Option<u64> {
     None
 }
 
-/// 计算分位数（`sorted` 必须是微秒且已排序）。
+/// 默认按键语料。
+///
+/// # 为什么不能只有 `nihao`
+///
+/// 审计的原话：「不能用 `nihao` 的 P50 代表全部打字性能」。
+/// 同一台机器、同一个 release 构建上，`nihao` 的 P50 是 46–48 µs，
+/// 而 `ssss` 的第四键是 **1.52 s**、`woaizhongguo` 的某些键是几百毫秒。
+/// 只报一个短词等于把最严重的那个数字藏起来。
+///
+/// 这一组覆盖四类：
+/// - **短且正常**：`nihao`（与历史数字可直接对照）
+/// - **长且正常**：`nihaoshijie`
+/// - **歧义**：`nh`（简拼）、`nhao`（第一音节缩）
+/// - **病态 / 无效**：`ssss`、`woaizhongguo`
+const DEFAULT_KEYS: &str = "nihao,nihaoshijie,nh,nhao,ssss,woaizhongguo";
+
+/// 解析 `--keys=a,b,c`。空项被丢弃；全空则退回默认语料。
+fn parse_keys(args: &[String]) -> Vec<String> {
+    let raw = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--keys="))
+        .unwrap_or(DEFAULT_KEYS);
+    let keys: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if keys.is_empty() {
+        vec!["nihao".to_owned()]
+    } else {
+        keys
+    }
+}
+
+/// 一个语料条目的按键延迟。
+struct KeyEntryReport {
+    keys: String,
+    report: Report,
+}
+
+/// 计算分位数（`sorted` 必须是纳秒且已排序）。
 fn percentile(sorted: &[u64], pct: u32) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -218,6 +277,7 @@ fn main() {
              `--predict`   挂上下一词预测（P4b，默认关；需要 `--userdb`）。\n\
              `--embed`     挂上本地向量偏好记忆（P5/D46，默认关；需要 `--userdb`）。\n\
              `--count-queries` 数**每次按键查了几次词典**（PLAN §6 那条欠账）。\n\
+             `--keys=a,b,c` 改按键语料（默认六条：短/长/歧义/病态，**不是只看 nihao**）。\n\
              `--seed-memory=N` 合成 N 条用户记忆，量出单条占用与落盘体积。\n\
              `--seed-predict=N` 合成 N 条预测记录，量出预测表的内存增量（P4b 验收 < 5 MB）。\n\
              `--predict-cap=N` 改预测表上限（默认 20000），用来量成本曲线。"
@@ -503,16 +563,65 @@ fn main() {
             std::process::exit(2);
         }
     }
-    let cycle: Vec<char> = "nihao".chars().collect();
-    let mut i: usize = 0;
-    let pipeline = measure(iterations.min(50_000), || {
-        if i > 0 && i % cycle.len() == 0 {
-            session.reset();
-        }
-        let c = cycle[i % cycle.len()];
-        i += 1;
-        session.process_key(Key::ch(c));
-    });
+    let corpus = parse_keys(&args);
+    // 每个语料条目单独测一轮，**每条目一个完整的 P50/P95/P99/max**。
+    //
+    // 为什么不是把所有条目混在一起测：审计要的正是"短、长、歧义、无效输入
+    // 分别是什么数字"。混在一起的 P99 会被最长的那个词主导，
+    // 而"哪个输入病态"这个信息就没了。
+    //
+    // 迭代次数按条目长度摊：条目的每个键都要落到样本里，因此
+    // `samples ≈ iterations / len`，并设上下限避免病态条目把基准拖到几十分钟。
+    let mut key_reports: Vec<KeyEntryReport> = Vec::with_capacity(corpus.len());
+    for keys in &corpus {
+        let chars: Vec<char> = keys.chars().collect();
+        let n = chars.len().max(1);
+        let samples = (iterations / n).clamp(64, 20_000);
+        let mut i: usize = 0;
+        let report = measure(samples, || {
+            if i > 0 && i.is_multiple_of(n) {
+                session.reset();
+            }
+            let c = chars[i % n];
+            i += 1;
+            session.process_key(Key::ch(c));
+        });
+        key_reports.push(KeyEntryReport {
+            keys: keys.clone(),
+            report,
+        });
+    }
+    let pipeline = Report {
+        samples: key_reports.iter().map(|k| k.report.samples).sum(),
+        p50_ns: percentile(
+            &{
+                let mut v: Vec<u64> = key_reports.iter().map(|k| k.report.p50_ns).collect();
+                v.sort_unstable();
+                v
+            },
+            50,
+        ),
+        p95_ns: key_reports
+            .iter()
+            .map(|k| k.report.p95_ns)
+            .max()
+            .unwrap_or(0),
+        p99_ns: key_reports
+            .iter()
+            .map(|k| k.report.p99_ns)
+            .max()
+            .unwrap_or(0),
+        max_ns: key_reports
+            .iter()
+            .map(|k| k.report.max_ns)
+            .max()
+            .unwrap_or(0),
+        rss_kib: rss_kib().unwrap_or(0),
+    };
+    let worst = key_reports
+        .iter()
+        .max_by_key(|k| k.report.max_ns)
+        .map(|k| (k.keys.clone(), k.report.max_ns));
 
     // 顺带验证引擎确实在工作（而不是在测一个空壳）。
     let mut probe = engine.create_session();
@@ -528,20 +637,26 @@ fn main() {
     // ── 工作负载 4：每次按键的词典查询次数（PLAN §6 的欠账）──
     //
     // 只数调用次数，不计时——计时已经在上面那条按键路径里了。
-    // 用**同一个**循环结构（每四位 reset）以便与延迟数字对照。
+    // 对**全部语料**计数（不只是 `nihao`）：`ssss` 这类病态输入的价值
+    // 恰恰在于"它到底查了多少次"。
     let query_report = if count_queries {
-        let n = iterations.min(50_000);
-        let mut per_key: Vec<u64> = Vec::with_capacity(n);
+        let mut per_key: Vec<u64> = Vec::new();
         let mut last = total_queries();
-        for key_index in 0..n {
-            if key_index > 0 && key_index % cycle.len() == 0 {
-                session.reset();
+        for keys in &corpus {
+            let chars: Vec<char> = keys.chars().collect();
+            let n = chars.len().max(1);
+            let rounds = (iterations / n).clamp(16, 2_000);
+            for r in 0..rounds {
+                if r > 0 {
+                    session.reset();
+                }
+                for &c in &chars {
+                    session.process_key(Key::ch(c));
+                    let now = total_queries();
+                    per_key.push(now.saturating_sub(last));
+                    last = now;
+                }
             }
-            let c = cycle[key_index % cycle.len()];
-            session.process_key(Key::ch(c));
-            let now = total_queries();
-            per_key.push(now.saturating_sub(last));
-            last = now;
         }
         per_key.sort_unstable();
         let total: u64 = per_key.iter().sum();
@@ -562,12 +677,25 @@ fn main() {
 
     if as_json {
         let mut out = String::new();
+        // 逐语料的按键数字：审计要的是"每个输入分别是多少"，
+        // 而不是一个被最长词主导的合计分位数。
+        let keys_json: Vec<String> = key_reports
+            .iter()
+            .map(|k| {
+                format!(
+                    "{{\"keys\":\"{}\",\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}}",
+                    k.keys, k.report.samples, k.report.p50_ns, k.report.p95_ns, k.report.p99_ns,
+                    k.report.max_ns
+                )
+            })
+            .collect();
         let _ = write!(
             out,
             "{{\"schema\":\"{}\",\"idle\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
              \"sort200\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
              \"keypath\":{{\"samples\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{}}},\
-             \"rss_kib\":{},\"engine_load_us\":{},\"process_us\":{},\"probe_commit\":\"{}\",\
+             \"keypath_by_keys\":[{}],\
+             \"rss_kib\":{},\"hwm_kib\":{},\"engine_load_us\":{},\"process_us\":{},\"probe_commit\":\"{}\",\
              \"memory_entries\":{},\"queries\":{}}}",
             session.schema_id(),
             idle.samples,
@@ -585,7 +713,9 @@ fn main() {
             pipeline.p95_ns,
             pipeline.p99_ns,
             pipeline.max_ns,
+            keys_json.join(","),
             pipeline.rss_kib,
+            hwm_kib().unwrap_or(0),
             load_us,
             startup_us,
             committed,
@@ -641,13 +771,38 @@ fn main() {
         &format!("内核排序 200 候选（{}）", sort_report.samples),
         &sort_report,
     );
-    row(&format!("真实按键路径（{}）", pipeline.samples), &pipeline);
+    println!();
+    println!("按键路径（按语料分条，每键一个样本）：");
+    println!(
+        "{:<28} {:>11} {:>11} {:>11} {:>11}",
+        "输入", "P50", "P95", "P99", "max"
+    );
+    println!(
+        "{:-<28} {:->11} {:->11} {:->11} {:->11}",
+        "", "", "", "", ""
+    );
+    for k in &key_reports {
+        row(&format!("  {}", k.keys), &k.report);
+    }
+    println!();
+    println!("按键路径（全部语料合计）:");
+    row(&format!("  合计（{} 个样本）", pipeline.samples), &pipeline);
+    if let Some((keys, ns)) = &worst {
+        println!("  最坏的单个语料条目：`{keys}` 的 max = {}", human_ns(*ns));
+    }
     println!();
     println!(
-        "常驻内存（VmRSS）  : {} KiB ({} MiB)",
+        "常驻内存（VmRSS，采样时刻）: {} KiB ({} MiB)",
         pipeline.rss_kib,
         pipeline.rss_kib / 1024
     );
+    match hwm_kib() {
+        Some(hwm) => println!(
+            "常驻内存（VmHWM，**启动以来峰值**）: {hwm} KiB ({} MiB)",
+            hwm / 1024
+        ),
+        None => println!("常驻内存（VmHWM）: 本平台不提供 /proc/self/status"),
+    }
     println!("引擎装载（含全部方案）: {load_us} µs");
     if let Some(c) = &memory_cost {
         // 精度损失在这里无害：这是**给人看的显示**，不是参与排序的分数
@@ -760,7 +915,16 @@ fn main() {
     println!("  · 「空转」给出**测量框架自身的开销下限**——按键路径减去它就是引擎的成本。");
     println!("  · 用 `--release` 运行，否则看到的是未优化代码的耗时。");
     println!("  · 冷启动的端到端数字需要真实前端（TSF / Android），属 P6/P7。");
+    println!("  · `VmHWM` 是**进程启动以来的峰值**，含引擎装载那一段；");
+    println!("    `VmRSS` 是采样时刻的常驻。两者混用会让「峰值」随时机漂移。");
     println!();
-    println!("⚠️ 这些数字**只反映管线本身的开销**：演示词库只有几十条词，");
-    println!("   词库查找几乎不花时间。真实词库（几十万条）的成本要到 P2.5 才测得到。");
+    // **这段警告只在用内嵌演示词库时才成立。**
+    // 早先它无条件打印，于是"--scheme-dir 指到 41 万词条的真实词库"
+    // 的报告里也写着"演示词库只有几十条词"——一句与事实相反的话。
+    if scheme_dir.is_some() {
+        println!("词库：`--scheme-dir` 指定的真实词库（非内嵌演示）。");
+    } else {
+        println!("⚠️ 这些数字**只反映管线本身的开销**：内嵌演示词库只有几十条词，");
+        println!("   词库查找几乎不花时间。要测真实词库的成本请加 `--scheme-dir`。");
+    }
 }

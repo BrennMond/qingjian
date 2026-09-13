@@ -46,8 +46,20 @@
 //!
 //! # 格式
 //!
-//! 全部小端。头部 64 字节，随后是三段：词字符串表、词条数组、索引。
-//! **内容寻址**：文件名里带源数据的校验和，加载时校验（PLAN D28）。
+//! 全部小端。头部 80 字节，随后是三段：词字符串表、词条数组、索引。
+//! **内容寻址**：文件名里带 [`BuildFingerprint`]（格式版本 + 编译选项 +
+//! 字母表内容与顺序 + 源数据校验和），加载时校验（PLAN D28）。
+//! 头部还带一份**主体校验和**用于发现意外损坏——它不是防篡改机制，
+//! 真正的防越界靠 [`format::validate_layout`] 与读侧全程 checked 运算。
+//!
+//! # 三代缓存身份（为什么 v1 必须作废）
+//!
+//! | 版本 | 缓存身份含什么 | 后果 |
+//! | --- | --- | --- |
+//! | v1 | 只有源词典校验和 | 只改 `alphabet` 顺序就复用旧产物 → **静默错码** |
+//! | v2 | + 格式版本、编译选项、字母表内容与顺序 | 语义输入变了必定重建 |
+//!
+//! v1 产物会被 [`FormatError::UnsupportedVersion`] 明确拒绝并提示重新部署。
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -57,5 +69,8 @@ pub mod format;
 pub mod lexicon;
 
 pub use compile::{compile, CompileError, CompiledTable, TableWriter};
-pub use format::{source_checksum, FormatError, TableHeader, FORMAT_VERSION, MAGIC};
+pub use format::{
+    source_checksum, BuildFingerprint, FormatError, TableHeader, COMPILER_OPTIONS, FORMAT_VERSION,
+    HEADER_SIZE, MAGIC,
+};
 pub use lexicon::TableLexicon;

@@ -466,48 +466,220 @@ pub struct SpellingTable {
     edges: Vec<UnitEdge>,
     /// 按首字符分组，避免每个位置都遍历整张表。
     by_first_char: BTreeMap<char, Vec<usize>>,
-    /// 一次展开最多产出多少条。
-    max_expansions: usize,
-    /// 一条编码最多几个单元（防止病态输入导致爆炸）。
-    max_units: usize,
+    /// 一次展开的**硬预算**（见 [`ExpansionLimits`]）。
+    limits: ExpansionLimits,
 }
 
-/// 投影过程中的一个"有效拼写"。
+/// 一次拼写展开的**硬预算**。
+///
+/// # 为什么需要四项而不是一个 `max_expansions`
+///
+/// 审计实测：`ssss` 的第四次按键约 **1.52 s**、进程峰值约 **209 MiB**，
+/// 而最终只得到字面量 `ssss`；`woaizhongguo` 输入过程中有 290/679/285 ms
+/// 的按键，峰值约 146 MiB。输入法在**每个按键的同步路径**上，秒级卡顿
+/// 与数百 MiB 瞬时分配都不可接受。
+///
+/// 旧实现只有一个 `max_expansions`（限制**产出**条数）和一个派生的
+/// `budget = max_expansions × max_units × 8`。它既没有限制**中间状态数**，
+/// 也没有限制**边尝试次数**，而内存恰恰花在"每条状态 clone 一个
+/// `Vec<CodeUnitId>` 再塞进 `HashSet`/`BinaryHeap`"上。
+///
+/// 这四项合起来构成真正的资源合同：
+///
+/// | 字段 | 限制什么 | 谁在花 |
+/// | --- | --- | --- |
+/// | `max_results` | 最终候选切分条数 | 词库查询次数 |
+/// | `max_units` | 一条切分的编码单元数 | 单条路径长度 |
+/// | `max_states` | **搜索图节点数**（arena 长度） | 内存主项 |
+/// | `max_work` | **边尝试次数**（CPU） | 单键耗时 |
+///
+/// 超限的行为是**确定的降级**：停止探索、置 `truncated`、返回已经找到的
+/// 最优结果（best-first ⇒ 最像用户本意的那些先被找到）。
+/// **绝不 panic，也绝不停不下来。**
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpansionLimits {
+    /// 最终产出多少条切分。
+    pub max_results: usize,
+    /// 一条切分最多几个编码单元。
+    pub max_units: usize,
+    /// 搜索图最多几个状态（arena 节点）。
+    pub max_states: usize,
+    /// 最多尝试多少次边。
+    pub max_work: usize,
+}
+
+/// 默认的搜索状态上界。
+///
+/// # 取值是**实测反推**的，不是拍脑袋
+///
+/// 在真实默认拼音方案（399 个音节 + `abbrev(take=1)`）的拼写表上，
+/// 用 arena + 父指针的实现测（同一台机器，debug 构建）：
+///
+/// | 输入 | 状态上界 | 需要的边尝试 | 搜索图字节 | 召回 |
+/// | --- | --- | --- | --- | --- |
+/// | `nihao` | 4096 | 448 | 6 KB | `ni hao` rank 0 |
+/// | `nh` | 4096 | 959 | 12 KB | `ni hao` rank 175 |
+/// | `nhao` | 4096 | 6724 | 153 KB | **被截断，召回丢失** |
+/// | `nhao` | **16384** | 9671 | 134 KB | `ni hao` rank 9（与修复前一致） |
+/// | `ssss` | 16384 | 32737 | 775 KB | 无（旧实现 2.29 s / 209 MiB） |
+/// | `woaizhongguo` | 16384 | 31511 | 731 KB | 无（旧实现 580 ms） |
+///
+/// 也就是说：**4096 太小**——`nhao`（方案注释里承诺的简拼写法）
+/// 会在探索到它之前被截断，而那是"用性能换掉了正确的候选"，不可接受。
+/// `16384` 足够保住全部修复前的召回，同时把搜索图压在 1 MB 以内。
+///
+/// 注意这里的对照是**修复前**的实现：它在 `nh` 上排到 rank 175、
+/// 在 `nhao` 上排到 rank 9，两者都必须继续工作。
+pub const DEFAULT_MAX_STATES: usize = 16_384;
+
+/// 默认的边尝试上界。
+///
+/// 一次边尝试是"切片比较 + 一次 push"，实测 ~30–60 ns。上表里最坏
+/// 的一次是 `ssss` 的 32737 次——`131072` 留了四倍余量，同时把
+/// 单键 CPU 压死在 10 ms 红线之下（debug 实测 2.4 ms，release 更低）。
+pub const DEFAULT_MAX_WORK: usize = 131_072;
+
+impl Default for ExpansionLimits {
+    fn default() -> Self {
+        Self {
+            // 512 不是随手填的：它决定"哪些切分能进入词库查询"。
+            // 实测（默认方案 399 个音节 + 一条缩写规则）：`nihao` 要出
+            // `ni hao`（rank 0），`nh` 要到 rank 4 才出现 `n hao`——
+            // 而 64 的上限**根本走不到那里**，结果是「你好」这个 40 万
+            // 词条词库里存在的词**打不出来**。
+            max_results: 512,
+            max_units: 16,
+            max_states: DEFAULT_MAX_STATES,
+            max_work: DEFAULT_MAX_WORK,
+        }
+    }
+}
+
+impl ExpansionLimits {
+    /// 四项都显式给出。
+    #[must_use]
+    pub const fn new(
+        max_results: usize,
+        max_units: usize,
+        max_states: usize,
+        max_work: usize,
+    ) -> Self {
+        Self {
+            max_results,
+            max_units,
+            max_states,
+            max_work,
+        }
+    }
+
+    /// 每一项至少为 1，否则搜索连一步都走不了。
+    #[must_use]
+    fn sane(self) -> Self {
+        Self {
+            max_results: self.max_results.max(1),
+            max_units: self.max_units.max(1),
+            max_states: self.max_states.max(1),
+            max_work: self.max_work.max(1),
+        }
+    }
+}
+
+/// 一次展开的**可观测计数**。
+///
+/// 它是"资源上界是否成立"的唯一证据来源：测试断言的是这些数字的**上界**，
+/// 而不是某台机器上某次运行的墙钟时间（后者不可复现，CI 上尤其不可靠）。
+/// 时间只在受控基准里报告。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpansionStats {
+    /// 推进搜索图的节点数（arena 长度）。
+    pub states_pushed: usize,
+    /// 出队的节点数。
+    pub states_popped: usize,
+    /// 尝试过的边数（CPU 主项）。
+    pub edge_attempts: usize,
+    /// 到达输入末尾、被收下的切分数（截断前）。
+    pub results: usize,
+    /// 搜索图常驻字节数（arena + 前沿）。
+    pub graph_bytes: usize,
+    /// 是否触碰过任一预算。**true 表示结果可能不完整**。
+    pub truncated: bool,
+}
+
+impl ExpansionStats {
+    /// 是否在预算内完成。
+    #[must_use]
+    pub fn within_budget(&self) -> bool {
+        !self.truncated
+    }
+}
+
+/// 搜索图里的一个节点：**父指针 + 一步边**，而不是一整条路径的副本。
+///
+/// 旧实现每个状态持有一个 `Vec<CodeUnitId>`（24 字节栈 + 堆分配 + 内容），
+/// 并且为了去重再往 `HashSet` 里放一份。状态数上万时，光是这些副本
+/// 就是百 MiB 量级——而它们**全都是中间状态**，一条都不会上屏。
+///
+/// 改成 arena 之后，一个状态是定长的 24 字节；编码靠回溯父指针重建，
+/// **只对最终结果重建**。
+#[derive(Clone, Copy, Debug)]
+struct SearchNode {
+    /// 父节点下标；[`NO_PARENT`] 表示根。
+    parent: u32,
+    /// 从父节点走过来的那条边对应哪个编码单元。
+    unit: CodeUnitId,
+    /// 根到这里的累计代价。
+    cost: Score,
+    /// 根到这里的累计属性。
+    attr: SpellingAttr,
+    /// 已经消费掉的**字节**位置。
+    pos: u32,
+    /// 已经走了几个编码单元。
+    depth: u32,
+}
+
+/// 根节点的 `parent` 值。
+const NO_PARENT: u32 = u32::MAX;
+
+/// 前沿（frontier）里的一个待扩展状态。
+///
+/// 排序键是 `(代价, 单元数, 入队序号)`。与最终排序键的前两项一致，
+/// 因此"名额"总是先给最像用户本意的切分；第三项只是**确定性**的兜底
+/// （同一份输入永远得到同一批结果）。
+///
+/// 完整的字典序比较需要把整条编码重建出来——那是旧实现每步都在付的
+/// 代价。这里换来的是：**中间状态的内存与一条路径的长度无关**。
+#[derive(PartialEq, Eq)]
+struct Frontier {
+    cost: Score,
+    depth: u32,
+    /// arena 下标。
+    node: u32,
+    /// 入队序号（确定性兜底）。
+    seq: u64,
+}
+
+impl Ord for Frontier {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.cost
+            .cmp(&other.cost)
+            .then_with(|| other.depth.cmp(&self.depth))
+            .then_with(|| other.seq.cmp(&self.seq))
+    }
+}
+
+impl PartialOrd for Frontier {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// 投影过程中的一个"有效拼写"（装载期用，与按键路径无关）。
 #[derive(Clone, Debug)]
 struct Projected {
     text: String,
     unit: CodeUnitId,
     cost: Score,
     attr: SpellingAttr,
-}
-
-/// 拼写展开的搜索状态。
-///
-/// `Ord` 是**优先级**：代价高（罚分少）的排前面，其次编码单元少、编码字典序小。
-/// 与 `expand_into` 末尾的排序键完全一致——这样"名额"总是先给
-/// 最像用户本意的那条切分。
-#[derive(PartialEq, Eq)]
-struct ExpansionState {
-    cost: Score,
-    pos: usize,
-    units: Vec<CodeUnitId>,
-    attr: SpellingAttr,
-}
-
-impl Ord for ExpansionState {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.cost
-            .cmp(&other.cost)
-            .then_with(|| other.units.len().cmp(&self.units.len()))
-            .then_with(|| other.units.cmp(&self.units))
-            .then_with(|| other.attr.bits().cmp(&self.attr.bits()))
-    }
-}
-
-impl PartialOrd for ExpansionState {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 impl SpellingTable {
@@ -582,29 +754,29 @@ impl SpellingTable {
             alphabet,
             edges,
             by_first_char,
-            // 一次展开最多产出多少条切分。
-            //
-            // **512 不是随手填的**：这个上限决定"哪些切分能进入词库查询"。
-            // 实测（默认方案 399 个音节 + 两条缩写规则）：`nihao` 要出
-            // `ni hao`（rank 0），`nh` 要到 rank 4 才出现 `n hao`——
-            // 而 64 的上限**根本走不到那里**，结果是「你好」这个 40 万
-            // 词条词库里存在的词**打不出来**，单字却一切正常。
-            //
-            // 上限太小是**静默错误**（少几个候选，没人报错），所以这里
-            // 宁大勿小：超出上限的切分只会被翻译器的容量上限（200）
-            // 再筛一次，代价是每次按键多几百次词库查询——P50 实测仍在
-            // 20 µs 量级（< 1 ms 红线）。
-            max_expansions: 512,
-            max_units: 16,
+            limits: ExpansionLimits::default(),
         }
     }
 
-    /// 设置一次展开的上限（测试与调参用）。
+    /// 设置展开的硬预算（测试与调参用）。
     #[must_use]
     pub fn with_limits(mut self, max_expansions: usize, max_units: usize) -> Self {
-        self.max_expansions = max_expansions.max(1);
-        self.max_units = max_units.max(1);
+        self.limits.max_results = max_expansions.max(1);
+        self.limits.max_units = max_units.max(1);
         self
+    }
+
+    /// 设置**全部**预算（测试与基准用）。
+    #[must_use]
+    pub fn with_budget(mut self, limits: ExpansionLimits) -> Self {
+        self.limits = limits.sane();
+        self
+    }
+
+    /// 当前的硬预算。
+    #[must_use]
+    pub fn limits(&self) -> ExpansionLimits {
+        self.limits
     }
 
     /// 是否存在某条拼写边（测试与调试用）。
@@ -635,74 +807,103 @@ impl SpellingTable {
     ///
     /// # 算法
     ///
-    /// 在"位置"上做**宽度优先的图搜索**：每个位置找出所有能匹配上的边，
-    /// 前进到新位置。到达末尾的路径就是一条展开结果。
+    /// 在"位置"上做**按代价排序的图搜索（best-first）**：每个位置找出所有
+    /// 能匹配上的边，前进到新位置。到达末尾的路径就是一条展开结果。
     ///
     /// **为什么要「所有」而不是「最优的一条」**：一条拼写可能对应多个编码
     /// （`nh` 既能是 `ni hao`，也能是 `na hao`），而**只有词库才知道哪个真有词**。
     /// 所以这里给出一族候选，由词库那一侧决出胜负——这也正是
     /// RIME 的 `script_translator` 在音节图上做查询的方式。
     ///
-    /// 输出顺序确定（按"代价降序、编码字典序"），因此可复现（PLAN §5.2）。
+    /// 输出顺序确定（按"代价降序、编码单元数升序、编码字典序、属性"），
+    /// 因此可复现（PLAN §5.2）。
     ///
     /// # Errors / 错误
     ///
     /// 无。无法切分时 `out` 保持为空——由兜底翻译器保证"敲的东西总能上屏"。
+    ///
+    /// # 资源上界（P0-A）
+    ///
+    /// 见 [`ExpansionLimits`]。搜索图是 arena + 父指针，**中间状态的内存
+    /// 与路径长度无关**；探索被 `max_states` / `max_work` 双向硬限。
+    /// 需要观测这些数字时用 [`Self::expand_into_with_stats`]。
     pub fn expand_into(&self, spelling: &str, out: &mut ExpansionSink<'_>) {
+        let _ = self.expand_into_with_stats(spelling, out);
+    }
+
+    /// 同 [`Self::expand_into`]，但把这一趟的**可观测计数**交出来。
+    ///
+    /// 测试与基准用它断言资源上界（状态数、边尝试数、图字节数），
+    /// 而不是断言墙钟时间——后者在 CI 上不可复现。
+    pub fn expand_into_with_stats(
+        &self,
+        spelling: &str,
+        out: &mut ExpansionSink<'_>,
+    ) -> ExpansionStats {
+        let limits = self.limits;
+        let mut stats = ExpansionStats::default();
         if spelling.is_empty() {
-            return;
+            return stats;
         }
 
-        // **按代价排序的图搜索（best-first）**，而不是先进后出的深搜。
+        // 搜索图：节点是 (位置, 走过的边序列)，父指针重建序列。
         //
-        // # 为什么这里必须是"按代价"
-        //
-        // 一条拼写能展开出的切分可以有几百条（全拼 + 简拼 + 补全的各种
-        // 组合），而 `max_expansions` 会截断。截断留下哪些，**决定了
-        // 用户能不能打出一个词**——所以留下哪些不能靠运气。
-        //
-        // 第一版是深搜（`Vec` 当栈），后果实测过：`ni hao` 的规范切分
-        // **根本没被生成**，因为有限的名额被 `niu hao`（`ni` 的缩写边）
-        // 这类变体先占满了。症状是"你好"在 40 万词条的词库里**打不出来**，
-        // 而单字 `ni`、`hao` 都正常——极难从这个现象反推到展开顺序上。
-        //
-        // 排序键与下面 `done.sort_by` 的完全一致，因此**名额总是先给
-        // 代价最高（= 罚分最少）的切分**：规范拼写代价为 0，永远先入选；
-        // 简拼、补全这些带代价的排在后面。
-        //
-        // 状态空间是 `(位置, 已选编码)` 的 DAG，用 `seen` 去重保证
-        // 每个状态只扩展一次（同一状态经不同路径到达时，代价不同——
-        // 这里保留**先到的那条**，而先到的正是代价更高的那条）。
-        let mut heap: BinaryHeap<ExpansionState> = BinaryHeap::new();
-        heap.push(ExpansionState {
+        // **不再用 `HashSet<(pos, Vec<CodeUnitId>)>` 去重**：那份去重表
+        // 每插入一个状态就要 clone 一整条编码，而它换来的只是"重复状态
+        // 少扩展一次"。在 `max_states` 硬限之下，重复状态只花预算、
+        // 不破坏正确性（最终 `dedup_by` 会去掉重复结果），而内存从
+        // "每条路径一份堆分配"降到"每状态 24 字节"。
+        let mut arena: Vec<SearchNode> = Vec::with_capacity(limits.max_states.min(1024));
+        arena.push(SearchNode {
+            parent: NO_PARENT,
+            unit: CodeUnitId(0),
             cost: Score::ZERO,
-            pos: 0,
-            units: Vec::new(),
             attr: SpellingAttr::NORMAL,
+            pos: 0,
+            depth: 0,
         });
-        let mut seen: std::collections::HashSet<(usize, Vec<CodeUnitId>)> =
-            std::collections::HashSet::new();
-        let mut done: Vec<Expansion> = Vec::new();
-        let mut budget = self.max_expansions * self.max_units * 8;
+        stats.states_pushed = 1;
 
-        while let Some(st) = heap.pop() {
-            if budget == 0 || done.len() >= self.max_expansions {
+        let mut heap: BinaryHeap<Frontier> = BinaryHeap::new();
+        heap.push(Frontier {
+            cost: Score::ZERO,
+            depth: 0,
+            node: 0,
+            seq: 0,
+        });
+        let mut seq: u64 = 1;
+
+        // 收下的**全部**结果；最后统一排序再按 `max_results` 截断。
+        //
+        // # 为什么不在收满 `max_results` 时就停
+        //
+        // 旧实现是"一堆满就走"。而堆是按 (代价, 单元数) 出队的，同代价同
+        // 单元数的切分之间没有全序保证——一旦收满的时机落在某个并列组中间，
+        // **想要的词可能恰好没进那 512 条**，症状是"某些词偶尔打不出来"。
+        // 现在探索只受 `max_states`/`max_work` 限，截断发生在**按真实排序键
+        // 排好之后**，于是"该留哪 512 条"由语义决定，不由探索顺序决定。
+        let mut done: Vec<Expansion> = Vec::new();
+
+        while let Some(f) = heap.pop() {
+            if stats.edge_attempts >= limits.max_work || stats.states_pushed >= limits.max_states {
+                stats.truncated = true;
                 break;
             }
-            budget -= 1;
+            stats.states_popped += 1;
+            let node = arena[f.node as usize];
 
-            if st.pos == spelling.len() {
+            if node.pos as usize == spelling.len() {
                 done.push(Expansion {
-                    code: st.units,
-                    cost: st.cost,
-                    attr: st.attr,
+                    code: rebuild_code(&arena, f.node),
+                    cost: node.cost,
+                    attr: node.attr,
                 });
                 continue;
             }
-            if st.units.len() >= self.max_units {
+            if node.depth as usize >= limits.max_units {
                 continue;
             }
-            let Some(c) = spelling[st.pos..].chars().next() else {
+            let Some(c) = spelling[node.pos as usize..].chars().next() else {
                 continue;
             };
             let Some(cands) = self.by_first_char.get(&c) else {
@@ -710,30 +911,47 @@ impl SpellingTable {
             };
 
             for &idx in cands {
+                if stats.edge_attempts >= limits.max_work
+                    || stats.states_pushed >= limits.max_states
+                {
+                    stats.truncated = true;
+                    break;
+                }
+                stats.edge_attempts += 1;
                 let edge = &self.edges[idx];
-                if !spelling[st.pos..].starts_with(&edge.text) {
+                if !spelling[node.pos as usize..].starts_with(&edge.text) {
                     continue;
                 }
-                let mut next_units = st.units.clone();
-                next_units.push(edge.unit);
-                let next_pos = st.pos + edge.text.len();
-                if !seen.insert((next_pos, next_units.clone())) {
-                    continue;
-                }
-                heap.push(ExpansionState {
-                    cost: st.cost.saturating_add(edge.cost),
+                // 位置按字节推进；边文本是 UTF-8，因此不会切在多字节中间。
+                #[allow(clippy::cast_possible_truncation)]
+                let next_pos = (node.pos as usize + edge.text.len()) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let child = arena.len() as u32;
+                arena.push(SearchNode {
+                    parent: f.node,
+                    unit: edge.unit,
+                    cost: node.cost.saturating_add(edge.cost),
+                    attr: node.attr.union(edge.attr),
                     pos: next_pos,
-                    units: next_units,
-                    attr: st.attr.union(edge.attr),
+                    depth: node.depth + 1,
                 });
+                stats.states_pushed += 1;
+                heap.push(Frontier {
+                    cost: node.cost.saturating_add(edge.cost),
+                    depth: node.depth + 1,
+                    node: child,
+                    seq,
+                });
+                seq += 1;
             }
         }
 
+        stats.results = done.len();
+        // **不再往 heap / arena 之外分配**：图字节数就是 arena + 前沿。
+        stats.graph_bytes = arena.len() * core::mem::size_of::<SearchNode>()
+            + heap.len() * core::mem::size_of::<Frontier>();
+
         // 排序：**代价降序 → 编码单元数升序 → 编码字典序 → 属性**。
-        //
-        // 搜索本身已经按下述次序出队（`State::cmp`），所以这一步现在只是
-        // **把同一批结果排稳**——保留它是因为"输出顺序确定"是可复现铁律
-        // 的一部分，不该依赖"堆的实现恰好稳定"。
         //
         // # "编码单元数升序"这一条是实测加上的
         //
@@ -755,10 +973,31 @@ impl SpellingTable {
         });
         done.dedup_by(|a, b| a.code == b.code && a.cost == b.cost && a.attr == b.attr);
 
-        for e in done {
+        for e in done.into_iter().take(limits.max_results) {
             out.push(e);
         }
+        stats
     }
+}
+
+/// 由父指针重建一条编码（从根到 `node`）。
+///
+/// 只在**到达输入末尾**（即真的产出一条结果）时调用，因此调用次数
+/// 上界是结果数，而不是状态数——这正是把路径副本换成父指针的收益。
+fn rebuild_code(arena: &[SearchNode], node: u32) -> Vec<CodeUnitId> {
+    let mut out = Vec::new();
+    let mut cur = node;
+    while cur != NO_PARENT {
+        let n = arena[cur as usize];
+        // 根是哨兵：它没有"进来的边"，`unit` 字段无意义。
+        if n.parent == NO_PARENT {
+            break;
+        }
+        out.push(n.unit);
+        cur = n.parent;
+    }
+    out.reverse();
+    out
 }
 
 impl stele_core::Spelling for SpellingTable {

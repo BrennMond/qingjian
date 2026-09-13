@@ -68,7 +68,7 @@ fn load_corpus() -> Vec<Chain> {
         }
         let cols: Vec<&str> = line.split('\t').map(str::trim).collect();
         assert!(
-            cols.len() >= 4 && cols.len() % 2 == 0,
+            cols.len() >= 4 && cols.len().is_multiple_of(2),
             "对比集第 {} 行格式不对（应当是交替的 编码/词 对，至少两对）：{line:?}",
             i + 1
         );

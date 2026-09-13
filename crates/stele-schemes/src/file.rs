@@ -24,7 +24,7 @@
 use crate::components;
 use stele_config::{Node, Value};
 use stele_core::Score;
-use stele_core::{CodeAlphabet, Diagnostic, SchemaError, SchemaInfo, Switch};
+use stele_core::{CodeAlphabet, CodeUnitId, Diagnostic, SchemaError, SchemaInfo, Switch};
 use stele_dict as dict;
 use stele_engine::keyspec::parse_key_name;
 use stele_engine::pipeline::CANDIDATE_CAP;
@@ -1512,10 +1512,26 @@ pub fn load_dir_deployed_layered(
     Ok(out)
 }
 
-/// 部署一份词库：算校验和 → 需要就编译 → 以按需分页的方式打开。
+/// 部署一份词库：算身份指纹 → 需要就编译 → 以按需分页的方式打开。
 ///
 /// **注意它不经过内联路径**——内联会把全部词条读进内存，
 /// 而那正是我们要消灭的 245 MB 峰值。
+///
+/// # 缓存身份（P0-B 修复）
+///
+/// 产物文件名里放的是 [`BuildFingerprint`]，**不是**源数据校验和。
+/// 差别是致命的：产物里存的是**编码单元的下标**，而下标由 `alphabet`
+/// 的顺序决定。只用源校验和当文件名时，"只把 `alphabet` 从 `[ni, hao]`
+/// 改成 `[hao, ni]`"会命中旧产物——输入 `ni` 得到「好」。指纹把
+/// 格式版本、编译选项、字母表内容与顺序、源数据校验和一起算进去，
+/// 于是**任何影响下标语义的改动都会强制重建**。
+///
+/// # 并发
+///
+/// 两个进程同时部署同一份词库时，它们算出的指纹相同、目标路径相同；
+/// 编译走"同目录唯一临时文件 + 原子改名"（见 `stele_table::compile`），
+/// 因此谁先到谁发布，后到者覆盖成逐字节相同的内容。**读者永远看不到
+/// 半个产物**。
 fn deploy_dict(
     src: &dyn dict::Source,
     dict_name: &str,
@@ -1524,9 +1540,22 @@ fn deploy_dict(
 ) -> Result<std::sync::Arc<dyn stele_core::Lexicon>, Diagnostic> {
     let bad = |m: String| Diagnostic::new(dict_name, m).with_field("translator.dictionary");
 
+    // 源数据校验和（含 import 链的原始字节）。
     let checksum = dict::checksum_of(src, dict_name, dict_name)
         .map_err(|e| bad(format!("算词库校验和失败：{e}")))?;
-    let table_path = cache_dir.join(format!("{dict_name}.{checksum:016x}.table"));
+
+    // 身份指纹：格式版本 + 编译选项 + **字母表内容与顺序** + 源校验和。
+    let units: Vec<String> = (0..alphabet.len())
+        .filter_map(|i| alphabet.text(CodeUnitId(u32::try_from(i).ok()?)))
+        .map(str::to_owned)
+        .collect();
+    let fingerprint = stele_table::BuildFingerprint::of(
+        stele_table::FORMAT_VERSION,
+        stele_table::COMPILER_OPTIONS,
+        &units,
+        checksum,
+    );
+    let table_path = cache_dir.join(format!("{dict_name}.{}.table", fingerprint.hex()));
 
     if !table_path.exists() {
         std::fs::create_dir_all(cache_dir)
@@ -1535,6 +1564,7 @@ fn deploy_dict(
         // 流式：词条一条条喂进写入器，**中间没有 Vec<RawEntry>**。
         let r = stele_table::compile(
             checksum,
+            fingerprint,
             |w| {
                 dict::for_each_entry(src, dict_name, dict_name, |word, code, weight| {
                     let mut ids: Vec<u16> = Vec::with_capacity(4);
@@ -1577,7 +1607,7 @@ fn deploy_dict(
         }
     }
 
-    let lex = stele_table::TableLexicon::open_checked(&table_path, Some(checksum))
+    let lex = stele_table::TableLexicon::open_checked(&table_path, Some(fingerprint))
         .map_err(|e| bad(format!("词库产物加载失败：{e}")))?;
     Ok(std::sync::Arc::new(lex))
 }

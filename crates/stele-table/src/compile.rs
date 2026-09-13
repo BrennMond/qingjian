@@ -33,10 +33,16 @@
 //! **这是一个有意的取舍**：65 MB 换掉一个外部排序器，
 //! 而预算还有一倍余量。真到了不够的那天再说——那时也知道确切数字。
 
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::format::{TableHeader, ENTRY_SIZE, FORMAT_VERSION, HEADER_SIZE, MAGIC};
+use crate::format::{
+    BodyChecksum, BuildFingerprint, TableHeader, ENTRY_SIZE, FORMAT_VERSION, HEADER_SIZE,
+};
+
+/// 临时文件名的计数器（同一进程内并发编译也不会撞名）。
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 编译错误。
 #[non_exhaustive]
@@ -88,19 +94,27 @@ pub struct TableWriter {
     code_spans: Vec<(u32, u8)>,
     scores: Vec<i32>,
     checksum: u64,
+    fingerprint: BuildFingerprint,
 }
 
 impl TableWriter {
-    /// 以给定的初始校验和开始（多份源文件用 [`crate::format::combine_checksums`] 合并）。
+    /// 以给定的源数据校验和与产物指纹开始。
+    ///
+    /// - `source_checksum`：源词典 + import 链原始字节的 FNV-1a
+    ///   （多份源文件用 [`crate::format::combine_checksums`] 合并）。
+    /// - `fingerprint`：**产物身份**，必须包含格式版本、编译选项、
+    ///   字母表内容与顺序（见 [`BuildFingerprint`]）。缓存命中判定用它，
+    ///   而不是只用 `source_checksum`——后者不含字母表，会静默错码。
     #[must_use]
-    pub fn new(checksum: u64) -> Self {
+    pub fn new(source_checksum: u64, fingerprint: BuildFingerprint) -> Self {
         Self {
             words: Vec::new(),
             word_spans: Vec::new(),
             code_units: Vec::new(),
             code_spans: Vec::new(),
             scores: Vec::new(),
-            checksum,
+            checksum: source_checksum,
+            fingerprint,
         }
     }
 
@@ -235,6 +249,29 @@ impl TableWriter {
         let entries_offset = words_offset + u64::from(word_bytes);
         let index_offset = entries_offset + (n as u64) * ENTRY_SIZE as u64;
 
+        // ── 词表：按**排序后的顺序**重排 ──
+        //
+        // 于是同一编码的词条在文件里是连续的，读侧一次 `read_at` 就能拿到
+        // 某个编码的全部词——这是"两次系统调用完成一次查询"这个承诺的关键。
+        let mut sorted_word_offsets: Vec<u32> = Vec::with_capacity(n);
+        let mut new_words: Vec<u8> = Vec::with_capacity(self.words.len());
+        for &idx in &order {
+            let (off, len) = self.word_spans[idx as usize];
+            #[allow(clippy::cast_possible_truncation)]
+            sorted_word_offsets.push(new_words.len() as u32);
+            new_words.extend_from_slice(&self.words[off as usize..off as usize + len as usize]);
+        }
+
+        // ── 词条数组 ──
+        let mut entry_buf = Vec::with_capacity(n * ENTRY_SIZE);
+        for (pos, &idx) in order.iter().enumerate() {
+            let (_, len) = self.word_spans[idx as usize];
+            entry_buf.extend_from_slice(&sorted_word_offsets[pos].to_le_bytes());
+            entry_buf.extend_from_slice(&len.to_le_bytes());
+            entry_buf.extend_from_slice(&0u16.to_le_bytes()); // flags（留给将来）
+            entry_buf.extend_from_slice(&self.scores[idx as usize].to_le_bytes());
+        }
+
         let header = TableHeader {
             format_version: FORMAT_VERSION,
             source_checksum: self.checksum,
@@ -245,68 +282,83 @@ impl TableWriter {
             words_offset,
             entries_offset,
             index_offset,
+            build_fingerprint: self.fingerprint.as_u64(),
+            // 先占位，等主体字节都算完再回填（就在下面几行）。
+            body_checksum: 0,
         };
 
-        // ── 写文件 ──
+        // ── 索引三段（先在内存里成形：既要写文件，也要算校验和）──
+        let mut index_buf: Vec<u8> = Vec::with_capacity(unit_offsets.len() * 8 + codes.len() * 2);
+        for v in &unit_offsets {
+            index_buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &entry_offsets {
+            index_buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &codes {
+            index_buf.extend_from_slice(&v.to_le_bytes());
+        }
+        debug_assert_eq!(index_buf.len() as u64, header.index_size());
+
+        // ── 主体校验和：**严格按文件里的字节顺序**喂 ──
+        let mut body = BodyChecksum::new();
+        body.update(&new_words);
+        body.update(&entry_buf);
+        body.update(&index_buf);
+        let mut header = header;
+        header.body_checksum = body.finish();
+
+        // ── 写文件（临时文件 + 原子改名）──
+        //
+        // 为什么要原子发布：缓存目录里**绝不能出现"半个产物"**。
+        // 直接 `File::create(out_path)` 会在写第一行之前就把旧产物截断，
+        // 中途失败就留下一个头部声明 0 字节、主体缺失的文件。先写同目录的
+        // 唯一临时文件、`sync_all` 之后再 `rename`，读者要么看到旧产物、
+        // 要么看到完整的新产物。这是"缓存不可见半成品"的实现方式。
         if let Some(dir) = out_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let file = std::fs::File::create(out_path)?;
-        let mut w = BufWriter::with_capacity(1 << 20, file);
-
-        w.write_all(MAGIC)?; // 占位，最后回填完整头部
-        w.write_all(&[0u8; (HEADER_SIZE - 8) as usize])?;
-        debug_assert_eq!(w.stream_position()?, words_offset);
-
-        // 词表：按**排序后的顺序**重排，于是同一编码的词条在文件里是连续的，
-        // 读侧一次 `read_at` 就能拿到某个编码的全部词——这是"两次系统调用
-        // 完成一次查询"这个承诺的关键。
-        let mut sorted_word_offsets: Vec<u32> = Vec::with_capacity(n);
-        let mut new_words: Vec<u8> = Vec::with_capacity(self.words.len());
-        for &idx in &order {
-            let (off, len) = self.word_spans[idx as usize];
-            #[allow(clippy::cast_possible_truncation)]
-            sorted_word_offsets.push(new_words.len() as u32);
-            new_words.extend_from_slice(&self.words[off as usize..off as usize + len as usize]);
+        let tmp = tmp_path(out_path);
+        {
+            let file = std::fs::File::create(&tmp)?;
+            let mut w = BufWriter::with_capacity(1 << 20, file);
+            w.write_all(&header.to_bytes())?;
+            w.write_all(&new_words)?;
+            w.write_all(&entry_buf)?;
+            w.write_all(&index_buf)?;
+            w.flush()?;
+            let file = w
+                .into_inner()
+                .map_err(|e| CompileError::Io(e.to_string()))?;
+            // 数据先落盘，再让它以最终名字出现。
+            file.sync_all()?;
         }
-        w.write_all(&new_words)?;
-
-        // 词条数组。
-        let mut entry_buf = Vec::with_capacity(n * ENTRY_SIZE);
-        for (pos, &idx) in order.iter().enumerate() {
-            let (_, len) = self.word_spans[idx as usize];
-            entry_buf.extend_from_slice(&sorted_word_offsets[pos].to_le_bytes());
-            entry_buf.extend_from_slice(&len.to_le_bytes());
-            entry_buf.extend_from_slice(&0u16.to_le_bytes()); // flags（留给将来）
-            entry_buf.extend_from_slice(&self.scores[idx as usize].to_le_bytes());
+        if let Err(e) = std::fs::rename(&tmp, out_path) {
+            // 改名失败时**不留垃圾**：清掉临时文件再报错。
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CompileError::Io(e.to_string()));
         }
-        w.write_all(&entry_buf)?;
-
-        // 索引。
-        for v in &unit_offsets {
-            w.write_all(&v.to_le_bytes())?;
-        }
-        for v in &entry_offsets {
-            w.write_all(&v.to_le_bytes())?;
-        }
-        for v in &codes {
-            w.write_all(&v.to_le_bytes())?;
-        }
-
-        // 回填头部。
-        w.flush()?;
-        let mut file = w
-            .into_inner()
-            .map_err(|e| CompileError::Io(e.to_string()))?;
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(&header.to_bytes())?;
-        file.sync_all()?;
 
         Ok(CompiledTable {
             header,
             path: out_path.to_path_buf(),
         })
     }
+}
+
+/// 与目标同目录的唯一临时文件名。
+///
+/// **必须同目录**：跨文件系统的 `rename` 会退化成"复制 + 删除"，
+/// 那就不再是原子的。名字里带 pid 与计数器，避免并发编译互踩
+/// （固定的 `.tmp` 后缀会让两个进程写同一个文件）。
+fn tmp_path(out_path: &Path) -> PathBuf {
+    let mut name = out_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    out_path.with_file_name(name)
 }
 
 /// 权重 → 对数域定点分数。
@@ -348,11 +400,16 @@ impl CompiledTable {
 /// # Errors
 ///
 /// 喂入时出错或写文件失败时返回 [`CompileError`]。
-pub fn compile<F>(checksum: u64, feed: F, out_path: &Path) -> Result<CompiledTable, CompileError>
+pub fn compile<F>(
+    source_checksum: u64,
+    fingerprint: BuildFingerprint,
+    feed: F,
+    out_path: &Path,
+) -> Result<CompiledTable, CompileError>
 where
     F: FnOnce(&mut TableWriter) -> Result<(), CompileError>,
 {
-    let mut w = TableWriter::new(checksum);
+    let mut w = TableWriter::new(source_checksum, fingerprint);
     feed(&mut w)?;
     w.finish(out_path)
 }
@@ -367,11 +424,17 @@ mod tests {
         p
     }
 
+    /// 测试用的固定指纹（内容不重要，稳定性重要）。
+    fn fp() -> BuildFingerprint {
+        BuildFingerprint::of(FORMAT_VERSION, "test", &[], 0)
+    }
+
     #[test]
     fn compiles_and_reports_a_sane_header() {
         let path = tmp("basic");
         let t = compile(
             42,
+            fp(),
             |w| {
                 w.push("你好", &[0, 1], 100.0)?;
                 w.push("世界", &[2, 3], 50.0)?;
@@ -386,6 +449,23 @@ mod tests {
         assert_eq!(t.header.code_count, 3);
         assert_eq!(t.checksum(), 42);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), t.size_bytes());
+        assert_eq!(t.header.build_fingerprint, fp().as_u64());
+        // 主体的校验和必须真的算过（非 0 且能被读侧独立复算）。
+        assert!(crate::format::validate_layout(&t.header, t.size_bytes()).is_ok());
+    }
+
+    #[test]
+    fn writing_leaves_no_temp_file_behind() {
+        let path = tmp("notmp");
+        compile(0, fp(), |_w| Ok(()), &path).unwrap();
+        let dir = path.parent().unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("stele-table-test-notmp") && n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "留下了临时文件：{leftovers:?}");
     }
 
     #[test]
@@ -393,6 +473,7 @@ mod tests {
         let path = tmp("samecode");
         let t = compile(
             0,
+            fp(),
             |w| {
                 w.push("低", &[7], 1.0)?;
                 w.push("高", &[7], 100.0)?;
@@ -410,7 +491,7 @@ mod tests {
     #[test]
     fn empty_dictionary_compiles() {
         let path = tmp("empty");
-        let t = compile(0, |_w| Ok(()), &path).unwrap();
+        let t = compile(0, fp(), |_w| Ok(()), &path).unwrap();
         assert_eq!(t.header.entry_count, 0);
         assert_eq!(t.header.code_count, 0);
         assert!(t.size_bytes() > 0);
@@ -420,7 +501,7 @@ mod tests {
     fn oversized_input_is_rejected_with_a_reason() {
         let path = tmp("oversize");
         let long_code: Vec<u16> = (0..300).collect();
-        let e = compile(0, |w| w.push("x", &long_code, 1.0), &path).unwrap_err();
+        let e = compile(0, fp(), |w| w.push("x", &long_code, 1.0), &path).unwrap_err();
         assert!(e.to_string().contains("255"), "{e}");
     }
 
@@ -431,6 +512,7 @@ mod tests {
         let path = tmp("ratio");
         let t = compile(
             0,
+            fp(),
             |w| {
                 for i in 0..1000u32 {
                     w.push(&format!("词{i}"), &[1, 2, 3], 100.0)?;

@@ -22,7 +22,13 @@ members = [
 version = "0.0.0"
 edition = "2021"
 # 由 rust-toolchain.toml 固定为 1.98；MSRV 取一个我们真正验证过的下限。
-rust-version = "1.82"
+#
+# 为什么从 1.82 提到 1.89：用户记忆的落盘要用**跨进程文件锁**
+# （`std::fs::File::lock` / `unlock`），而它是 1.89 稳定的。
+# 备选是引入一个锁 crate，或自己写一套"锁目录 + 陈旧锁清理"——
+# 前者违反"核心零第三方依赖"，后者是一段很容易写错的并发代码。
+# 用 std 的现成实现、把 MSRV 提上去，是这里代价最小的一步。
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/example/stele-ime"
 authors = ["Stele-IME contributors"]
