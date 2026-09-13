@@ -1,0 +1,55 @@
+# 对照实验的 **librime 侧**方案（RIME 原生写法）
+#
+# 它刻意只留"查词库"这一条路径：没有 grammar（八股文语言模型）、
+# 没有 simplifier、没有反查。理由是**变量控制**——对照要回答的是
+# "同一个词库、同一个输入，两个引擎的候选排序是否一致"，
+# 多挂一个语言模型，差异就再也说不清是谁造成的。
+#
+# `ascii_composer` 必须有：librime 的按键处理链里，字母键要先经过它
+# （缺了它 librime 只会在日志里报 `Missing ascii bindings`，
+# 然后**所有按键都 handled=0**——这是本工装搭起来时踩到的第一坑）。
+schema:
+  schema_id: stele-cmp
+  name: RIME × Stele Shared Wordlist
+  version: "1.0"
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [中文, 西文]
+
+engine:
+  processors:
+    - ascii_composer
+    - speller
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - abc_segmentor
+    - fallback_segmentor
+  translators:
+    - script_translator
+  filters:
+    - uniquifier
+
+ascii_composer:
+  good_old_caps_lock: true
+  switch_key:
+    Shift_L: commit_code
+    Shift_R: commit_code
+    Control_L: noop
+    Control_R: noop
+    Caps_Lock: clear
+    Eisu_toggle: clear
+
+speller:
+  # RIME 的字母表是**字符集**（拼音用 26 个字母）；
+  # 词库里的编码是"音节拼写"，由韵书编译期解析。
+  alphabet: zyxwvutsrqponmlkjihgfedcba
+  delimiter: " '"
+  algebra:
+    - abbrev/^([a-z]).+$/$1/
+
+translator:
+  dictionary: stele-cmp

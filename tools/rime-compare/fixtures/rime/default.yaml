@@ -1,0 +1,9 @@
+# 对照实验用的**最小** librime 共享目录配置。
+#
+# 刻意不引用 `/usr/share/rime-data/default.yaml`（rime-prelude 的资产）：
+# 这样这份工装**自带全部依赖**，换一台机器也能跑出同一份结果。
+# 代价是没有 RIME 的按键预设（`key_binder` / `punctuator` 的符号表），
+# 但对照只用字母键，用不到它们。
+config_version: '0.50'
+schema_list:
+  - schema: stele-cmp
