@@ -10,13 +10,13 @@
 ## 怎么跑
 
 ```bash
-cargo test -p stele-embed --test context_cases -- --nocapture
+cargo test -p qingjian-embed --test context_cases -- --nocapture
 ```
 
 测试会读这张表、按它生成一份临时方案，然后做一次 **A/B 对照**：
 
 - **A 基线**：词库权重 + P4a 精确记忆（= 今天的产品）；
-- **C +向量**：再挂上 `stele_embed::EmbedRanker`。
+- **C +向量**：再挂上 `qingjian_embed::EmbedRanker`。
 
 并同时断言两件事：**改善**（基线错的被修好）与**无净损失**（基线对的仍对）。
 

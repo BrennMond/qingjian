@@ -1,21 +1,21 @@
-# Stele-IME / 石經 — workspace root
+# Qingjian IME / 青简输入法 — workspace root
 #
 # 见 PLAN.md（项目章程）与 docs/engine-design.md（引擎设计权威定义）。
-# 铁律：`stele-core` / `stele-engine` 零第三方依赖（PLAN §1 D9）。
+# 铁律：`qingjian-core` / `qingjian-engine` 零第三方依赖（PLAN §1 D9）。
 
 [workspace]
 resolver = "2"
 members = [
-    "crates/stele-core",
-    "crates/stele-engine",
-    "crates/stele-config",
-    "crates/stele-dict",
-    "crates/stele-table",
-    "crates/stele-memory",
-    "crates/stele-embed",
-    "crates/stele-schemes",
-    "crates/stele-cli",
-    "crates/stele-bench",
+    "crates/qingjian-core",
+    "crates/qingjian-engine",
+    "crates/qingjian-config",
+    "crates/qingjian-dict",
+    "crates/qingjian-table",
+    "crates/qingjian-memory",
+    "crates/qingjian-embed",
+    "crates/qingjian-schemes",
+    "crates/qingjian-cli",
+    "crates/qingjian-bench",
 ]
 
 [workspace.package]
@@ -30,8 +30,8 @@ edition = "2021"
 # 用 std 的现成实现、把 MSRV 提上去，是这里代价最小的一步。
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/stele-ime"
-authors = ["Stele-IME contributors"]
+repository = "https://github.com/example/qingjian-ime"
+authors = ["Qingjian contributors"]
 
 [workspace.lints.rust]
 unsafe_code = "deny"

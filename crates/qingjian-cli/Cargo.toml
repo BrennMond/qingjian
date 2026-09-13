@@ -1,0 +1,24 @@
+[package]
+name = "qingjian-cli"
+description = "Qingjian IME 的命令行调试前端。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+qingjian-core = { path = "../qingjian-core" }
+qingjian-engine = { path = "../qingjian-engine" }
+qingjian-memory = { path = "../qingjian-memory" }
+qingjian-embed = { path = "../qingjian-embed" }
+qingjian-schemes = { path = "../qingjian-schemes" }
+
+# 可执行文件名与包名分开：用户敲的是 `qingjian`，不是 `qingjian-cli`。
+[[bin]]
+name = "qingjian"
+path = "src/main.rs"
+
+[lints]
+workspace = true

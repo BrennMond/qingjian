@@ -1,0 +1,22 @@
+[package]
+name = "qingjian-schemes"
+description = "随项目提供的默认方案：从 YAML 装载（方案资产，不是内核的一部分）。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 这是**方案资产**：它当然含有输入法专属的词汇（拼音、音节…），
+# 那正是它存在的意义。门禁 `verify-no-ime-vocab` 只约束内核
+# （qingjian-core / qingjian-engine），**刻意不约束本 crate**——见 PLAN D24。
+[dependencies]
+qingjian-core = { path = "../qingjian-core" }
+qingjian-engine = { path = "../qingjian-engine" }
+qingjian-config = { path = "../qingjian-config" }
+qingjian-dict = { path = "../qingjian-dict" }
+qingjian-table = { path = "../qingjian-table" }
+
+[lints]
+workspace = true

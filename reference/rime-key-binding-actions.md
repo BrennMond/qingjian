@@ -886,18 +886,18 @@ static void select_schema(Engine* engine, const string& schema) {
 
 ---
 
-## 6. 与我们（stele）实现的差异
+## 6. 与我们（qingjian）实现的差异
 
-**这一节是快照，会过期。** 本文件写作期间，工作区里的另一个任务正在改 `crates/stele-engine/`（提交 `a8a366d`，之后 `processor.rs` / `spec.rs` 又有未提交改动）。下表核对的是**本文件落笔时磁盘上的实际代码**，已尽量区分「已修」「部分修」「未修」。**只做记录，未修改任何实现文件。**
+**这一节是快照，会过期。** 本文件写作期间，工作区里的另一个任务正在改 `crates/qingjian-engine/`（提交 `a8a366d`，之后 `processor.rs` / `spec.rs` 又有未提交改动）。下表核对的是**本文件落笔时磁盘上的实际代码**，已尽量区分「已修」「部分修」「未修」。**只做记录，未修改任何实现文件。**
 
-| # | 主题 | librime 的事实 | stele 现状（写作时） | 结论 |
+| # | 主题 | librime 的事实 | qingjian 现状（写作时） | 结论 |
 | --- | --- | --- | --- | --- |
 | 1 | `send` 的重派发起点 | `engine_->ProcessKey()`，从 `processors_` **链头**重跑，唯一的例外是 key_binder 自己（`redirecting_` 布尔） | **部分修**。`processor.rs:577-583` 已加入 `redirecting` 标志，且 `:548-576` 的文档已正确引用 librime 并把旧做法记为"原先我写错了"。但 `pipeline.rs:333-352` 仍用 `self.dispatch(state, &next, self.binder_index)` 从 key_binder **之后**派发，并仍以 `REBIND_ROUNDS`（`:53`）限轮数 | **还差一半。** 只要 pipeline 那一层不改成"整链重跑、把 `redirecting` 交给 KeyBinder 自己看"，`send` 换来的键在前面那些处理器（`ascii_composer` / `recognizer`）眼里仍等于没发生过——实测 T1 正是这种情形 |
 | 2 | `send_sequence` | 与 `send` 同源，都是 `binding.target`（`KeySequence`），**逐键顺序**派发 | **已修**。`spec.rs:296-304` 的 `send_keys: Option<Vec<String>>` 把二者统一成一个序列，注释明确写了"librime 的 `binding.target` 就是一个 `KeySequence`"；`processor.rs:578` 用 `state.sent_keys.extend(keys)` | 一致 |
 | 3 | `when: predicting` | 合法谓词之一（`key_binder.cc:33`）；但核心 librime **没有任何地方写这个标签**（§3.2） | **已修**。`spec.rs:326-330` 收录了 `Predicting`，注释写明"目前永远为假…留在这里是为了 RIME 的方案能原样读进来" | 一致，且我们对"它为什么永远为假"的理解比 wiki 更准 |
 | 4 | `set_option` / `unset_option` / `select` | 三个独立 action，`select: .next` 特殊（§5.3） | **未实现**。`spec.rs:291-309` 的 `KeyBinding` 只有 `send_keys` 与 `toggle` | 缺功能。系统预设 `key_bindings.yaml` 的 `numbered_mode_switch` 整组依赖 `toggle` + `select`（rime-ice 的 `import_preset: default` 会把它带进来） |
 | 5 | `editor` 动作 | 12 个（含 `toggle_selection`、`commit_composition`、`back`），另有 `noop`（§2.2） | **已覆盖**。`spec.rs:133-148` 解析全部 12 个名字；`back_syllable` 另有别名 `back_unit`（`:140`） | 一致。**待核对**：`noop` 是否实现为"**删除**该键的默认绑定"而不是"什么都不做"（`key_binding_processor_impl.h:70-78`） |
-| 6 | `editor` 的 `FallbackOptions::All` | `Shift+Return` 在 `express_editor` 下先按 `ShiftAsControl` 命中 `Control+Return` = `commit_script_text`（§2.4） | **未见实现**（在 `crates/stele-engine/src/` 下搜 `ShiftAsControl` / `IgnoreShift` 无命中） | 缺功能，且反直觉：我们多半会把 `Shift+Return` 当成"没绑定" |
+| 6 | `editor` 的 `FallbackOptions::All` | `Shift+Return` 在 `express_editor` 下先按 `ShiftAsControl` 命中 `Control+Return` = `commit_script_text`（§2.4） | **未见实现**（在 `crates/qingjian-engine/src/` 下搜 `ShiftAsControl` / `IgnoreShift` 无命中） | 缺功能，且反直觉：我们多半会把 `Shift+Return` 当成"没绑定" |
 | 7 | `editor/bindings` 的类型 | **映射**（`键名: 动作`），而 `key_binder/bindings` 是**列表**（§2.1） | 已意识到差别：`spec.rs:114-119` 的注释写明"`editor` 有一张**默认绑定表**…我们是按'整个替换默认表'实现 `editor/bindings` 的" | **语义差异**：librime 是**逐键覆盖**（`(*this)[key_event] = action`，未提到的键保留默认），我们是**整表替换**。只用 rime-ice 那份"完整默认表"时看不出差别，但用户只写一行 `editor/bindings: {Return: commit_comment}` 时两边行为不同 |
 | 8 | `when: has_menu` | 额外要求 `!ascii_mode`（§3.2） | 待核对 | 西文模式下 `has_menu` 绑定不应生效 |
 | 9 | `VoidSymbol` | `RimeGetKeycodeByName` 永不可达（§1.1 第 5 条） | `keyspec.rs` 已按 librime 的解析规则重写（含"单字符捷径"，`keyspec.rs:82, 135, 189`） | 待核对是否也复刻了 `VoidSymbol` 这一条边界 |

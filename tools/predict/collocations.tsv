@@ -12,7 +12,7 @@
 #     按本表生成的方案来装载它，因此编码是方案数据，不是内核知识（D20）。
 #   · 「词」是要上屏的文本。
 #
-# 断言（crates/stele-memory/tests/predict_next.rs）：
+# 断言（crates/qingjian-memory/tests/predict_next.rs）：
 #   把链的**前面那些词**依次上屏之后，链的**最后一个词**必须出现在
 #   预测通道（lane=Predict）的**第 1 位**。
 #
@@ -24,7 +24,7 @@
 # 否则"今天 → 天气"会被另一行的"今天 → 微信"悄悄顶掉，
 # 而那条断言就会变成对**处理顺序**的隐式依赖（不好查，也不是我们要测的）。
 #
-# 加一行 = 加一条用例。跑：cargo test -p stele-memory --test predict_next
+# 加一行 = 加一条用例。跑：cargo test -p qingjian-memory --test predict_next
 
 wei xin	微信	peng you quan	朋友圈
 jin tian	今天	tian qi	天气

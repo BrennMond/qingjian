@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGETS=("$ROOT/crates/stele-core/src" "$ROOT/crates/stele-engine/src")
+TARGETS=("$ROOT/crates/qingjian-core/src" "$ROOT/crates/qingjian-engine/src")
 
 # 只匹配"声明位置"的标识符：struct / enum / trait / type / fn / 常量。
 PATTERN='(struct|enum|trait|type|fn|const|static)[[:space:]]+[A-Za-z_]*([Ss]yllab|[Pp]inyin|[Bb]opomofo|[Cc]angjie|[Ww]ubi|[Jj]ianpin|[Ff]uzzy[Ss]ound)'

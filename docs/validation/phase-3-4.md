@@ -14,7 +14,7 @@ cargo fmt --all -- --check                                                  # �
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings     # ✓
 cargo test --workspace --offline --locked                                    # ✓ 38 个测试目标全绿
 for f in scripts/verify-*.sh; do bash "$f"; done                             # ✓ 四项门禁
-target/release/stele --check                                                 # ✓ 8 组不变式
+target/release/qingjian --check                                                 # ✓ 8 组不变式
 ```
 
 ---
@@ -29,20 +29,20 @@ target/release/stele --check                                                 # �
 
 ```text
 # 修复前：同一个 shape 方案、同一个输入 `ab`，两条装载路径给出不同候选
-$ stele --schema shape --candidates=all ab            # 内嵌（内存词库）→ 4 条
+$ qingjian --schema shape --candidates=all ab            # 内嵌（内存词库）→ 4 条
   1. 木  2. 十  3. 才  4. ab
-$ stele --scheme-dir schemes/stele-default --schema shape --candidates=all ab
+$ qingjian --scheme-dir schemes/qingjian-default --schema shape --candidates=all ab
   1. 十  2. ab                                        # 部署词库 → 2 条
 ```
 
-`stele --check` 直接报了出来：`shape/ab 应当上屏「十」，得到「木」`。
+`qingjian --check` 直接报了出来：`shape/ab 应当上屏「十」，得到「木」`。
 
 ### 修复后
 
 - `TableLexicon::prefix_lookup`：前缀是**连续区间**，二分下界 + 顺序扫到
   不再匹配为止；与内存实现**逐字段一致**（文本 / 分数 / `attr=COMPLETION` /
   `kind=Completion`）。
-- 新增 `crates/stele-schemes/tests/lexicon_capability.rs`：把两台实现的
+- 新增 `crates/qingjian-schemes/tests/lexicon_capability.rs`：把两台实现的
   `supports_prefix` / `lookup` / `has_prefix` / `prefix_lookup`（两种
   `exclude_exact`）收成同一个 `Probe` 面，8 组编码逐项对照。
   **任何一处分叉都会红**——这是"能力声明必须与实现一致"的可执行版本。
@@ -64,7 +64,7 @@ $ stele --scheme-dir schemes/stele-default --schema shape --candidates=all ab
 ### 修复后
 
 ```text
-$ cargo test -p stele-schemes --test instance_dictionaries --offline
+$ cargo test -p qingjian-schemes --test instance_dictionaries --offline
 test two_script_translator_instances_use_their_own_dictionaries ... ok
 test two_table_translator_instances_use_their_own_dictionaries ... ok
 test an_instance_without_its_own_dictionary_falls_back_to_the_main_one ... ok
@@ -87,8 +87,8 @@ test result: ok. 5 passed
 
 ### 顺带暴露的一处坏数据
 
-`crates/stele-schemes/tests/schemes/p3phrases.dict.yaml` 与 `p3chaizi.dict.yaml`
-的条目写成「编码在前、词在后」（`dz\t石经输入法`），与解析器期望的顺序相反。
+`crates/qingjian-schemes/tests/schemes/p3phrases.dict.yaml` 与 `p3chaizi.dict.yaml`
+的条目写成「编码在前、词在后」（`dz\t青简输入法`），与解析器期望的顺序相反。
 **这从来没被校验过**，因为实例词库在装配时被丢掉了。现在它会真的装载，
 于是装载期**响亮拒绝**。夹具已按正确顺序修好，并给 `p3features` 的字母表
 补上 `d/z/y/x` 四个单元。
@@ -98,7 +98,7 @@ test result: ok. 5 passed
 ## 3. 阶段 3 第 3–4 项：配置字段审计表（审计 G5）
 
 交付 `docs/config-field-audit.md` + 可执行的
-`crates/stele-schemes/tests/config_field_audit.rs`（7 条行为断言）。
+`crates/qingjian-schemes/tests/config_field_audit.rs`（7 条行为断言）。
 
 ### 修掉的两处"解析了没生效"
 
@@ -149,9 +149,9 @@ CLI 启动路径改用报告入口，并把被跳过的方案逐条打印。
   BSD-3-Clause（librime）原文。
 - **GPL 边界**：从 rime-ice（GPL-3.0-only）复制/改写的三份 Lua
   **已移除**；对照测试改为只依赖保留下来的 `.expected.txt`
-  （**输出事实**，不是代码），`cargo test -p stele-engine --test
+  （**输出事实**，不是代码），`cargo test -p qingjian-engine --test
   number_oracle --test calc_oracle` 仍然全绿。
-- `schemes/stele-default/opencc.manifest.yaml` 里 emoji 的许可由
+- `schemes/qingjian-default/opencc.manifest.yaml` 里 emoji 的许可由
   `Apache-2.0` 更正为 `GPL-3.0-only`（该数据不随仓库分发，但标注必须真实）。
 
 ### 5.2 已交付（J1 隐私模型）
@@ -176,7 +176,7 @@ CLI 启动路径改用报告入口，并把被跳过的方案逐条打印。
 审计点名的四例**已修**，并且有可执行的评测集：
 
 ```text
-$ cargo test -p stele-schemes --test word_pinyin_quality --offline -- --nocapture
+$ cargo test -p qingjian-schemes --test word_pinyin_quality --offline -- --nocapture
 词级读音质量（26 条）：召回 26/26（100%），首选 26/26（100%），前五 26/26（100%）
 test result: ok. 3 passed
 ```
@@ -189,7 +189,7 @@ test result: ok. 3 passed
 | `chongxin` → 重新 | 召回不到 | **首选** |
 
 **做法**：新增**自撰的**人工覆盖表
-`schemes/stele-default/cn_dicts/word_pinyin.override.dict.yaml`
+`schemes/qingjian-default/cn_dicts/word_pinyin.override.dict.yaml`
 （文件头写明来源、收录标准与许可；不是从任何第三方词表复制），
 覆盖审计四例 + 高频多音字词 + 常见地名 + 姓氏人名 + 评测集暴露的常用词。
 `pinyin.dict.yaml` 把它排在 `generated` **之前**（先出现者优先）。
@@ -198,7 +198,7 @@ test result: ok. 3 passed
 「银行」的 `yinxing` 是合法读音组合，多音字本来就有两读。
 有一条测试专门守着"不许为了修 A 而删掉 B"。
 
-**评测集**（`crates/stele-schemes/tests/word_pinyin_quality.rs`）：
+**评测集**（`crates/qingjian-schemes/tests/word_pinyin_quality.rs`）：
 26 条**手写**用例（独立于生成器的输入），分常用词 / 多音字 / 地名 /
 人名 / 简拼；报告**召回率、首选率、前五命中**与逐条失败明细。
 另有三条断言守着：覆盖表必须有来源、必须被导入、必须排在 `generated` 之前。

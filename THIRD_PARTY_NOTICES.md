@@ -9,7 +9,7 @@
 > **结论先行**：
 >
 > 1. 本仓库**分发**一份派生的默认词库
->    （`schemes/stele-default/cn_dicts/generated.dict.yaml`，41 万条），
+>    （`schemes/qingjian-default/cn_dicts/generated.dict.yaml`，41 万条），
 >    它派生自 pinyin-data / THUOCL / jieba（MIT）与 OpenCC（Apache-2.0）。
 > 2. 本仓库**分发** `tools/librime-probe/probe.c`，其中逐字段抄写了
 >    librime `rime_api.h`（BSD-3-Clause）的结构体与宏声明。
@@ -20,7 +20,7 @@
 >    也不分发任何 GPL 代码：旧版 `tools/oracle/*.lua`（从 rime-ice 复制/改写）
 >    已在本次整改中**移除**（§5.1）。
 > 5. **运行时源数据**（词表、OpenCC 表、emoji 表）由使用者在本地取回，
->    落在 `.gitignore` 的 `schemes/stele-default/build/`，**不随仓库分发**；
+>    落在 `.gitignore` 的 `schemes/qingjian-default/build/`，**不随仓库分发**；
 >    其固定 revision 与 sha256 记录在已跟踪的 [`tools/sources.lock`](tools/sources.lock)。
 > 6. 本项目自身许可是 **MIT OR Apache-2.0**（见 `LICENSE-MIT` / `LICENSE-APACHE`）。
 >    分发上述第三方派生内容**不会**改变那些内容各自的许可。
@@ -35,10 +35,10 @@
 | 类别 | 是否随仓库分发 | 位置 |
 | --- | --- | --- |
 | 本项目代码（`crates/`、`tools/` 下的 Rust） | 是 | 仓库 |
-| 本项目自撰的方案与演示词库 | 是 | `schemes/stele-default/*.dict.yaml`（`base` / `shape`） |
-| **由第三方数据派生的生成词库** | **是** | `schemes/stele-default/cn_dicts/generated.dict.yaml`（§1.1） |
+| 本项目自撰的方案与演示词库 | 是 | `schemes/qingjian-default/*.dict.yaml`（`base` / `shape`） |
+| **由第三方数据派生的生成词库** | **是** | `schemes/qingjian-default/cn_dicts/generated.dict.yaml`（§1.1） |
 | 从上游复制的 ABI 声明 / wiki 页面 | **是** | `tools/librime-probe/probe.c`（§1.3）、`reference/wiki-*.md`（§1.4） |
-| 原始第三方数据文件（词表 / OpenCC / emoji） | **否**（`.gitignore`） | `schemes/stele-default/build/`（§2） |
+| 原始第三方数据文件（词表 / OpenCC / emoji） | **否**（`.gitignore`） | `schemes/qingjian-default/build/`（§2） |
 | 上游源码副本（librime、rime-ice、Rime wiki） | 否 | `.rime-wiki/`、`.rime-research/`（研究用，不入库） |
 | registry 第三方依赖 | **无** | `Cargo.lock` 只含 workspace 成员；见 §4 |
 
@@ -50,7 +50,7 @@
 
 ## 1. 随仓库分发的第三方内容
 
-### 1.1 `schemes/stele-default/cn_dicts/generated.dict.yaml`（**派生产物**）
+### 1.1 `schemes/qingjian-default/cn_dicts/generated.dict.yaml`（**派生产物**）
 
 **是什么**：414,525 条（414 单字 + 414,111 词）的默认拼音词库，
 头部注释写明"生成产物，不要手改"。
@@ -80,7 +80,7 @@
 > `generated.dict.yaml` 头部把 `jieba_dict.txt` 标成「THUOCL，MIT」。
 > 生成器已修正（`tools/wordlist-gen/src/main.rs`），下一次重新生成即消失。
 
-### 1.2 `schemes/stele-default/pinyin.schema.yaml` 的 `speller.alphabet:` 段（**派生子段**）
+### 1.2 `schemes/qingjian-default/pinyin.schema.yaml` 的 `speller.alphabet:` 段（**派生子段**）
 
 整个文件是本项目自撰的方案（字母表、规则、翻译器配置）；
 其中 `speller.alphabet:` 这一段由 `tools/wordlist-gen` **整段重写**，
@@ -89,7 +89,7 @@
 `base.dict.yaml` / `shape.dict.yaml` / `z-pinyin-demo.schema.yaml` 是自造演示数据
 （`base.dict.yaml` 头部明确写"几百条规模的演示词库"），**不含**第三方内容。
 
-> **已知缺陷**：`schemes/stele-default/opencc.manifest.yaml` 把 `emoji`
+> **已知缺陷**：`schemes/qingjian-default/opencc.manifest.yaml` 把 `emoji`
 > 转换器的 `license` 写成了 `Apache-2.0`。按 §2 的核实，rime-ice 的
 > `opencc/emoji.*` 是 **GPL-3.0-only**。该文件需要改（见 §5.2）。
 
@@ -141,7 +141,7 @@ wiki 仓库当时的 HEAD 是 `5bfcf14a7ae127635dff9da1f133cae9a5319607`，
 `calc.expected.txt`（1.7 KB）与 `number_to_chinese.expected.txt`（3.5 KB）
 是从 rime-ice 的 `lua/calc_translator.lua`、`lua/number_translator.lua`
 （GPL-3.0-only，revision `859e3b53…`）跑出来的**输入→输出记录**，
-供 `crates/stele-engine/tests/{calc_oracle,number_oracle}.rs` 逐条对照。
+供 `crates/qingjian-engine/tests/{calc_oracle,number_oracle}.rs` 逐条对照。
 它们是数据/事实，不含上游源代码；上游 Lua 源码**已从仓库移除**（§5.1）。
 生成配方（上游 URL + revision）保留在 `tools/oracle/README.md`。
 
@@ -159,7 +159,7 @@ wiki 仓库当时的 HEAD 是 `5bfcf14a7ae127635dff9da1f133cae9a5319607`，
 
 以下 16 份文件由 [`tools/fetch-sources.sh`](tools/fetch-sources.sh) 按
 [`tools/sources.lock`](tools/sources.lock) 取回到
-`schemes/stele-default/build/`（`.gitignore` 排除）。**它们不在 git 里。**
+`schemes/qingjian-default/build/`（`.gitignore` 排除）。**它们不在 git 里。**
 每条 URL 都固定到 commit SHA，每条 sha256 都与该 revision 实测一致（§6.2）。
 
 | 目标 | 上游 | 固定 revision | 版权 | 许可 | sha256 |
@@ -232,11 +232,11 @@ Apache-2.0 用仓库里已有的规范全文，不重复一份以免两处漂移
 
 **第三方代码依赖**：`Cargo.lock` 里**没有任何来自 registry 的包**
 （10 个条目全部是 workspace 成员）。`scripts/verify-zero-deps.sh` 守
-`stele-core` / `stele-engine` 零第三方依赖，`scripts/verify-deps.sh` 的白名单
+`qingjian-core` / `qingjian-engine` 零第三方依赖，`scripts/verify-deps.sh` 的白名单
 当前为空。因此本项目不引入任何需要额外许可声明的 Rust 依赖。
 
 **模型**：没有。本项目不使用、不分发任何机器学习模型
-（`stele-embed` 是零依赖、无模型的本地计数投影）。
+（`qingjian-embed` 是零依赖、无模型的本地计数投影）。
 
 ---
 
@@ -254,8 +254,8 @@ Apache-2.0 用仓库里已有的规范全文，不重复一份以免两处漂移
 **处理**（本次整改）：**移除这三个 `.lua`**，保留测试真正读取的
 `.expected.txt` 输出记录。`tools/oracle/README.md` 保留上游 URL 与固定
 revision（`859e3b53…`），需要时可在本地取回同一条源码做复核，
-但**不再提交回仓库**。`crates/stele-engine/tests/*_oracle.rs` 只读
-`.expected.txt`，测试不受影响（`cargo test -p stele-engine --test
+但**不再提交回仓库**。`crates/qingjian-engine/tests/*_oracle.rs` 只读
+`.expected.txt`，测试不受影响（`cargo test -p qingjian-engine --test
 calc_oracle --test number_oracle` 验证）。
 
 **残留**：git **历史**里仍有这三个文件的旧版本。历史清理（`filter-repo` 等）
@@ -263,7 +263,7 @@ calc_oracle --test number_oracle` 验证）。
 
 ### 5.2 待修：`opencc.manifest.yaml` 把 emoji 标成 Apache-2.0
 
-位置：`schemes/stele-default/opencc.manifest.yaml`，
+位置：`schemes/qingjian-default/opencc.manifest.yaml`，
 `converters[0]`（`name: emoji`）的 `license: Apache-2.0`。
 应改为 `GPL-3.0-only`，并把 `source` 补上固定 revision。
 本次整改未改 `schemes/`（超出本任务的修改范围），在此登记。
@@ -323,7 +323,7 @@ git ls-files tools/ schemes/  # 逐条核对本文的路径
 ### 6.2 逐条把本地源码数据与固定 revision 比对
 
 对 `tools/sources.lock` 的每条 URL 下载到临时目录，
-`sha256sum` 与 `schemes/stele-default/build/` 下已有副本比对：
+`sha256sum` 与 `schemes/qingjian-default/build/` 下已有副本比对：
 
 ```text
 pinyin.txt                 SAME   621f8ca9eff8519f47e2b17b564fd318161e13bca07eea8c8e04993cd5d3b52e
@@ -359,13 +359,13 @@ git ls-remote https://github.com/rime/home.wiki.git HEAD
 
 ```bash
 rm -rf .work/regen && mkdir -p .work/regen/cn_dicts
-cp schemes/stele-default/pinyin.schema.yaml .work/regen/
+cp schemes/qingjian-default/pinyin.schema.yaml .work/regen/
 cargo run --offline --manifest-path tools/wordlist-gen/Cargo.toml -- \
-    --sources schemes/stele-default/build --out "$PWD/.work/regen"
-diff <(grep -v '^#' schemes/stele-default/cn_dicts/generated.dict.yaml) \
+    --sources schemes/qingjian-default/build --out "$PWD/.work/regen"
+diff <(grep -v '^#' schemes/qingjian-default/cn_dicts/generated.dict.yaml) \
      <(grep -v '^#' .work/regen/cn_dicts/generated.dict.yaml)
 # → 无输出（414,525 条正文与 YAML 头逐字节一致）
-diff schemes/stele-default/pinyin.schema.yaml .work/regen/pinyin.schema.yaml
+diff schemes/qingjian-default/pinyin.schema.yaml .work/regen/pinyin.schema.yaml
 # → 无输出（音节表零差异）
 ```
 
@@ -376,7 +376,7 @@ diff schemes/stele-default/pinyin.schema.yaml .work/regen/pinyin.schema.yaml
 ### 6.5 确认仓库里没有 registry 依赖
 
 ```bash
-bash scripts/verify-zero-deps.sh   # → 内核（stele-core stele-engine）保持零第三方依赖
+bash scripts/verify-zero-deps.sh   # → 内核（qingjian-core qingjian-engine）保持零第三方依赖
 bash scripts/verify-deps.sh        # → 0 个 registry 依赖，全部有受审记录（重复依赖 0）
 ```
 

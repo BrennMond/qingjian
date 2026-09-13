@@ -3,7 +3,7 @@
 ## 这是什么
 
 以 **librime**（引擎）与 **plum**（方案/配方管理器）两个上游为准，
-把 Stele 与**真实 RIME** 放在同一套定义下对照，产出一份可复现的报告：
+把 Qingjian 与**真实 RIME** 放在同一套定义下对照，产出一份可复现的报告：
 
 ```
 python3 tools/rime-compare/compare.py     # → tools/rime-compare/report.md
@@ -20,17 +20,17 @@ P3 的对照报告结尾写着一句话：
 > 比排序比的是词库，不是引擎。要比排序，得先让两边吃同一份词表。
 
 **这份工装就是来兑现那句话的。** 维度 B 把**同一份** `.dict.yaml` 同时喂给
-librime 与 Stele（`fixtures/shared.dict.yaml`），于是"排序不同"再也不能
+librime 与 Qingjian（`fixtures/shared.dict.yaml`），于是"排序不同"再也不能
 用"词库不同"解释——它只能来自引擎。
 
 ## 四个维度
 
 | 维度 | 对照对象 | 断言什么 | 出处 |
 | --- | --- | --- | --- |
-| **A 结构行为** | 真实 librime（系统运行库）vs stele | 能否上屏 / 按键是否被处理 / 全角标点 | `tools/compare-librime.py`（原样调用） |
+| **A 结构行为** | 真实 librime（系统运行库）vs qingjian | 能否上屏 / 按键是否被处理 / 全角标点 | `tools/compare-librime.py`（原样调用） |
 | **B 同一份词表下的排序** | 两边读**同一份**词表 | 同码候选必须都按词库权重降序；简拼都要命中 | `fixtures/` |
 | **C 上游方案能否装载** | `/usr/share/rime-data`（plum preset 的部署产物） | 每个上游方案能否装载；不能的原因归到哪一类 | librime 仓库 + plum preset |
-| **D 配方覆盖** | plum 的 `preset-packages.conf` / `extra-packages.conf` | 每个配方在本机的部署情况与 Stele 的装载结果 | plum 仓库 |
+| **D 配方覆盖** | plum 的 `preset-packages.conf` / `extra-packages.conf` | 每个配方在本机的部署情况与 Qingjian 的装载结果 | plum 仓库 |
 
 ### B3.1：把"解释"变成"实验"
 
@@ -38,8 +38,8 @@ librime 与 Stele（`fixtures/shared.dict.yaml`），于是"排序不同"再也�
 同一份词表、同一个输入，只改两个开关，四个格子分别看谁还能出候选。
 
 它存在的理由不是为了多一张表，而是**它已经推翻过一次结论**：
-"输入不完整也能出候选"的第一版解释是"Stele 只有缩写这一条通路"，
-跑完矩阵才发现 Stele **四格全空**——缺的是两处（没有"只消费前缀"、
+"输入不完整也能出候选"的第一版解释是"Qingjian 只有缩写这一条通路"，
+跑完矩阵才发现 Qingjian **四格全空**——缺的是两处（没有"只消费前缀"、
 补全在编码单元层），而不是一处。
 
 根因分析（含源码行号与上游对照）见
@@ -58,7 +58,7 @@ librime 与 Stele（`fixtures/shared.dict.yaml`），于是"排序不同"再也�
 ## 前置条件
 
 ```bash
-cargo build --release -p stele-cli          # target/release/stele
+cargo build --release -p qingjian-cli          # target/release/qingjian
 cd tools/librime-probe && ./build.sh        # tools/librime-probe/probe
 ```
 
@@ -84,7 +84,7 @@ librime 的源码副本**不参与构建**：实际的按键行为来自系统�
 
 ```
 --probe PATH        探针路径（默认 tools/librime-probe/probe）
---stele PATH        stele 可执行文件（默认 target/release/stele）
+--qingjian PATH        qingjian 可执行文件（默认 target/release/qingjian）
 --rime-data DIR     上游方案目录（默认 /usr/share/rime-data）
 --plum DIR          plum 副本（默认 .work/upstream/plum）
 --work DIR          中间产物目录（默认 .work/rime-compare，已被 gitignore）
@@ -99,9 +99,9 @@ fixtures/
 ├── shared.dict.yaml          # 共用的词表（RIME 的 .dict.yaml 格式）
 ├── rime/
 │   ├── default.yaml          # 最小 librime 共享目录配置（自包含，不引用 rime-prelude）
-│   └── stele-cmp.schema.yaml # librime 侧方案（RIME 原生写法）
-└── stele/
-    └── stele-cmp.schema.yaml # Stele 侧方案（同一份词表、同一批零件）
+│   └── qingjian-cmp.schema.yaml # librime 侧方案（RIME 原生写法）
+└── qingjian/
+    └── qingjian-cmp.schema.yaml # Qingjian 侧方案（同一份词表、同一批零件）
 ```
 
 `compare.py` 运行时会把它们铺成两个可直接装载的目录（在 `--work` 下）。
@@ -118,9 +118,9 @@ fixtures/
 ## 已知限制（写在这里，免得下一个人高估它）
 
 - **不比绝对分数**：两边的分值域不同（librime 是对数域的内部权重，
-  Stele 是定点毫对数），只比**相对顺序**。
+  Qingjian 是定点毫对数），只比**相对顺序**。
 - **不比语言模型**：两边都不挂；要比得先有同一份模型。
-- **不比性能**：延迟/内存有各自的工装（`stele-bench` 与
+- **不比性能**：延迟/内存有各自的工装（`qingjian-bench` 与
   `tools/librime-probe` 的实测数字），混在一份报告里会互相稀释。
   需要的是一条**同机、同输入、同预热条件**的专门对照，那是另一件事。
 - **D 的配方名 → 方案 id 映射是启发式的**（按词根匹配），

@@ -1,4 +1,4 @@
-# Stele-IME 独立审计报告与 DeepSeek 整改执行书
+# Qingjian IME 独立审计报告与 DeepSeek 整改执行书
 
 > **用途**：本文件是给后续执行 agent（DeepSeek）的完整任务说明，以及给审计/验收 agent 的共同基线。
 >
@@ -8,7 +8,7 @@
 >
 > **上游取证快照**：librime 源码 `2479df58cb51480299f94afe53d7b1790ecf0eb1`，Rime wiki `5bfcf14a7ae127635dff9da1f133cae9a5319607`；本机实际探针运行库为 librime `1.16.1`。源码版本与运行库版本必须在报告中区分，不可混称。
 >
-> **工作范围校正**：Stele 当前只开发到**内部引擎、CLI 调试前端和实验性默认词库**；尚无 Windows TSF 或 Android IME 成品。本文件不把“没有手机前端”当作当前代码缺陷，也不把实验词库的词汇质量当作发布版承诺。它评估的是：当前内核能否成为可靠、可扩展、最终可用于输入法前端的基础。
+> **工作范围校正**：Qingjian 当前只开发到**内部引擎、CLI 调试前端和实验性默认词库**；尚无 Windows TSF 或 Android IME 成品。本文件不把“没有手机前端”当作当前代码缺陷，也不把实验词库的词汇质量当作发布版承诺。它评估的是：当前内核能否成为可靠、可扩展、最终可用于输入法前端的基础。
 >
 > **执行纪律**：DeepSeek 可以修改代码；审计 agent 负责审阅、设计验收、复现和批准。每个结论都应有代码、测试和命令输出证据；不能以“测试数量增加”“注释写了”“组件已注册”代替运行时验收。
 
@@ -18,7 +18,7 @@
 
 ### 0.1 总结判断
 
-Stele **不是空壳**。它已经有：Rust 分层、两类翻译器、方案装载、拼写规则、紧凑词库、候选排序、可选本地记忆、CLI、相当多的回归测试和若干可重跑的 Rime 对照工装。核心 crate 禁止 `unsafe`、保持零第三方依赖，以及把方案与内核分开的方向，也都有工程价值。
+Qingjian **不是空壳**。它已经有：Rust 分层、两类翻译器、方案装载、拼写规则、紧凑词库、候选排序、可选本地记忆、CLI、相当多的回归测试和若干可重跑的 Rime 对照工装。核心 crate 禁止 `unsafe`、保持零第三方依赖，以及把方案与内核分开的方向，也都有工程价值。
 
 不过它仍是**原型内核**，距离“可以承载接近商业拼音体验的输入法”有关键距离。问题不在少一个 Android UI，而在下面四类内核事实：
 
@@ -55,7 +55,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 cargo test --workspace --offline --locked
 for f in scripts/verify-*.sh; do bash "$f"; done
-target/release/stele --check
+target/release/qingjian --check
 ```
 
 结果：479 个单元/集成测试通过、5 个 doctest 通过、1 个 doctest 忽略；fmt、Clippy、四项门禁、内核自检全部通过。
@@ -68,8 +68,8 @@ target/release/stele --check
 bash tools/librime-probe/build.sh
 python3 tools/rime-compare/compare.py \
   --plum .work/upstream/plum \
-  --work /tmp/stele-audit.QT5Hl6/comparison \
-  --out /tmp/stele-audit.QT5Hl6/comparison-report.md
+  --work /tmp/qingjian-audit.QT5Hl6/comparison \
+  --out /tmp/qingjian-audit.QT5Hl6/comparison-report.md
 ```
 
 A（基本结构用例）、B1（同词表权重排序）、B2（小词表简拼）通过。它们的价值是真实的，但覆盖范围有限：A/B1/B2 不是整句解码、完整配置兼容或手机前端验收。
@@ -103,7 +103,7 @@ B3/B3.1/B4、C、D 是工装主动记录的“分歧观察”，并非硬断言�
 
 ### A. P0：拼写展开搜索存在按键路径资源爆炸
 
-**位置**：`crates/stele-engine/src/spelling.rs`，`SpellingTable::expand_into`，尤其是状态 `(pos, Vec<CodeUnitId>)`、`BinaryHeap`、`HashSet` 和路径 clone。
+**位置**：`crates/qingjian-engine/src/spelling.rs`，`SpellingTable::expand_into`，尤其是状态 `(pos, Vec<CodeUnitId>)`、`BinaryHeap`、`HashSet` 和路径 clone。
 
 **已复现事实**：
 
@@ -132,7 +132,7 @@ B3/B3.1/B4、C、D 是工装主动记录的“分歧观察”，并非硬断言�
 
 ### B. P0：部署词库缓存没有绑定字母表映射，会静默错码
 
-**位置**：`crates/stele-schemes/src/file.rs:1527` 附近，`deploy_dict`；`CodeAlphabet` 将列表下标作为 `CodeUnitId`。
+**位置**：`crates/qingjian-schemes/src/file.rs:1527` 附近，`deploy_dict`；`CodeAlphabet` 将列表下标作为 `CodeUnitId`。
 
 **最小复现：**
 
@@ -143,7 +143,7 @@ speller:
 # 词典：你 ni；好 hao
 ```
 
-首次部署后输入 `ni` 得到“你”。只把 `alphabet` 改为 `[hao, ni]`，不改词典，缓存仍被复用；输入 `ni` 得到“好”。删除 `.stele-cache` 后重新编译才恢复“你”。无诊断。
+首次部署后输入 `ni` 得到“你”。只把 `alphabet` 改为 `[hao, ni]`，不改词典，缓存仍被复用；输入 `ni` 得到“好”。删除 `.qingjian-cache` 后重新编译才恢复“你”。无诊断。
 
 **根因**：二进制表保存了编号，缓存键只依赖词典原始内容；编号到编码单元文本的映射没有进入缓存身份。
 
@@ -160,7 +160,7 @@ speller:
 
 ### C. P0：损坏 `.table` 的内部索引可使 release 进程 panic
 
-**位置**：`crates/stele-table/src/lexicon.rs`，`TableLexicon::open_checked` 与 `find_code`。
+**位置**：`crates/qingjian-table/src/lexicon.rs`，`TableLexicon::open_checked` 与 `find_code`。
 
 **已复现事实**：只篡改缓存二进制的一个内部 `unit_offsets` 值，保持文件总长度、魔数、格式版本和 source checksum 不变，装载成功；查询时在切片范围处 panic：
 
@@ -184,7 +184,7 @@ source checksum 仅表明源词典内容，**不是产物完整性校验**。
 
 ### D. P0：用户记忆写盘失败后会丢失重试机会
 
-**位置**：`crates/stele-memory/src/store.rs:464–515`，`FileMemory::flush`。
+**位置**：`crates/qingjian-memory/src/store.rs:464–515`，`FileMemory::flush`。
 
 **已复现事实**：当前在写临时文件之前即把 `inner.dirty = false`。故障注入（将 `<userdb>.tmp` 预先建为目录）后：
 
@@ -219,14 +219,14 @@ dirty == false
 
 **同词表对照复现：**
 
-| 输入 | librime | Stele 当前 |
+| 输入 | librime | Qingjian 当前 |
 |---|---|---|
 | `nihao` | 你好 | 你好 |
 | `niha` | 你好等 | 仅字面量 `niha` |
 | `haoni`（词表中无“好你”，有“好”“你”） | 可造句“好你” | 仅字面量 |
 | `nihaoshijie`（词表只覆盖前缀） | 给可解释前缀候选 | 仅字面量 |
 
-`reference/rime-sentence-and-completion.md` 的 2×2 “缩写 × 补全”矩阵进一步确认：Stele 对不完整 `niha` 四格都失败；并非只差一个开关。
+`reference/rime-sentence-and-completion.md` 的 2×2 “缩写 × 补全”矩阵进一步确认：Qingjian 对不完整 `niha` 四格都失败；并非只差一个开关。
 
 **当前代码问题：**
 
@@ -247,8 +247,8 @@ dirty == false
    - 完整输入、未消费输入的明确候选范围。
 4. 词典需要提供适合图查询的接口；不要把 41 万条词表全扫描来“造句”。
 5. 实现有界的词图动态规划。第一版可以不接语言模型：以词频和长度策略组合词条；必须防止单个整词候选与组合候选重复、无限组合和过度候选。
-6. `enable_sentence` 必须按清晰的方案语义实现或明确拒绝；不要继续“解析但静默不生效”。注意上游 `script_translator` 与 `table_translator` 对该字段的归属并不完全相同，Stele 可设计自己的语义，但需文档化且避免伪称相同。
-7. 补全默认值要么与 Rime 对齐，要么明确是 Stele 有意不同；不得保留错误的上游注释。
+6. `enable_sentence` 必须按清晰的方案语义实现或明确拒绝；不要继续“解析但静默不生效”。注意上游 `script_translator` 与 `table_translator` 对该字段的归属并不完全相同，Qingjian 可设计自己的语义，但需文档化且避免伪称相同。
+7. 补全默认值要么与 Rime 对齐，要么明确是 Qingjian 有意不同；不得保留错误的上游注释。
 
 **验收最低线：** 上表四例及缩写×补全矩阵纳入硬性测试；实现必须同时检查候选文本、消费范围/余码和属性，而非只断言“有某个候选”。
 
@@ -258,7 +258,7 @@ dirty == false
 
 **观察**：当前 `SessionImpl` 的选词最终走 `finish_commit()`，清空整个 composition。成熟输入法需要逐段确认、候选覆盖特定 span、余码继续存在、可重新开启已选段。现有 `Confirmed` / `Reopen` 等接口或注释不能算作行为已经实现。
 
-对比探针：librime 输入 `ni,` 会提交“你，”；当前默认 Stele 路径中逗号返回 `Rejected`，`ni` 仍留在预编辑中。这未必是“代码 bug”——当前标点处理器文档已明确选择了另一种交互——但它是与 Rime 不同、且会影响前端设计的**产品语义差异**，需要明确决定并测试。
+对比探针：librime 输入 `ni,` 会提交“你，”；当前默认 Qingjian 路径中逗号返回 `Rejected`，`ni` 仍留在预编辑中。这未必是“代码 bug”——当前标点处理器文档已明确选择了另一种交互——但它是与 Rime 不同、且会影响前端设计的**产品语义差异**，需要明确决定并测试。
 
 **DeepSeek 必须完成：**
 
@@ -289,13 +289,13 @@ dirty == false
 5. 部分 X11 keysym 名称；
 6. Rime preset 资产（`default` / `symbols`）未提供。
 
-这不是要求 Stele 必须兼容所有 Rime 配置；而是要求对外把能力称为**“Rime 风格的受限子集”**，直到每个支持项有端到端证据。一个坏方案目前还会中止整个目录加载；这与“配置错误不阻止启动”的目标也有冲突，需要设计产品级加载策略。
+这不是要求 Qingjian 必须兼容所有 Rime 配置；而是要求对外把能力称为**“Rime 风格的受限子集”**，直到每个支持项有端到端证据。一个坏方案目前还会中止整个目录加载；这与“配置错误不阻止启动”的目标也有冲突，需要设计产品级加载策略。
 
 #### G2. `xlit` 语义不对
 
-`spelling.rs` 的 `Rule::Xlit` 保留原拼写再追加转写结果，等价于派生；官方 wiki 和 librime `Transliteration::Apply` 表明 `xlit` 是改写。最小例：`xlit/a/b/` 与原编码 `aa`：librime 中 `bb` 有效、`aa` 无效，Stele 两者都有效。
+`spelling.rs` 的 `Rule::Xlit` 保留原拼写再追加转写结果，等价于派生；官方 wiki 和 librime `Transliteration::Apply` 表明 `xlit` 是改写。最小例：`xlit/a/b/` 与原编码 `aa`：librime 中 `bb` 有效、`aa` 无效，Qingjian 两者都有效。
 
-**要求**：将 xlit 改为 transformation 语义；添加与上游的直接回归测试。不要以“用户也许希望保留原输入”改变同名 Rime 操作符；如需此功能，定义一个新的 Stele 专用操作符。
+**要求**：将 xlit 改为 transformation 语义；添加与上游的直接回归测试。不要以“用户也许希望保留原输入”改变同名 Rime 操作符；如需此功能，定义一个新的 Qingjian 专用操作符。
 
 #### G3. 多 translator 实例的词库选择不正确
 
@@ -324,7 +324,7 @@ dirty == false
 
 ### H. P1：自写 regex 与 recognizer 有错误匹配及 ReDoS 型卡顿
 
-**位置**：`crates/stele-engine/src/regex.rs`、`crates/stele-engine/src/segmentor.rs`。
+**位置**：`crates/qingjian-engine/src/regex.rs`、`crates/qingjian-engine/src/segmentor.rs`。
 
 #### H1. `leading_literal` 优化错误地拒绝合法模式
 
@@ -413,7 +413,7 @@ librime 不是单纯“整串查表”的旧引擎。源码和 wiki 均表明它
 
 Rime 官方文档没有写“隐私承诺”，以及 2009 年计划中出现“添加网络功能”，都**不能推导出当前 librime 必然联网、遥测或不保护隐私**。上游用户数据同步代码读取/合并本地同步目录中的快照；是否联网取决于具体前端、部署、插件和用户配置，需逐项审计。
 
-### 3.2 Stele 可以建立的真实优势
+### 3.2 Qingjian 可以建立的真实优势
 
 - 更易审计的 Rust 内核；
 - 小依赖面、无 `unsafe`；
@@ -426,7 +426,7 @@ Rime 官方文档没有写“隐私承诺”，以及 2009 年计划中出现“
 
 ### 3.3 建议的对外定位（整改前）
 
-> Stele 是受 Rime 思想启发的 Rust 输入法引擎研究/原型。当前提供实验性方案、词库和 CLI 验证环境；重点在可审计性、离线可选记忆和轻量化探索。尚未提供可替代完整桌面或手机输入法的前端产品，也尚未宣称完整兼容 Rime 生态。
+> Qingjian 是受 Rime 思想启发的 Rust 输入法引擎研究/原型。当前提供实验性方案、词库和 CLI 验证环境；重点在可审计性、离线可选记忆和轻量化探索。尚未提供可替代完整桌面或手机输入法的前端产品，也尚未宣称完整兼容 Rime 生态。
 
 ---
 
@@ -515,7 +515,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 cargo test --workspace --offline --locked
 for f in scripts/verify-*.sh; do bash "$f"; done
-cargo run -p stele-cli -- --check
+cargo run -p qingjian-cli -- --check
 ```
 
 建议使用：
@@ -545,7 +545,7 @@ cargo run -p stele-cli -- --check
 - `tools/librime-probe/`：真实运行库探针；不是 master 编译物。
 - `tools/rime-compare/compare.py`：A/B1/B2 是硬断言；B3/B3.1/B4/C/D 的分歧记录不应被误读为完整兼容证明。
 - `tools/oracle/`：上游 Lua 行为对照。涉及第三方代码/输出时必须复核许可。
-- `stele-bench`：必须注明 `--scheme-dir`、`--schema`、是否真实词库、缓存冷/热、记忆和预测开关。内嵌演示词库的纳秒数字只能表示管线下限。
+- `qingjian-bench`：必须注明 `--scheme-dir`、`--schema`、是否真实词库、缓存冷/热、记忆和预测开关。内嵌演示词库的纳秒数字只能表示管线下限。
 
 ---
 
@@ -597,7 +597,7 @@ DeepSeek 每完成一个任务包，应提交：改动摘要、设计决定、�
 整改时必须保留或用更强证据替代以下能力：
 
 1. `unsafe_code = "deny"`；
-2. 核心 `stele-core` / `stele-engine` 的小依赖面；若引入依赖，必须更新许可门禁和威胁模型，不可静默绕过；
+2. 核心 `qingjian-core` / `qingjian-engine` 的小依赖面；若引入依赖，必须更新许可门禁和威胁模型，不可静默绕过；
 3. 方案数据与内核分离；
 4. 分数和排序的确定性；
 5. 候选来源、拼写属性、输入/预测通道的显式类型；
@@ -615,7 +615,7 @@ DeepSeek 每完成一个任务包，应提交：改动摘要、设计决定、�
 
 如果近期目标是让用户获得一个省资源、隐私更可控的手机中文输入体验，应并行评估成熟 Rime 前端 + 精简本地方案；这比等待新内核补齐全部基本能力风险更低。实际资源占用仍需在目标手机测量。
 
-如果长期目标是独立 Rust 输入法，Stele 值得继续，但路线应是：
+如果长期目标是独立 Rust 输入法，Qingjian 值得继续，但路线应是：
 
 ```text
 可靠保存/缓存 + 有界搜索

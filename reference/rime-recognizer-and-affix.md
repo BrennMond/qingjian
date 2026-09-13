@@ -546,11 +546,11 @@ bool TagMatching::TagsMatch(Segment* segment) {
 
 ---
 
-## 5. 与我们（stele）实现的差异
+## 5. 与我们（qingjian）实现的差异
 
-**这一节是快照，会过期。** 本文件写作期间，工作区里的另一个任务正在改 `crates/stele-engine/`（提交 `a8a366d`，之后 `processor.rs` / `spec.rs` 又有未提交改动）。下表核对的是**本文件落笔时磁盘上的实际代码**。**只做记录，未修改任何实现文件。**
+**这一节是快照，会过期。** 本文件写作期间，工作区里的另一个任务正在改 `crates/qingjian-engine/`（提交 `a8a366d`，之后 `processor.rs` / `spec.rs` 又有未提交改动）。下表核对的是**本文件落笔时磁盘上的实际代码**。**只做记录，未修改任何实现文件。**
 
-| # | 主题 | librime 的事实 | stele 现状（写作时） | 结论 |
+| # | 主题 | librime 的事实 | qingjian 现状（写作时） | 结论 |
 | --- | --- | --- | --- | --- |
 | 1 | `prefix` 的含义 | **字面字符串**（§2）。`"uU"` = 两个字面字符 | **代码已修**：`segmentor.rs:494-499` 的 `expand_prefix` 现在只返回 `vec![s.to_owned()]`，`body_start`（`:506-510`）也改成"前缀长度唯一"。**但注释还是旧的**：`segmentor.rs:402-409` 仍写着「RIME 约定：`prefix: "uU"` 表示大小写两种写法都接受…所以它不是一个两字符的前缀，而是两个候选前缀」，`segmentor.rs:412` 仍写「接受的前缀（已展开成列表）」，`spec.rs:243` 仍写「RIME 允许写两个字符表示大小写两种写法」 | 行为已对齐。**剩下的是三处会误导下一个人的注释**，应当一并改掉——它们现在是"文档说 A、代码做 B" |
 | 2 | `recognizer/patterns` 的值类型 | 必须是标量；列表被**静默跳过**（§1.1） | `spec.rs:232` 的 `patterns: Vec<RecogPattern>`；装载器如何对待列表形式待核对 | 若我们接受列表并"取并集"，会比 librime 宽松 |

@@ -1,0 +1,16 @@
+[package]
+name = "qingjian-dict"
+description = "Rime 风格词典文件的解析：YAML 头部 + TSV 正文 + import_tables。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+qingjian-core = { path = "../qingjian-core" }
+qingjian-config = { path = "../qingjian-config" }
+
+[lints]
+workspace = true

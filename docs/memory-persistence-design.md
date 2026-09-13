@@ -146,7 +146,7 @@ impl Inner { fn is_dirty(&self) -> bool { self.generation != self.saved } }
 
 ## 7. 测试（回归）
 
-`crates/stele-memory/tests/persistence_failures.rs`：
+`crates/qingjian-memory/tests/persistence_failures.rs`：
 
 | 测试 | 钉住的行为 |
 | --- | --- |

@@ -31,7 +31,7 @@
 
 ## 1. 已实现的缓解（阶段 1）
 
-三道闸，全部有测试（`crates/stele-engine/tests/regex_and_recognizer.rs`）。
+三道闸，全部有测试（`crates/qingjian-engine/tests/regex_and_recognizer.rs`）。
 
 ### 1.1 编译期拒绝"重复套重复"
 

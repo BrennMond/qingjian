@@ -4,7 +4,7 @@
 > 判据不是"字段有没有被读进来"，而是**有没有运行期的效果**；
 > 不支持时必须有一条**看得见的诊断**。
 >
-> **可执行版本**：`crates/stele-schemes/tests/config_field_audit.rs`
+> **可执行版本**：`crates/qingjian-schemes/tests/config_field_audit.rs`
 > ——本页每一个"已支持"都对应那里的一条行为断言。
 >
 > **本表只列"我们公开声称支持"的字段。** 不在这张表里的 Rime 字段，
@@ -18,9 +18,9 @@
 
 | # | 环节 | 在哪 |
 | --- | --- | --- |
-| 1 | **解析** | `crates/stele-schemes/src/components.rs`、`file.rs` |
-| 2 | **装配** | `crates/stele-engine/src/scheme.rs`（`compile` / `make_translator`） |
-| 3 | **消费** | `crates/stele-engine/src/translator.rs`、`processor.rs`、`filter.rs`… |
+| 1 | **解析** | `crates/qingjian-schemes/src/components.rs`、`file.rs` |
+| 2 | **装配** | `crates/qingjian-engine/src/scheme.rs`（`compile` / `make_translator`） |
+| 3 | **消费** | `crates/qingjian-engine/src/translator.rs`、`processor.rs`、`filter.rs`… |
 | 4 | **端到端测试** | `crates/*/tests/` |
 
 少任何一处，用户看到的就是"我配了却没生效"——而那**不报错**。
@@ -111,7 +111,7 @@
 判决表：至少一个装上 ⇒ `Ok` + `skipped`；一个都没装上 ⇒ `Err`；
 目录读不了 / 没有方案文件 ⇒ `Err`。
 被跳过的方案必须由调用方**打印出来**——静默跳过就是"我配了却没生效"。
-测试：`crates/stele-schemes/tests/directory_load_policy.rs`。
+测试：`crates/qingjian-schemes/tests/directory_load_policy.rs`。
 
 ---
 

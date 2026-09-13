@@ -18,7 +18,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 cargo test --workspace --offline --locked          # 40 个测试目标
 for f in scripts/verify-*.sh; do bash "$f"; done   # 四项门禁
-target/release/stele --check                       # 8 组不变式
+target/release/qingjian --check                       # 8 组不变式
 bash tools/fetch-sources.sh                        # 源数据固定 revision + sha256 校验
 ```
 
@@ -31,16 +31,16 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 
 | # | 检查项 | 证据 | 状态 |
 | --- | --- | --- | --- |
-| 1 | alphabet 重排不复用错误缓存 | `crates/stele-schemes/tests/cache_identity.rs`（4 条，含"确实重新编译"与"没变就不重编"） | ✅ |
-| 2 | 随机/畸形 `.table` 永不 panic | `crates/stele-table/tests/table_integrity.rs`（8 条，含**伪造校验和后仍被结构校验拒绝**、逐字节翻转/置零） | ✅ |
-| 3 | 写盘失败可重试且不会清 dirty | `crates/stele-memory/tests/persistence_failures.rs::a_failed_rename_keeps_dirty_and_the_retry_succeeds` | ✅ |
+| 1 | alphabet 重排不复用错误缓存 | `crates/qingjian-schemes/tests/cache_identity.rs`（4 条，含"确实重新编译"与"没变就不重编"） | ✅ |
+| 2 | 随机/畸形 `.table` 永不 panic | `crates/qingjian-table/tests/table_integrity.rs`（8 条，含**伪造校验和后仍被结构校验拒绝**、逐字节翻转/置零） | ✅ |
+| 3 | 写盘失败可重试且不会清 dirty | `crates/qingjian-memory/tests/persistence_failures.rs::a_failed_rename_keeps_dirty_and_the_retry_succeeds` | ✅ |
 | 4 | 两写者不会静默覆盖 | 同上 `::two_writers_merge_instead_of_overwriting` + `::merging_is_idempotent_and_does_not_inflate_counts` | ✅ |
 | 5 | 读取后遵守记忆容量 | 同上 `::capacity_is_enforced_when_loading` | ✅ |
-| 6 | `xlit` 与 Rime 语义一致 | `crates/stele-engine/src/spelling.rs::tests::xlit_is_a_rewrite_not_a_derivation`（`aa` 必须**失效**、`bb` 有效、只留一条边） | ✅ |
-| 7 | recognizer shortcut 不会漏掉 regex 真匹配 | `crates/stele-engine/tests/regex_and_recognizer.rs::the_optimisation_never_changes_the_verdict`（12 模式 × 24 输入的不变式） | ✅ |
-| 8 | 同一配置字段有解析、装配、实际效果和测试 | `docs/config-field-audit.md` + `crates/stele-schemes/tests/config_field_audit.rs`（7 条）；不支持的字段有降级诊断 | ✅ |
-| 9 | 多 translator 实例使用各自资源 | `crates/stele-schemes/tests/instance_dictionaries.rs`（5 条：script/table 两族、继承、缺失诊断） | ✅ |
-| 10 | 内存/部署词库能力不发生静默差异 | `crates/stele-schemes/tests/lexicon_capability.rs`（两台实现 × 4 项能力 × 8 组编码逐项对照） | ✅ |
+| 6 | `xlit` 与 Rime 语义一致 | `crates/qingjian-engine/src/spelling.rs::tests::xlit_is_a_rewrite_not_a_derivation`（`aa` 必须**失效**、`bb` 有效、只留一条边） | ✅ |
+| 7 | recognizer shortcut 不会漏掉 regex 真匹配 | `crates/qingjian-engine/tests/regex_and_recognizer.rs::the_optimisation_never_changes_the_verdict`（12 模式 × 24 输入的不变式） | ✅ |
+| 8 | 同一配置字段有解析、装配、实际效果和测试 | `docs/config-field-audit.md` + `crates/qingjian-schemes/tests/config_field_audit.rs`（7 条）；不支持的字段有降级诊断 | ✅ |
+| 9 | 多 translator 实例使用各自资源 | `crates/qingjian-schemes/tests/instance_dictionaries.rs`（5 条：script/table 两族、继承、缺失诊断） | ✅ |
+| 10 | 内存/部署词库能力不发生静默差异 | `crates/qingjian-schemes/tests/lexicon_capability.rs`（两台实现 × 4 项能力 × 8 组编码逐项对照） | ✅ |
 
 ---
 
@@ -48,9 +48,9 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 
 | # | 检查项 | 证据 | 状态 |
 | --- | --- | --- | --- |
-| 1 | `nihao`/`niha`/`nih`/`nh`/`haoni`/`nihaoshijie` 都有定义明确的预期 | `crates/stele-schemes/tests/decoder_matrix.rs`（15 条）。`nih` → 你好、`nh` → 你好、`nhao` → 你好 也都在 `word_pinyin_quality.rs` 的简拼用例里 | ✅ |
+| 1 | `nihao`/`niha`/`nih`/`nh`/`haoni`/`nihaoshijie` 都有定义明确的预期 | `crates/qingjian-schemes/tests/decoder_matrix.rs`（15 条）。`nih` → 你好、`nh` → 你好、`nhao` → 你好 也都在 `word_pinyin_quality.rs` 的简拼用例里 | ✅ |
 | 2 | 候选消费范围和余码有测试 | `decoder_matrix.rs::niha_gives_the_word_for_the_interpreted_prefix`（`span=0..3`、余码 `a`、attr=ABBREV）+ `::committing_a_prefix_candidate_keeps_the_remainder_in_the_input`（上屏后余码仍在输入里） | ✅ |
-| 3 | 逐段选择、重开、删除、标点、中英/数字混输有状态机测试 | `crates/stele-schemes/tests/session_state_machine.rs`（**17 条通过 + 1 条 `#[ignore]`**）：部分选词后继续输入、选第二段、Backspace/Delete/Esc、**重开已上屏的段**、数字选词、中英开关、预测与数字选择的隔离、取消与重开的交互；标点在 `punctuation_semantics.rs`（3 条）。`#[ignore]` 的那条记录的是**已知边界**：重开只有一条记录（没有提交历史栈）、没有"确认段"标记、重复上屏会重复学习 | ✅ |
+| 3 | 逐段选择、重开、删除、标点、中英/数字混输有状态机测试 | `crates/qingjian-schemes/tests/session_state_machine.rs`（**17 条通过 + 1 条 `#[ignore]`**）：部分选词后继续输入、选第二段、Backspace/Delete/Esc、**重开已上屏的段**、数字选词、中英开关、预测与数字选择的隔离、取消与重开的交互；标点在 `punctuation_semantics.rs`（3 条）。`#[ignore]` 的那条记录的是**已知边界**：重开只有一条记录（没有提交历史栈）、没有"确认段"标记、重复上屏会重复学习 | ✅ |
 | 4 | 动态造句不会把单词重复作为"句子"，不会无限展开 | `decoder_matrix.rs::sentence_making_does_not_repeat_the_same_word`、`::a_single_word_is_never_reported_as_a_sentence`；上限 `MAX_SENTENCE_WORDS`、边严格向前 | ✅ |
 | 5 | 正确候选召回和资源预算同时通过 | `decoder_matrix.rs::the_target_candidates_are_present_not_just_the_literal` 与 `spelling_resource_bounds.rs`（同一批语料上同时断言召回与状态/工作量/图字节上界） | ✅ |
 
@@ -60,11 +60,11 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 
 | # | 检查项 | 证据 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 短、长、歧义、无效输入均入基准 | `stele-bench --keys` 默认六条：`nihao`（短）/`nihaoshijie`（长）/`nh`、`nhao`（歧义）/`ssss`、`woaizhongguo`（病态） | ✅ |
-| 2 | 报告 P50/P95/P99/max、状态数、查询数、VmRSS/VmHWM | `stele-bench` 逐语料分位数 + `VmRSS`/`VmHWM` + `--count-queries`；状态数在图/工作量上界测试里（`ExpansionStats`），并断言为**硬上限** | ✅ |
-| 3 | 区分进程 RSS、内核页缓存、系统总内存、冷/热缓存 | `stele-bench` 现在同时报 `VmRSS`/`VmHWM`（进程）、`MemTotal`/`MemAvailable`/`Cached`（系统 + **内核页缓存**），并明确写出"`TableLexicon` 读过的产物页在页缓存里、**不计入 VmRSS**，只看 RSS 会低估真实占用"。冷/热由"缓存是否命中"区分（报告里注明） | ✅ |
+| 1 | 短、长、歧义、无效输入均入基准 | `qingjian-bench --keys` 默认六条：`nihao`（短）/`nihaoshijie`（长）/`nh`、`nhao`（歧义）/`ssss`、`woaizhongguo`（病态） | ✅ |
+| 2 | 报告 P50/P95/P99/max、状态数、查询数、VmRSS/VmHWM | `qingjian-bench` 逐语料分位数 + `VmRSS`/`VmHWM` + `--count-queries`；状态数在图/工作量上界测试里（`ExpansionStats`），并断言为**硬上限** | ✅ |
+| 3 | 区分进程 RSS、内核页缓存、系统总内存、冷/热缓存 | `qingjian-bench` 现在同时报 `VmRSS`/`VmHWM`（进程）、`MemTotal`/`MemAvailable`/`Cached`（系统 + **内核页缓存**），并明确写出"`TableLexicon` 读过的产物页在页缓存里、**不计入 VmRSS**，只看 RSS 会低估真实占用"。冷/热由"缓存是否命中"区分（报告里注明） | ✅ |
 | 4 | 证明复杂度上界，不仅报告某次机器上的快数字 | `docs/decoder-design.md` §5 的复杂度表（`L`/`E`/`W` 记法）+ `spelling_resource_bounds.rs` 对**状态数/边尝试数/图字节数**的硬上限断言（与机器无关） | ✅ |
-| 5 | 可选记忆/预测/向量的内存另计，默认与显式开启分开报告 | `stele-bench --seed-memory/--seed-predict/--embed` 各自单独报；默认关闭（不给 `--userdb` 就没有记忆） | ✅ |
+| 5 | 可选记忆/预测/向量的内存另计，默认与显式开启分开报告 | `qingjian-bench --seed-memory/--seed-predict/--embed` 各自单独报；默认关闭（不给 `--userdb` 就没有记忆） | ✅ |
 
 ---
 
@@ -74,7 +74,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | --- | --- | --- | --- |
 | 1 | README 状态、测试数、功能边界更新 | `README.md` 已按阶段 1–4 的事实校正（删掉"不含第三方词典数据"、"完全兼容 Rime"等） | ✅ |
 | 2 | 删除或改正对 Rime 隐私/现代性的无证据推论 | `README.md` / `PLAN.md` / `docs/HANDOFF.md` 已删；改为审计 §3.1 的口径 | ✅ |
-| 3 | 默认词库明示实验性质和已知词级读音限制 | `schemes/stele-default/pinyin.dict.yaml` 与 `cn_dicts/word_pinyin.override.dict.yaml` 文件头明示；**覆盖表只修了枚举到的词**，表外多音字词仍靠生成器猜（`phase-3-4.md` §5.4.1） | ⚠️ |
+| 3 | 默认词库明示实验性质和已知词级读音限制 | `schemes/qingjian-default/pinyin.dict.yaml` 与 `cn_dicts/word_pinyin.override.dict.yaml` 文件头明示；**覆盖表只修了枚举到的词**，表外多音字词仍靠生成器猜（`phase-3-4.md` §5.4.1） | ⚠️ |
 | 4 | 第三方 notices、固定版本、哈希、许可证齐全 | `THIRD_PARTY_NOTICES.md`（400 行）、`tools/sources.lock`（16 条固定 revision + SHA-256）、`licenses/`；**`reference/wiki-*.md` 的许可 UNVERIFIED**（rime/home 无通用 LICENSE） | ⚠️ |
 | 5 | 隐私模型不把"没有联网代码"简化成完整隐私证明 | `docs/privacy-model.md` 专门分节区分"代码已核实"与"依赖前端/OS"；禁学 API 明确标注**尚未实现** | ✅ |
 

@@ -6,4 +6,4 @@
 # 但对照只用字母键，用不到它们。
 config_version: '0.50'
 schema_list:
-  - schema: stele-cmp
+  - schema: qingjian-cmp

@@ -1,7 +1,7 @@
 # 阶段 2 验收证据：解码与会话闭环
 
 > **对应**：`docs/INDEPENDENT_AUDIT_AND_DEEPSEEK_PLAN.md` §4「阶段 2」。
-> **修复前的证据**来自 `git worktree add .work/stele-base 4a2bb1a`，
+> **修复前的证据**来自 `git worktree add .work/qingjian-base 4a2bb1a`，
 > 用**同一批测试文件**跑出失败。复现方式见 `docs/validation/phase-1.md` §0。
 >
 > **本页同时列出本阶段没做的事**——阶段 2 的任务包里有几项**尚未完成**，
@@ -16,7 +16,7 @@ cargo fmt --all -- --check                                                  # �
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings     # ✓
 cargo test --workspace --offline --locked                                    # ✓ 34 个测试目标全绿
 for f in scripts/verify-*.sh; do bash "$f"; done                             # ✓ 四项门禁
-target/release/stele --check                                                 # ✓ 8 组不变式
+target/release/qingjian --check                                                 # ✓ 8 组不变式
 ```
 
 ---
@@ -26,7 +26,7 @@ target/release/stele --check                                                 # �
 ### 修复前
 
 ```text
-$ cd .work/stele-base && cargo test -p stele-schemes --test decoder_matrix --offline
+$ cd .work/qingjian-base && cargo test -p qingjian-schemes --test decoder_matrix --offline
 test niha_gives_the_word_for_the_interpreted_prefix ... FAILED
 缩写开时 niha 必须出「你好」，实得 ["niha"]
 test nihaoshijie_gives_prefix_candidates_and_a_composition ... FAILED
@@ -39,7 +39,7 @@ test result: FAILED. 5 passed; 7 failed
 ### 修复后
 
 ```text
-$ cargo test -p stele-schemes --test decoder_matrix --offline
+$ cargo test -p qingjian-schemes --test decoder_matrix --offline
 test niha_gives_the_word_for_the_interpreted_prefix ... ok
 test nihaoshijie_gives_prefix_candidates_and_a_composition ... ok
 test result: ok. 12 passed
@@ -47,7 +47,7 @@ test result: ok. 12 passed
 
 ### 做了什么
 
-- `stele_core::Spelling` 新增 [`expand_paths`]：产出**带消费字节数**的路径。
+- `qingjian_core::Spelling` 新增 [`expand_paths`]：产出**带消费字节数**的路径。
   与 `expand` 的唯一差别是"**每一个到达过的位置都算一条路径**"，
   而不是只收"恰好消费完整串"的那些。
   这正是 librime 的 `interpreted_length < input_length`
@@ -83,7 +83,7 @@ test the_target_candidates_are_present_not_just_the_literal ... FAILED
   `niha`（缩写=true 补全=false）必须出「你好」，实得 ["niha"]
 ```
 
-审计记录的是"stele 四格全不命中"。实测确认。
+审计记录的是"qingjian 四格全不命中"。实测确认。
 
 ### 修复后
 
@@ -127,10 +127,10 @@ test haoni_is_composed_by_sentence_making ... FAILED
 ### 修复后（真实默认词库，41 万词条）
 
 ```text
-$ ./target/release/stele --scheme-dir schemes/stele-default --candidates=all haoni
+$ ./target/release/qingjian --scheme-dir schemes/qingjian-default --candidates=all haoni
   14. 好你       score=-2599     origin=Sentence
 
-$ ./target/release/stele --scheme-dir schemes/stele-default --candidates=all woaizhongguo
+$ ./target/release/qingjian --scheme-dir schemes/qingjian-default --candidates=all woaizhongguo
    1. 我爱中国     score=-5218     origin=Sentence
 ```
 
@@ -195,15 +195,15 @@ fn xlit_is_a_rewrite_not_a_derivation() {
 
 ```text
 # 修复前：同一个 shape 方案、同一个输入 `ab`，两条装载路径给出不同候选
-$ stele --schema shape --candidates=all ab            # 走内嵌（内存词库）
+$ qingjian --schema shape --candidates=all ab            # 走内嵌（内存词库）
 方案 shape  输入 "ab"  候选 4 个
   1. 木  2. 十  3. 才  4. ab
-$ stele --scheme-dir schemes/stele-default --schema shape --candidates=all ab
+$ qingjian --scheme-dir schemes/qingjian-default --schema shape --candidates=all ab
 方案 shape  输入 "ab"  候选 2 个
   1. 十  2. ab
 ```
 
-它还是 `stele --check` 报出来的：
+它还是 `qingjian --check` 报出来的：
 
 ```text
 内核自检失败：1
@@ -215,7 +215,7 @@ $ stele --scheme-dir schemes/stele-default --schema shape --candidates=all ab
 - 实现 `TableLexicon::prefix_lookup`：**前缀是连续区间**，
   二分下界 + 顺序扫到不再匹配为止；与内存实现**逐字段一致**
   （文本、分数、`attr=COMPLETION`、`kind=Completion`）。
-- 新增 `crates/stele-schemes/tests/lexicon_capability.rs`：
+- 新增 `crates/qingjian-schemes/tests/lexicon_capability.rs`：
   对两台实现的 **`supports_prefix` / `lookup` / `has_prefix` /
   `prefix_lookup`（两种 `exclude_exact`）**逐项对照，
   8 组编码 × 4 项能力，任何一处分叉都会红。
@@ -224,7 +224,7 @@ $ stele --scheme-dir schemes/stele-default --schema shape --candidates=all ab
   现在两个翻译器共用同一个 `COMPLETION_COST`。
 
 ```text
-$ target/release/stele --check
+$ target/release/qingjian --check
 内核自检通过：8 组不变式全部成立。
 ```
 
@@ -253,7 +253,7 @@ TranslatorKind::SpellingGraph => Box::new(SpellingGraphTranslator::new(...)),  /
 ### 阶段 3–4 之后的复测（含词级读音覆盖表）
 
 ```text
-$ ./target/release/stele-bench --scheme-dir schemes/stele-default --iterations=30000
+$ ./target/release/qingjian-bench --scheme-dir schemes/qingjian-default --iterations=30000
 输入                                   P50         P95         P99         max
   nihao                         105.86µs    138.40µs    153.02µs    188.63µs
   nihaoshijie                   618.53µs    932.16µs    960.76µs      1.51ms
@@ -295,7 +295,7 @@ P99 红线 10 ms（实测最坏 1.96 ms），常驻红线 30 MB（实测 13 MiB�
 **部分完成。** 已交付的是**余码保留**这一半：
 
 ```text
-$ cargo test -p stele-schemes --test decoder_matrix --offline
+$ cargo test -p qingjian-schemes --test decoder_matrix --offline
 test committing_a_prefix_candidate_keeps_the_remainder_in_the_input ... ok
 test committing_a_whole_input_candidate_clears_the_input ... ok
 test the_remainder_is_reanalysed_after_a_partial_commit ... ok
@@ -319,7 +319,7 @@ test the_remainder_is_reanalysed_after_a_partial_commit ... ok
 
 ### 8.2 任务包 F 的状态机测试：标点、编辑器、中英/数字混输
 
-**标点已完成（决定 + 测试）**，见 `crates/stele-schemes/tests/punctuation_semantics.rs`：
+**标点已完成（决定 + 测试）**，见 `crates/qingjian-schemes/tests/punctuation_semantics.rs`：
 
 | 敲标点时 | 行为 | 理由 |
 | --- | --- | --- |
@@ -330,12 +330,12 @@ test the_remainder_is_reanalysed_after_a_partial_commit ... ok
 理由与前端契约写在那份测试的文档注释里——审计要求的是"明确决定并测试"，
 而不是"含糊过去"。
 
-**端到端状态转换表现已建立**：`crates/stele-schemes/tests/session_state_machine.rs`
+**端到端状态转换表现已建立**：`crates/qingjian-schemes/tests/session_state_machine.rs`
 覆盖 10 条交互（部分选词后继续输入、选第二段、Backspace/Delete/Esc、
 数字选词、中英开关、预测与数字选择的隔离），跑法含被忽略项：
 
 ```bash
-cargo test -p stele-schemes --test session_state_machine -- --include-ignored
+cargo test -p qingjian-schemes --test session_state_machine -- --include-ignored
 # 11 passed; 0 failed
 ```
 

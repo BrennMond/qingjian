@@ -15,20 +15,20 @@
 | --- | --- |
 | 平台 | Linux（WSL2），AMD Ryzen 9 7940HX |
 | 工具链 | Rust `1.98.1`（`rust-toolchain.toml` 固定 `1.98`） |
-| 修复前 | `git worktree add .work/stele-base 4a2bb1a` |
+| 修复前 | `git worktree add .work/qingjian-base 4a2bb1a` |
 | 修复后 | 本工作区 |
-| 词库 | `schemes/stele-default`（41 万词条的部署产物，14 MB） |
+| 词库 | `schemes/qingjian-default`（41 万词条的部署产物，14 MB） |
 
 **"修复前"的复现步骤**（审计可以直接照做）：
 
 ```bash
-git worktree add .work/stele-base 4a2bb1a
+git worktree add .work/qingjian-base 4a2bb1a
 # 把新写的回归测试原样拷进去（它们只用当时已存在的公开 API）
-cp crates/stele-schemes/tests/cache_identity.rs \
-   .work/stele-base/crates/stele-schemes/tests/
-cp crates/stele-memory/tests/persistence_failures.rs \
-   .work/stele-base/crates/stele-memory/tests/
-cd .work/stele-base && cargo test -p stele-schemes --test cache_identity --offline
+cp crates/qingjian-schemes/tests/cache_identity.rs \
+   .work/qingjian-base/crates/qingjian-schemes/tests/
+cp crates/qingjian-memory/tests/persistence_failures.rs \
+   .work/qingjian-base/crates/qingjian-memory/tests/
+cd .work/qingjian-base && cargo test -p qingjian-schemes --test cache_identity --offline
 ```
 
 ---
@@ -40,7 +40,7 @@ cargo fmt --all -- --check                                  # ✓
 cargo clippy --workspace --all-targets --offline --locked -- -D warnings   # ✓
 cargo test --workspace --offline --locked                    # ✓ 32 个测试目标全绿
 for f in scripts/verify-*.sh; do bash "$f"; done             # ✓ 四项门禁
-target/release/stele --check                                 # ✓ 8 组不变式
+target/release/qingjian --check                                 # ✓ 8 组不变式
 ```
 
 门禁输出（节选）：
@@ -49,7 +49,7 @@ target/release/stele --check                                 # ✓ 8 组不变�
 ✓ verify-deps: 0 个 registry 依赖，全部有受审记录（重复依赖 0）
 ✓ verify-no-ime-vocab: 内核标识符中没有输入法专属词汇
 ✓ verify-no-scheme-data: 内核与方案数据保持分离
-✓ verify-zero-deps: 内核（stele-core stele-engine）保持零第三方依赖
+✓ verify-zero-deps: 内核（qingjian-core qingjian-engine）保持零第三方依赖
 内核自检通过：8 组不变式全部成立。
 ```
 
@@ -61,7 +61,7 @@ target/release/stele --check                                 # ✓ 8 组不变�
 选择提升 MSRV，并在 `Cargo.toml` 里写明了理由。
 
 副作用：MSRV 提升后 clippy 的 `manual_is_multiple_of` 在两处既有代码上生效，
-已一并改掉（`crates/stele-memory/tests/predict_next.rs`、`crates/stele-bench/src/main.rs`）。
+已一并改掉（`crates/qingjian-memory/tests/predict_next.rs`、`crates/qingjian-bench/src/main.rs`）。
 
 ---
 
@@ -70,7 +70,7 @@ target/release/stele --check                                 # ✓ 8 组不变�
 ### 修复前的复现（**审计的原始症状被独立复现**）
 
 ```text
-$ cd .work/stele-base && cargo test -p stele-schemes --test cache_identity --offline
+$ cd .work/qingjian-base && cargo test -p qingjian-schemes --test cache_identity --offline
 test reordering_the_alphabet_recompiles_and_keeps_the_right_word ... FAILED
   assertion `left == right` failed: 字母表重排后**绝不能**复用旧产物：
   缓存里的下标 0 原本是 `ni`，重排后是 `hao`，复用就会让 `ni` 出「好」。
@@ -92,7 +92,7 @@ test result: FAILED. 2 passed; 2 failed
 ### 修复后
 
 ```text
-$ cargo test -p stele-schemes --test cache_identity --offline
+$ cargo test -p qingjian-schemes --test cache_identity --offline
 test changing_the_dictionary_recompiles ... ok
 test every_semantic_input_enters_the_cache_name ... ok
 test reordering_the_alphabet_recompiles_and_keeps_the_right_word ... ok
@@ -102,7 +102,7 @@ test result: ok. 4 passed; 0 failed
 
 ### 做了什么
 
-- 新增 `stele_table::BuildFingerprint`：FNV-1a 覆盖
+- 新增 `qingjian_table::BuildFingerprint`：FNV-1a 覆盖
   **格式版本 + 编译选项 + 字母表内容与顺序 + 源数据校验和**，
   变长字段**先长度后内容**（否则 `["ab","c"]` 与 `["a","bc"]` 会撞）。
 - 头部从 64 字节加到 80 字节，`FORMAT_VERSION` 升到 `2`，
@@ -131,10 +131,10 @@ test result: ok. 4 passed; 0 failed
 ### 修复前的复现
 
 ```text
-$ cd .work/stele-base && cargo test -p stele-table --test baseline_panic -- --nocapture
+$ cd .work/qingjian-base && cargo test -p qingjian-table --test baseline_panic -- --nocapture
 装载成功（源校验和仍匹配）——这正是问题：产物完整性没有被校验
 
-thread 'probe_tampered_offset' panicked at crates/stele-table/src/lexicon.rs:184:24:
+thread 'probe_tampered_offset' panicked at crates/qingjian-table/src/lexicon.rs:184:24:
 range start index 10000 out of range for slice of length 5
 test result: FAILED. 0 passed; 1 failed
 ```
@@ -146,12 +146,12 @@ test result: FAILED. 0 passed; 1 failed
 ### 修复后
 
 ```text
-$ cargo test -p stele-table --offline
+$ cargo test -p qingjian-table --offline
 test result: ok. 31 passed   (单元)
 test result: ok. 8 passed    (tests/table_integrity.rs)
 ```
 
-`crates/stele-table/tests/table_integrity.rs` 覆盖：
+`crates/qingjian-table/tests/table_integrity.rs` 覆盖：
 
 | 测试 | 断言 |
 | --- | --- |
@@ -205,7 +205,7 @@ test result: ok. 8 passed    (tests/table_integrity.rs)
 ### 修复前的复现
 
 ```text
-$ cd .work/stele-base && cargo test -p stele-memory --test persistence_failures --offline
+$ cd .work/qingjian-base && cargo test -p qingjian-memory --test persistence_failures --offline
 test a_failed_flush_never_reports_success_before_retrying ... FAILED
   重试必须真的写盘（旧实现在这里返回 Ok(false)，记录静默丢失）
 test a_failed_rename_keeps_dirty_and_the_retry_succeeds ... FAILED
@@ -227,7 +227,7 @@ test result: FAILED. 3 passed; 6 failed
 ### 修复后
 
 ```text
-$ cargo test -p stele-memory --test persistence_failures --offline
+$ cargo test -p qingjian-memory --test persistence_failures --offline
 running 9 tests
 test a_corrupt_file_is_not_overwritten_by_flushing ... ok
 test a_failed_rename_keeps_dirty_and_the_retry_succeeds ... ok
@@ -273,10 +273,10 @@ test result: ok. 9 passed; 0 failed
 
 ## 5. 任务包 A：拼写搜索的资源上界（P0）
 
-### 修复前（debug 构建的探针，`.work/stele-base`）
+### 修复前（debug 构建的探针，`.work/qingjian-base`）
 
 ```text
-$ cargo test -p stele-schemes --test baseline_probe -- --nocapture
+$ cargo test -p qingjian-schemes --test baseline_probe -- --nocapture
          nihao  n=116   time=370µs        ni_hao_rank=Some(0)
           nhao  n=512   time=5.547ms      ni_hao_rank=Some(9)
             nh  n=456   time=767µs        ni_hao_rank=Some(175)
@@ -292,7 +292,7 @@ $ cargo test -p stele-schemes --test baseline_probe -- --nocapture
 **同一批探针在修复后**（debug）：
 
 ```text
-$ cargo test -p stele-schemes --test spelling_resource_bounds --offline
+$ cargo test -p qingjian-schemes --test spelling_resource_bounds --offline
 test pathological_inputs_are_hard_bounded ... ok
 test ssss_is_many_orders_of_magnitude_smaller_than_the_old_blowup ... ok
 test long_legal_input_stays_bounded ... ok
@@ -302,7 +302,7 @@ test expansion_is_deterministic_under_budget ... ok
 test query_count_is_bounded_by_the_result_cap ... ok
 test result: ok. 7 passed
 
-$ cargo test -p stele-schemes --test spelling_resource_bounds --offline --release
+$ cargo test -p qingjian-schemes --test spelling_resource_bounds --offline --release
 test release_single_key_expansion_is_under_ten_milliseconds ... ok
 test result: ok. 8 passed
 ```
@@ -365,7 +365,7 @@ test result: ok. 8 passed
 ### 修复前的复现
 
 ```text
-$ cd .work/stele-base && cargo test -p stele-engine --test baseline_regex -- --nocapture
+$ cd .work/qingjian-base && cargo test -p qingjian-engine --test baseline_regex -- --nocapture
 regex=^(a|b)+$   input=bbb   leading="a"   claimed=false
 FALSE NEGATIVE: `^(a|b)+$` matches `bbb` but recognizer did not claim
 
@@ -379,7 +379,7 @@ FALSE NEGATIVE: `^(a|b)+$` matches `bbb` but recognizer did not claim
 ### 修复后
 
 ```text
-$ cargo test -p stele-engine --test regex_and_recognizer --offline
+$ cargo test -p qingjian-engine --test regex_and_recognizer --offline
 test the_audited_false_negatives_are_fixed ... ok
 test the_optimisation_never_changes_the_verdict ... ok
 test required_prefix_is_conservative ... ok
@@ -429,7 +429,7 @@ test result: ok. 7 passed
 语料不再只有 `nihao`（审计 §6.3 的要求）：
 
 ```text
-$ ./target/release/stele-bench --scheme-dir schemes/stele-default --iterations=60000 --count-queries
+$ ./target/release/qingjian-bench --scheme-dir schemes/qingjian-default --iterations=60000 --count-queries
 
 输入                                   P50         P95         P99         max
   nihao                          20.55µs     62.07µs     75.00µs      2.09ms
@@ -455,7 +455,7 @@ $ ./target/release/stele-bench --scheme-dir schemes/stele-default --iterations=6
 | `woaizhongguo` 部分按键 | 290 / 679 / 285 ms | **max 2.52 ms** | **270× 更快** |
 | `ssss` 峰值内存 | `VmHWM` **209 MiB** | 全语料 `VmHWM` **21 MiB** | **10× 更低**（且含 14 MB 词库） |
 
-`stele-bench` 现在报告**逐语料**的分位数、`VmRSS` 与 `VmHWM`，
+`qingjian-bench` 现在报告**逐语料**的分位数、`VmRSS` 与 `VmHWM`，
 并且 `--scheme-dir` 时不再打印"演示词库只有几十条词"
 （那句与事实相反的话已修掉）。
 

@@ -218,7 +218,7 @@ Weights are integers where larger = stronger; `8105` uses real corpus frequencie
 **Practical caveat for the Rust port:** the *code/config* is cleanly GPL-3.0-only, but the *data* is a heterogeneous mix. Before shipping the dictionaries commercially, the THUOCL (MIT), pinyin-data (MIT) and rime-melt (Apache-2.0) parts are safe with attribution; `google-10000-english`, 腾讯词向量, 华宇野风, Wiktionary-derived `8105`, and the BLCU frequency list are **UNCLEAR or explicitly restricted** and should be treated as blockers unless replaced.
 
 ## Downloads kept for reuse
-Live dictionary/schema copies are in `/home/brennmond/projects/stele/.rime-research/` (`cn_dicts_*.dict.yaml`, `en_dicts_*.dict.yaml`, `radical_pinyin.dict.yaml`, `rime_ice.schema.yaml`, `README.md`, `tree.json`).
+Live dictionary/schema copies are in `/home/brennmond/projects/qingjian/.rime-research/` (`cn_dicts_*.dict.yaml`, `en_dicts_*.dict.yaml`, `radical_pinyin.dict.yaml`, `rime_ice.schema.yaml`, `README.md`, `tree.json`).
 
 ## URLs used
 - https://github.com/iDvel/rime-ice

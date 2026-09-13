@@ -1,4 +1,4 @@
-# HANDOFF — Stele-IME 项目交接
+# HANDOFF — Qingjian IME 项目交接
 
 > **这份文件是为"上下文耗尽"写的。** 它把 P0–P4b 与阶段 A 的全部决策、
 > 实测数字、踩过的坑、以及下一步压缩成一页可读的东西。
@@ -7,7 +7,7 @@
 >
 > 最后更新：**P4b（本地下一词预测）完成**、**P5 的本地向量偏好记忆第一版落地（默认关）**——
 > P4b：`Lane::Predict` 通道打通、对比集 15 条端到端全过、**用户记忆的**按键路径仍零磁盘 I/O（词库查询仍走 `read_at`，见 §0 的读法）；
-> P5：`stele-embed`（零依赖、无模型、无网络），把本地历史的共现计数投影成
+> P5：`qingjian-embed`（零依赖、无模型、无网络），把本地历史的共现计数投影成
 > `i16` 向量，在 `Lane::Input` 上加有界偏好分；**默认关闭**（D46），
 > 向量表实测 **2.44 MiB @ 4 万词**、延迟无可测变化。
 > 两阶段合计牵出并修掉**七处静默缺陷**（事件丢了上下文 / 学习按 lane 二选一 /
@@ -25,12 +25,12 @@
 
 ## 0. 一分钟速览
 
-**Stele-IME（石经）**：用 Rust 从原理重写的输入法引擎。
+**Qingjian IME（青简输入法）**：用 Rust 从原理重写的输入法引擎。
 存在的理由：商业输入法占 300–400 MB；RIME（librime）成熟但依赖重、
 **部分**方案把关键行为放进 Lua 插件（基础 `script_translator` 的造句/补全**不**依赖 Lua）。
 上游文档没有把隐私写成承诺、早期计划里出现"添加網絡功能"——这只能说明
 **"上游没把它当承诺"**，**不能**推断"librime 会联网或不保护隐私"（审计 §3.1）；
-Stele 要做的，是把自己的离线与隐私做成一条**可核对**的承诺（`docs/privacy-model.md`）。
+Qingjian 要做的，是把自己的离线与隐私做成一条**可核对**的承诺（`docs/privacy-model.md`）。
 
 > **合规与隐私入口**：第三方来源 / 固定 revision / 许可见
 > `THIRD_PARTY_NOTICES.md`；隐私边界见 `docs/privacy-model.md`。
@@ -57,19 +57,19 @@ Stele 要做的，是把自己的离线与隐私做成一条**可核对**的承�
 | **预测内存增量**（P4b，默认上限 2 万条） | **≈4.0 MiB** | < 5 MB ✅ |
 | 按键路径 P50/P99（真实词库 + 记忆 + 预测） | **48.0 / 104.3 µs**（与无预测差在噪声内） | ✅ |
 
-**两套路经**：`stele` 在仓库根目录跑会**自动用 `schemes/stele-default`**
+**两套路经**：`qingjian` 在仓库根目录跑会**自动用 `schemes/qingjian-default`**
 （41 万条，部署路径）；换到别的目录跑则用**内嵌演示词库**（几十条）
 兜底——**生成词库不进二进制**（它 11 MB，见 `pinyin.embedded.schema.yaml`）。
 
 > **约 50 µs 与约 15 µs 是同一份产物的两次测量**，差别在**操作系统的
-> 页缓存**：词条页留在页缓存里（这正是 `stele-table` 的设计目标——
+> 页缓存**：词条页留在页缓存里（这正是 `qingjian-table` 的设计目标——
 > 文件大小 ≠ 常驻内存），冷的时候每次查询要走两次 `read_at`。
 > 两者都远在 1 ms 红线之内。
 
 **用户记忆默认关闭**：不给 `--userdb <路径>` 就没有记忆。
 理由：刚克隆下来的行为必须**逐字节可复现**（HANDOFF §7.6.2 第 6 步的产品决定）。
 
-**延迟数字必须注明方案与词库**：`stele-bench --schema=<id>`、
+**延迟数字必须注明方案与词库**：`qingjian-bench --schema=<id>`、
 量真实词库还要 `--scheme-dir`。演示词库（几十条）与真实词库（41 万条）
 是同一套代码，差 80 倍；零件数也不同。
 
@@ -93,12 +93,12 @@ Stele 要做的，是把自己的离线与隐私做成一条**可核对**的承�
 ## 1. 仓库地图
 
 ```
-stele/
+qingjian/
 ├── PLAN.md                  ← 章程与决策记录（33 条 ADR）。**先读这个**
 ├── docs/engine-design.md    ← 引擎设计的权威定义（含术语表与"为什么"）
 ├── docs/HANDOFF.md          ← 本文件
 ├── reference/               ← 调研资料（RIME 官方文档对比、librime 内部机制…）
-├── schemes/stele-default/   ← 默认方案（数据文件）
+├── schemes/qingjian-default/   ← 默认方案（数据文件）
 │   ├── pinyin.schema.yaml   ← 方案；`speller.alphabet` 由生成器维护
 │   ├── pinyin.dict.yaml     ← 主词典（导入清单）
 │   ├── z-pinyin-demo.schema.yaml ← 内嵌演示版（`z-` 前缀让它排最后；
@@ -107,7 +107,7 @@ stele/
 │   ├── opencc.manifest.yaml ← OpenCC 数据清单（声明，不含数据）
 │   ├── opencc.patch.yaml    ← 可选叠加层：启用 emoji / 简繁转换
 │   └── build/               ← 取回的上游源数据（**不进仓库**）
-├── crates/stele-schemes/tests/schemes-inline/  ← **内联零件的端到端测试方案**
+├── crates/qingjian-schemes/tests/schemes-inline/  ← **内联零件的端到端测试方案**
 │                                               （10 个零件全部声明；改装配路径必跑）
 ├── scripts/verify-*.sh      ← 四条 CI 门禁（含依赖许可审查）
 ├── scripts/deps-allowlist.txt ← 受审依赖白名单（现在是空的：零第三方依赖）
@@ -123,19 +123,19 @@ stele/
 │       ├── number_translator/   （42 条对照）
 │       └── calc_translator/     （74 条对照）
 └── crates/
-    ├── stele-core/          抽象层：Engine/Session、组件 trait、数据结构（**零依赖**）
-    ├── stele-engine/        引擎：拼写代数（含自写正则）、注册表、翻译器、处理器（**零依赖**）
-    ├── stele-config/        YAML 子集解析、$ref、分层补丁、可读诊断
-    ├── stele-dict/          .dict.yaml（头部 + TSV + import_tables）
-    ├── stele-table/         词库编译产物（紧凑二进制 + 按需分页）
-    ├── stele-memory/        用户记忆：频率 + 时间衰减（**自写 KV，零依赖**）
-    ├── stele-embed/        本地向量偏好记忆：本地历史 → 整数向量 → 有界重排（**零依赖、无模型**）
-    ├── stele-schemes/       方案装载 + 内嵌默认方案（**与内核分属不同 crate**）
-    ├── stele-cli/           命令行调试前端（二进制名 `stele`）
-    └── stele-bench/         称重台（延迟 / 内存 / 启动）
+    ├── qingjian-core/          抽象层：Engine/Session、组件 trait、数据结构（**零依赖**）
+    ├── qingjian-engine/        引擎：拼写代数（含自写正则）、注册表、翻译器、处理器（**零依赖**）
+    ├── qingjian-config/        YAML 子集解析、$ref、分层补丁、可读诊断
+    ├── qingjian-dict/          .dict.yaml（头部 + TSV + import_tables）
+    ├── qingjian-table/         词库编译产物（紧凑二进制 + 按需分页）
+    ├── qingjian-memory/        用户记忆：频率 + 时间衰减（**自写 KV，零依赖**）
+    ├── qingjian-embed/        本地向量偏好记忆：本地历史 → 整数向量 → 有界重排（**零依赖、无模型**）
+    ├── qingjian-schemes/       方案装载 + 内嵌默认方案（**与内核分属不同 crate**）
+    ├── qingjian-cli/           命令行调试前端（二进制名 `qingjian`）
+    └── qingjian-bench/         称重台（延迟 / 内存 / 启动）
 ```
 
-**为什么 `stele-schemes` 必须与内核分开**：内核被 CI 门禁禁止出现
+**为什么 `qingjian-schemes` 必须与内核分开**：内核被 CI 门禁禁止出现
 "拼音/音节/简拼"这类词汇，而方案数据里必然出现。**物理分离是那条约束的执行方式。**
 
 ---
@@ -178,7 +178,7 @@ stele/
 - **不支持的语法一律报错并解释原因**，绝不"猜一个"。
 - **诊断必须带行号**，并**一次报出全部问题**（不是遇到第一个就返回）。
 - **内核不得出现输入法专属词汇** —— 由 `scripts/verify-no-ime-vocab.sh` 强制。
-- **`stele-core` / `stele-engine` 不得有第三方依赖** —— 由 `verify-zero-deps.sh` 强制。
+- **`qingjian-core` / `qingjian-engine` 不得有第三方依赖** —— 由 `verify-zero-deps.sh` 强制。
 - **门禁必须反向验证过**（故意违规能被抓住）。**一个不会失败的检查等于没有检查。**
 - **数字必须实测**。这一项目里已经有四次"实施者以为对、数字说不对"（见 §5）。
 - **不确定的约定不许写成"RIME 约定"**。要么引 librime 源码，要么写"这是我们的选择"。
@@ -233,14 +233,14 @@ stele/
 | --- | --- |
 | **P0** | workspace、CI、三条门禁（P4a 时增至四条）、称重台、许可证、README |
 | **P1** | 拼写层、词库、两族翻译器、处理器、过滤器、流水线、会话；`nihao`→你好、`nh`→你好、`shape ab`→十 |
-| **P2** | `stele-config`（YAML 子集 + `$ref` + 分层补丁）、`stele-dict`、目录装载、`--scheme-dir` |
-| **P2.5** | `stele-table`：紧凑二进制 + 流式编译器 + 按需分页（500k 词条 245→46 MiB） |
+| **P2** | `qingjian-config`（YAML 子集 + `$ref` + 分层补丁）、`qingjian-dict`、目录装载、`--scheme-dir` |
+| **P2.5** | `qingjian-table`：紧凑二进制 + 流式编译器 + 按需分页（500k 词条 245→46 MiB） |
 | **P3** | **完整拼写代数**（含自写正则）、**零件集**（24 个名字里 22 个已实现）、**词条补全**、**分层 `--dump-config`**（每个值标来源）、**与 librime 的对照工装** |
-| **P3.5** | `schemes/stele-default`：自有方案 + **41 万条**词库 + OpenCC 数据装载 —— 见下文 |
-| **P4a** | `stele-memory`：频率 + 时间衰减的用户记忆、`Services` 注入、CLI `--userdb` —— 见下文 |
-| **P4b** | `stele-memory` 的**预测表** + `Lane::Predict` 通道 + 对比集 `tools/predict/` + CLI `--predict` —— 见下文 |
+| **P3.5** | `schemes/qingjian-default`：自有方案 + **41 万条**词库 + OpenCC 数据装载 —— 见下文 |
+| **P4a** | `qingjian-memory`：频率 + 时间衰减的用户记忆、`Services` 注入、CLI `--userdb` —— 见下文 |
+| **P4b** | `qingjian-memory` 的**预测表** + `Lane::Predict` 通道 + 对比集 `tools/predict/` + CLI `--predict` —— 见下文 |
 
-### P3 的零件覆盖（`stele --components`）
+### P3 的零件覆盖（`qingjian --components`）
 
 `no_lua_schema` 引用的 24 个名字：
 
@@ -251,7 +251,7 @@ stele/
 | **缺代码** | **0** | — |
 
 **"跑通 `no_lua_schema`"的准确状态**：零件与配置读法都齐了
-（`crates/stele-schemes/tests/schemes/p3features.schema.yaml` 是一份
+（`crates/qingjian-schemes/tests/schemes/p3features.schema.yaml` 是一份
 **RIME 原生写法**的等价方案，19+ 条端到端断言守着它），
 但我们**没有真的把那份文件跑起来**——拿不到它的词库与 OpenCC 数据。
 
@@ -274,7 +274,7 @@ stele/
 | `pin_cand_filter` | 置顶 + **简码派生**（`ni hao` 也认 `nih`） |
 | `reduce_english_filter` | 英文候选降权（`all`/`custom`/`none`） |
 
-**代码位置**：`stele-engine/src/inline.rs`（8 个）+ `calc.rs`（求值器）。
+**代码位置**：`qingjian-engine/src/inline.rs`（8 个）+ `calc.rs`（求值器）。
 
 **余下 4 个——不是"没做完"，是各自缺代码之外的东西**：
 
@@ -285,7 +285,7 @@ stele/
 | `select_character` | "候选能被当输入用"这条**会话语义** | 阶段 C |
 | 拆字辅码 `search` | 同上 + 一个反查索引 | 阶段 C |
 
-`stele --components` 分四档列出（已实现 / 需数据 / 需资源 / 不适用），
+`qingjian --components` 分四档列出（已实现 / 需数据 / 需资源 / 不适用），
 `CoverageReport::blocking_reason()` 会说清"缺在哪一步、该谁动手"。
 
 > **阶段 A 的 10 个零件：10/10 已装配**（2026-09 补齐）
@@ -302,7 +302,7 @@ stele/
 > `Pipeline::finalize`（D43）；② 非字母数字输入被静默丢掉（§5 第 39 条）；
 > ③ 流式集合的引号解析错值（§5 第 40 条）。
 >
-> **验收**：`crates/stele-schemes/tests/inline_components.rs`，15 条端到端断言，
+> **验收**：`crates/qingjian-schemes/tests/inline_components.rs`，15 条端到端断言，
 > 方案在 `tests/schemes-inline/`。**每个零件一条**：
 >
 > | 零件 | 验收方式 |
@@ -319,7 +319,7 @@ stele/
 > | `reduce_english_filter` | `mode: custom` + `words` 可读、方案可跑 |
 >
 > **可检查性（这才是缺口真正的教训）**：判断"某个零件名有没有装配分支"
-> 现在有一个**可执行**的答案 —— `stele_engine::scheme::assembles(name)`，
+> 现在有一个**可执行**的答案 —— `qingjian_engine::scheme::assembles(name)`，
 > 且有一条测试（`assembles_agrees_with_what_build_pipeline_actually_builds`）
 > 守着它不会与 `build_pipeline` 漂移：**说 true 就必须真的多一个组件，
 > 说 false 就必须有一条降级说明**。声明了没有装配分支的零件会得到降级说明。
@@ -349,9 +349,9 @@ RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_pres
 | --- | --- | --- |
 | **干净来源的词表** | `tools/fetch-sources.sh` 取回 **9 份**上游数据（全部 MIT / Apache-2.0），带 sha256 清单校验 | 取回 3.9 MB 源数据 |
 | **词库生成器** | `tools/wordlist-gen/`（自写，零外部依赖；用真正的装载器**自检产物**） | 生成 **414525 条**，产物 11 MB |
-| **默认词库** | `schemes/stele-default/cn_dicts/generated.dict.yaml`：jieba 通用词表 + 8 份 THUOCL 分领域词表；简繁过滤（用 OpenCC 的 `TSCharacters` 滤掉繁体条目）。主词典 `pinyin.dict.yaml` 仍是**导入清单** | 音节表 **399 个**编码单元，由生成器反推并同步写回方案 |
-| **OpenCC 数据装载** | `stele-dict/src/opencc.rs`（含一个 300 行的极简 JSON 解析器）+ `opencc.manifest.yaml`（数据清单） | emoji 表 6355 条、简繁表 53250 条，**真的装进引擎** |
-| **`simplifier` 真的生效** | `stele --option=emoji weixiao` → 候选里有 `😊`；`--option=traditionalization zhongguo` → `中國` | 两条都有端到端断言 |
+| **默认词库** | `schemes/qingjian-default/cn_dicts/generated.dict.yaml`：jieba 通用词表 + 8 份 THUOCL 分领域词表；简繁过滤（用 OpenCC 的 `TSCharacters` 滤掉繁体条目）。主词典 `pinyin.dict.yaml` 仍是**导入清单** | 音节表 **399 个**编码单元，由生成器反推并同步写回方案 |
+| **OpenCC 数据装载** | `qingjian-dict/src/opencc.rs`（含一个 300 行的极简 JSON 解析器）+ `opencc.manifest.yaml`（数据清单） | emoji 表 6355 条、简繁表 53250 条，**真的装进引擎** |
+| **`simplifier` 真的生效** | `qingjian --option=emoji weixiao` → 候选里有 `😊`；`--option=traditionalization zhongguo` → `中國` | 两条都有端到端断言 |
 
 **为什么源数据不进仓库**：那 9 份里有 8 份是 THUOCL / jieba / OpenCC，
 **都是可分发的**（MIT / Apache-2.0）——但我们仍然把它们放在 `build/`
@@ -382,12 +382,12 @@ python3 tools/compare-librime.py            # 6 条用例
 
 | 交付 | 内容 | 证据 |
 | --- | --- | --- |
-| **新 crate `stele-memory`** | 零依赖、无 `unsafe`。`decay`（量纲纯函数）+ `store`（自写 KV）+ `ranker`（接到排序上）+ `events`（事件接线的唯一映射点） | 51 个测试 |
+| **新 crate `qingjian-memory`** | 零依赖、无 `unsafe`。`decay`（量纲纯函数）+ `store`（自写 KV）+ `ranker`（接到排序上）+ `events`（事件接线的唯一映射点） | 51 个测试 |
 | **量纲** | `bonus = MAX × f / (f + H)`，`f` 是**整数次减半**的衰减退频（半衰期 30 天）。全程整数 ⇒ 跨平台逐位一致（D13） | `boundary_table_is_exact` 逐值表 |
 | **存储** | 自写紧凑 KV：魔数 + 版本 + 记录表 + FNV-1a 校验和；落盘 = 临时文件 + 原子 `rename` | 8 个格式测试（截断 / 翻位 / 版本 / 尾部垃圾） |
 | **上限与淘汰** | 默认 **30 000 条**（实测反推，见下）；淘汰**衰减频次最低**的条目，平局按 `(输入, 词)` 字典序 ⇒ 确定 | `eviction_is_deterministic_and_drops_the_coldest` |
-| **服务注入** | `stele_core::Services`（时钟 + 重排器链）；`LoadedSchema::build_pipeline(&Services)` —— 服务在**装配时注入**，不穿过 `Query` | 引擎只多了一个字段 |
-| **事件接线** | `stele_memory::apply_events`：`Learned → record`、`ForgetRequested → forget`。**三个前端共用同一段代码** | `learned_and_forget_events_become_the_right_calls` |
+| **服务注入** | `qingjian_core::Services`（时钟 + 重排器链）；`LoadedSchema::build_pipeline(&Services)` —— 服务在**装配时注入**，不穿过 `Query` | 引擎只多了一个字段 |
+| **事件接线** | `qingjian_memory::apply_events`：`Learned → record`、`ForgetRequested → forget`。**三个前端共用同一段代码** | `learned_and_forget_events_become_the_right_calls` |
 | **CLI** | `--userdb <路径>`（**默认关**）、`--dump-memory`、`--select=<n>`（不选中一个"不是第一个"的候选，就永远观察不到学习） | 见 §6 的命令 |
 
 **五条验收逐条对账**
@@ -395,9 +395,9 @@ python3 tools/compare-librime.py            # 6 条用例
 | # | 验收 | 怎么证的 |
 | --- | --- | --- |
 | 1 | 打过的词下次优先 | 端到端：自建方案（甲 10000 / 乙 1，同码），把「乙」选 4 次 → 它升到第 1；**打 1 次时断言它还没升**（分界点两侧都钉住）。另有**跨拼法**两条：简拼学的全拼吃得到、全拼学的简拼吃得到；以及"落库的键不是拼写而是编码" |
-| 2 | **用户记忆的按键路径零磁盘 I/O**（红线） | `crates/stele-memory/tests/no_disk_io_on_keypath.rs` 读 `/proc/self/io`：`syscr`/`syscw` 与 `read_bytes`/`write_bytes` 在 1000 次按键后**一个都没涨**。范围是记忆/预测/向量这条路径；**词典查询（`TableLexicon`）仍走 `read_at`** |
+| 2 | **用户记忆的按键路径零磁盘 I/O**（红线） | `crates/qingjian-memory/tests/no_disk_io_on_keypath.rs` 读 `/proc/self/io`：`syscr`/`syscw` 与 `read_bytes`/`write_bytes` 在 1000 次按键后**一个都没涨**。范围是记忆/预测/向量这条路径；**词典查询（`TableLexicon`）仍走 `read_at`** |
 | 3 | 重启后学到的词还在 | 落盘 → 新引擎 + 新 store → 顺序仍然是学过的那个 |
-| 4 | 内存增量可量化且不超预算 | `stele-bench --seed-memory=N`：3 万条 + 真实词库 = **17.8 MiB**（一次运行里新学则 19.4 MiB） |
+| 4 | 内存增量可量化且不超预算 | `qingjian-bench --seed-memory=N`：3 万条 + 真实词库 = **17.8 MiB**（一次运行里新学则 19.4 MiB） |
 | 5 | 坏文件 = 降级 + 警告 | 写入垃圾 → 警告一行、引擎照常打字、**且不覆盖那个文件** |
 
 **一处必须讲清的偏离**
@@ -419,10 +419,10 @@ python3 tools/compare-librime.py            # 6 条用例
 CLI 复现：
 
 ```bash
-stele --scheme-dir schemes/stele-default --candidates=1 nihao      # 基线 9210
-for i in 1 2 3 4; do stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem nhao; done
-stele --userdb /tmp/u.mem --dump-memory                            # 键是 ni'hao
-stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem --candidates=1 nihao   # 18543
+qingjian --scheme-dir schemes/qingjian-default --candidates=1 nihao      # 基线 9210
+for i in 1 2 3 4; do qingjian --scheme-dir schemes/qingjian-default --userdb /tmp/u.mem nhao; done
+qingjian --userdb /tmp/u.mem --dump-memory                            # 键是 ni'hao
+qingjian --scheme-dir schemes/qingjian-default --userdb /tmp/u.mem --candidates=1 nihao   # 18543
 ```
 
 **红线仍然成立**：真实词库 + 3 万条记忆下，P50 **约 50–52 µs**、P99 **约 110 µs**
@@ -438,7 +438,7 @@ stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem --candidates=1 niha
 | 交付 | 内容 | 证据 |
 | --- | --- | --- |
 | **对比集**（先于代码） | `tools/predict/collocations.tsv`：**15 条**常见搭配链（交替的 `编码/词` 对），两对的是 bigram 用例、三对的是 trigram 用例 | `tools/predict/README.md` 写了格式与"加一行 = 加一条用例" |
-| **预测表** | `stele-memory` 的第二张表：`(ctx1, ctx2, 词) → 记录`；`ctx1` 为空串表示 bigram。**与输入表分开两段**（键空间不同），但**同一个文件**（一起原子替换） | 文件格式升到 **v2**；两段各有 round-trip / 截断 / 翻位 / 版本门禁测试 |
+| **预测表** | `qingjian-memory` 的第二张表：`(ctx1, ctx2, 词) → 记录`；`ctx1` 为空串表示 bigram。**与输入表分开两段**（键空间不同），但**同一个文件**（一起原子替换） | 文件格式升到 **v2**；两段各有 round-trip / 截断 / 翻位 / 版本门禁测试 |
 | **上下文粒度** | **trigram 优先 + bigram 回退**（所有者选定的粒度 + 稀疏数据的安全网）：一次上屏写两条，查询时长的有记录就只答它 | `trigram_wins_over_bigram_when_both_are_known` 等 6 条 |
 | **纯函数评分** | 复用 P4a 的整数衰减曲线（`bonus_now`）——**没有引入任何浮点** | `prediction_records_decay_with_time` |
 | **上限与淘汰** | 默认 **20 000 条**（实测反推，见 §0 的单条成本）；淘汰**衰减频次最低**的，平局由 `BTreeMap` 键序决定 ⇒ 确定 | `prediction_eviction_is_deterministic_and_drops_the_coldest` |
@@ -447,7 +447,7 @@ stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem --candidates=1 niha
 | **盲选编号不漂移** | 数字键数的是"第 N 个**输入**候选"（`SessionState::selectable_index`），因此预测插在中间也不会把编号推后 | `selector_counts_only_input_candidates` + `the_keyboard_ordinal_skips_over_the_prediction_block` |
 | **事件接线** | `Event::Learned` 新增 **`context`** 字段（`Lane::Predict` 的学习键就是它）；`FileMemory::record` **按 lane 分流但不互斥**（Input 上屏同时写两张表） | `a_prediction_event_carries_its_context_to_the_store` + 对比集端到端 |
 | **CLI** | `--predict`（**默认关**，需要 `--userdb`）、`--commit-seq=甲,乙`（连续上屏，手工复现多上下文功能）、`--dump-memory` 多打一张预测表 | 见 §6 的命令 |
-| **称重** | `stele-bench --predict / --seed-predict=N / --predict-cap=N` | 数字在 §0 |
+| **称重** | `qingjian-bench --predict / --seed-predict=N / --predict-cap=N` | 数字在 §0 |
 
 **对比集的验收口径（所有者拍板）**：自建搭配语料 + 存档表，
 **断言"学过之后期望词是预测通道的第 1 位"**。每一行用**各自独立的一份记忆**跑，
@@ -475,7 +475,7 @@ stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem --candidates=1 niha
 
 | 交付 | 内容 |
 | --- | --- |
-| **新 crate `stele-embed`** | **零依赖、无模型、无网络**。把用户本地历史里的 `(上下文词 → 下一个词)` 计数**投影**成 `i16` 整数向量（`tools/embed-probe` 量的那种），在 `Lane::Input` 上加有界偏好分 |
+| **新 crate `qingjian-embed`** | **零依赖、无模型、无网络**。把用户本地历史里的 `(上下文词 → 下一个词)` 计数**投影**成 `i16` 整数向量（`tools/embed-probe` 量的那种），在 `Lane::Input` 上加有界偏好分 |
 | **确定性** | 投影由词的哈希决定（无随机）、累加是整数、量化是整数除法——**没有一处浮点**（D13）。同一份历史 ⇒ 逐位相同的向量 |
 | **保守的重排** | 只给"不是猜的"候选加分（铁律在算术上不可能被违反）；**按名次**而非分值（没有可调常数）；默认前 3 名、≤4000 毫对数 |
 | **装配** | `Services::rankers` 里接在 `MemoryRanker` **之后**；CLI `--embed`（**默认关**，需 `--userdb`）；称重台 `--embed` |
@@ -512,7 +512,7 @@ stele --scheme-dir schemes/stele-default --userdb /tmp/u.mem --candidates=1 niha
 
 **一件不该忘的事**：`reference/` 下有两份**以 librime 源码为准**的调研
 （`rime-key-binding-actions.md` 1084 行、`rime-recognizer-and-affix.md` 573 行），
-每份文末都有「与 stele 实现的差异」表。**动手改这些零件之前先读它们**——
+每份文末都有「与 qingjian 实现的差异」表。**动手改这些零件之前先读它们**——
 P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在里面。
 
 ## 5. 踩过的坑（**每一条都是"写代码/量数字"才发现的**）
@@ -543,12 +543,12 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 | 22 | **`char::is_alphanumeric()` 对汉字返回 `true`** —— 长词滤镜把每个中文候选都当成英文候选，一个都不提升（RIME 那边是 Lua 的 `[%a%d]`，**只认 ASCII**） | **跨语言移植时"看着等价的谓词"最危险**：只承认两边行为一致的那部分（ASCII），不要相信名字相同 |
 | 23 | **Lua 的 `gsub(p, r)` 默认只替换第一处** —— 我按"全局替换"实现了它，因为那是这个名字给我的印象；上游连写两遍同一个 `gsub` 恰好是在**依赖**这个性质（`R0001` 应为「〇一」） | **名字给的印象不能代替读语义**。对照测试把它从「一」纠正回「〇一」 |
 | 24 | **我比 Lua 更宽松**：`--3`（Lua 里 `--` 是注释）、`1+2)`、`sin(1,2)`（Lua 忽略多余实参） | **"更宽松"也是一种不一致**——它会把"上游说这个输入错了"变成"我们算了个数" |
-| 25 | **我给对照数据放进了内核 crate**（`crates/stele-engine/tests/oracle/`） | `verify-no-scheme-data.sh` 当场拦下：**内核不许有数据文件**（D24）。"只是测试用"不是理由——门禁第六次抓到我 |
+| 25 | **我给对照数据放进了内核 crate**（`crates/qingjian-engine/tests/oracle/`） | `verify-no-scheme-data.sh` 当场拦下：**内核不许有数据文件**（D24）。"只是测试用"不是理由——门禁第六次抓到我 |
 | 26 | **流水线把候选裁成"当前页"是在排序之前** —— 而 `simplifier`（emoji / 简繁）产出的候选**追加在末尾**，于是**永远被裁掉**。症状：`--dump-config` 说"已装载 6355 条转换"、候选里一个 emoji 都没有 | **裁剪/限流必须在排序之后**；"前 N 个"只在"已排序"时才是"前 N 名"。引擎给全量、翻页是前端的事 |
 | 27 | **OpenCC 的表有两种逐字节相同的形状**：`干<TAB>乾 幹`（多选一）与 `微笑<TAB>微笑 😊`（复合串）。我按"按空白切分+取第一个"实现，于是 emoji 表 4857 条一条都不生效 | 判据是**值是否以键自身开头**，而它只能在"同时握着键与值"的地方做——解析层整段保留，消费者才判 |
 | 28 | **拼写展开用的是深搜 + 硬上限**：`ni hao` 的规范切分**没被生成**，因为名额被 `niu hao` 这类缩写变体占满了。症状是"你好在 41 万词条的词库里打不出来"，而单字 `ni`/`hao` 都正常 | 展开必须**按代价排序**（best-first），而不是"先到先得"；上限截断的是**最差**的那些才安全 |
 | 29 | **YAML 子集解析器把裸 `nan` 当浮点 NaN**（Rust 的 `f64::from_str` 认识它）——于是音节表里的 `- nan` 变成 `Float(NaN)`，`as_str()` 返回 `None`，那一项被静默丢掉。装载器随后报"词条引用了字母表里没有的编码单元「nan」"，而**文件里明明写着它** | 语言的"特殊值"写法要按**规范**收（`.nan` / `.inf`）；歧义写法一律当字符串。**查了半天不在装载器上，在解析器的一行** |
-| 30 | **`stele --check` 的自检写死了方案 id**：P3.5 把内嵌演示方案从 `pinyin` 改名成 `pinyin-demo`，**漏改了自检里的 `run("pinyin", …)`**。于是自检从那时起一直在报"方案不存在：pinyin" | 自检引用**名字**就会随重命名腐坏。修法不是把字符串改对，而是**从实际装载到的方案里取**（按翻译器族挑）。**在干净 HEAD 上复现过** |
+| 30 | **`qingjian --check` 的自检写死了方案 id**：P3.5 把内嵌演示方案从 `pinyin` 改名成 `pinyin-demo`，**漏改了自检里的 `run("pinyin", …)`**。于是自检从那时起一直在报"方案不存在：pinyin" | 自检引用**名字**就会随重命名腐坏。修法不是把字符串改对，而是**从实际装载到的方案里取**（按翻译器族挑）。**在干净 HEAD 上复现过** |
 | 31 | **同一个自检的第②步还写着一个已被证伪的期望**（`nh` → 你好）：§5 的第 28 条早就写明 `nh` 打不出来，而自检里的期望没跟着改 | "已知行为"要有**一处权威**；改行为时要搜一遍谁依赖它。自检要守的是"变体拼写能上屏"这条不变式，不是某个具体缩写串（改用 `nhao`，并在代码里写清为什么不是 `nh`） |
 | 32 | **这两处失效存在了很久，而没有任何东西提醒**：CI 里跑了 `--check`，但它不在本地必跑清单里；用户与贡献者都不会看到 CI 红 | 自检要么**进 `scripts/verify-*.sh`**（本地与 CI 同一条命令），要么等于没有。**一个没人跑的检查就是没有检查** |
 | 33 | **"零磁盘 I/O"的测试第一版抓不住违规**：只读 `write_bytes` 时，往 `/tmp` 写文件**不会**让它变化（写在页缓存里，块设备层还没见到）。我加上一次故意的写，**测试照样绿** | **反向验证不只验证"检查会不会失败"，还验证"尺子准不准"。** 改用 `syscr`/`syscw`（系统调用次数）后，故意的写立刻报出 1000 次 |
@@ -573,94 +573,94 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 
 ```bash
 cargo build --workspace && cargo test --workspace      # 441 个测试
-cargo run -p stele-cli -- --check                      # 8 组内核不变式
-cargo run -p stele-cli -- nihao                        # → 你好（内嵌演示词库）
-cargo run -p stele-cli -- --schema shape ab            # → 十（同一个引擎）
-cargo run -p stele-cli -- --dump-config                # 合并后的方案（标来源）
-cargo run -p stele-cli -- --components                 # 零件注册表
+cargo run -p qingjian-cli -- --check                      # 8 组内核不变式
+cargo run -p qingjian-cli -- nihao                        # → 你好（内嵌演示词库）
+cargo run -p qingjian-cli -- --schema shape ab            # → 十（同一个引擎）
+cargo run -p qingjian-cli -- --dump-config                # 合并后的方案（标来源）
+cargo run -p qingjian-cli -- --components                 # 零件注册表
 
-# ── 真实词库（41 万条）── 在仓库根目录跑时会**自动发现** schemes/stele-default
-cargo run -p stele-cli --release -- nihao
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default nihao
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default nhao
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+# ── 真实词库（41 万条）── 在仓库根目录跑时会**自动发现** schemes/qingjian-default
+cargo run -p qingjian-cli --release -- nihao
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default nihao
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default nhao
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --candidates=all weixiao             # `--candidates=N|all` 看全量（默认只看当前页）
 
 # ── 内联零件（阶段 A）── 一份把 10 个零件全声明了的测试方案 ──────────
-cargo test -p stele-schemes --test inline_components     # 15 条端到端断言
-cargo run -p stele-cli --release -- --scheme-dir crates/stele-schemes/tests/schemes-inline rq
-cargo run -p stele-cli --release -- --scheme-dir crates/stele-schemes/tests/schemes-inline cC1+2
-cargo run -p stele-cli --release -- --scheme-dir crates/stele-schemes/tests/schemes-inline U62fc
-cargo run -p stele-cli --release -- --scheme-dir crates/stele-schemes/tests/schemes-inline uuid-test
+cargo test -p qingjian-schemes --test inline_components     # 15 条端到端断言
+cargo run -p qingjian-cli --release -- --scheme-dir crates/qingjian-schemes/tests/schemes-inline rq
+cargo run -p qingjian-cli --release -- --scheme-dir crates/qingjian-schemes/tests/schemes-inline cC1+2
+cargo run -p qingjian-cli --release -- --scheme-dir crates/qingjian-schemes/tests/schemes-inline U62fc
+cargo run -p qingjian-cli --release -- --scheme-dir crates/qingjian-schemes/tests/schemes-inline uuid-test
 # 改了装配路径/配置读取之后，**先跑这一条**：它是"零件真的被装配了"的唯一证据
 
 # ── 用户记忆（P4a）── **默认关闭**，给了 `--userdb` 才学、才记 ────────
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --userdb /tmp/u.mem --select=3 shi        # 把第 3 个候选上屏并记住它
-cargo run -p stele-cli --release -- --userdb /tmp/u.mem --dump-memory   # 看记住了什么
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-cli --release -- --userdb /tmp/u.mem --dump-memory   # 看记住了什么
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --userdb /tmp/u.mem --candidates=4 shi    # **顺序变了**：学过的那个上来了
 # 不加 `--userdb` 时行为逐字节可复现（这是产品决定，不是省事）
 
 # ── 下一词预测（P4b）── **默认关**，要 `--userdb` + `--predict` 两个一起给 ──
-cargo test -p stele-memory --test predict_next       # 对比集 15 条端到端（验收线）
-cargo test -p stele-memory --test no_disk_io_on_keypath   # 用户记忆按键路径零磁盘 I/O（含预测；词典查询仍有 read_at）
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo test -p qingjian-memory --test predict_next       # 对比集 15 条端到端（验收线）
+cargo test -p qingjian-memory --test no_disk_io_on_keypath   # 用户记忆按键路径零磁盘 I/O（含预测；词典查询仍有 read_at）
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --userdb /tmp/u.mem --predict --commit-seq=jintian,tianqi,jintian
     # 连续上屏「今天 天气 今天」→ 最后一行 `[预测] 接下来可能打：天气`
     # **为什么必须 `--commit-seq`**：上下文是会话状态，一次调用只上屏一次，
     # 因此"今天 → 天气"这种跨两次上屏的搭配在单次调用里根本产生不了。
-cargo run -p stele-cli --release -- --userdb /tmp/u.mem --dump-memory
+cargo run -p qingjian-cli --release -- --userdb /tmp/u.mem --dump-memory
     # 两张表：上面是编码键的输入表，下面是**上下文键的预测表**
 # 量预测的内存成本（斜率法；直接读小 N 的 RSS 增量会低估，见 §5 第 44 条）：
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default \
     --schema=pinyin --userdb /tmp/m.mem --predict-cap=300000 --seed-predict=100000
 
 # ── 本地向量偏好记忆（P5 · D46）── **默认关**，要 `--userdb` + `--embed` ──
-cargo test -p stele-embed                       # 单元测试（15 条）
-cargo test -p stele-embed --test context_cases -- --nocapture
+cargo test -p qingjian-embed                       # 单元测试（15 条）
+cargo test -p qingjian-embed --test context_cases -- --nocapture
     # ↑ A/B 对照：会打印每条用例在「基线」与「加向量」下的名次
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default \
     --schema=pinyin --userdb /tmp/e.mem --seed-memory=30000    # 先灌输入记忆
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default \
     --schema=pinyin --userdb /tmp/e.mem --seed-predict=20000   # 再灌上下文历史（会落盘）
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default \
     --schema=pinyin --userdb /tmp/e.mem --embed                # 报告里打出向量表大小与加成上限
 # 设计、内存账与实测：docs/embed-design.md
 
 # ── 重新生成默认词库（一次网络访问；源数据落在 .gitignore 的 build/）──
 bash tools/fetch-sources.sh              # 取回 9 份干净来源 + sha256 校验
 cargo run --release --manifest-path tools/wordlist-gen/Cargo.toml -- \
-    --sources schemes/stele-default/build --out schemes/stele-default
+    --sources schemes/qingjian-default/build --out schemes/qingjian-default
 
 # ── OpenCC 转换（emoji / 简繁）：可选叠加层 ─────────────────────────
-cp schemes/stele-default/opencc.patch.yaml schemes/stele-default/pinyin.custom.yaml
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cp schemes/qingjian-default/opencc.patch.yaml schemes/qingjian-default/pinyin.custom.yaml
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --option=emoji --candidates=all weixiao      # 候选里有 😊
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --option=traditionalization zhongguo          # 候选里有 中國
 
 # ── 称重（真实词库）与门禁 ─────────────────────────────────────────
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default --schema=pinyin
-cargo run -p stele-bench --release -- --schema=shape   # 演示方案（零件少）
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default --schema=pinyin
+cargo run -p qingjian-bench --release -- --schema=shape   # 演示方案（零件少）
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default \
     --schema=pinyin --count-queries                    # 每键词典查询次数（PLAN §6 的欠账）
-cargo run -p stele-bench --release -- --iterations=2000 \
+cargo run -p qingjian-bench --release -- --iterations=2000 \
     --userdb /tmp/m.mem --seed-memory=30000            # 记忆的内存成本（验收 4）
 bash scripts/verify-*.sh                               # 四条门禁（含依赖许可审查）
 
 # ── 与 librime / 上游 Lua 对照 ─────────────────────────────────────
 python3 tools/compare-librime.py                       # 结构对照（6 条）
 cd tools/librime-probe && ./build.sh && ./probe --help  # 驱动真实 librime
-cargo test -p stele-engine --test number_oracle         # 与上游输出记录逐字节对照
-cargo test -p stele-engine --test calc_oracle           #   （42 + 74 条）
+cargo test -p qingjian-engine --test number_oracle         # 与上游输出记录逐字节对照
+cargo test -p qingjian-engine --test calc_oracle           #   （42 + 74 条）
 # 对照数据是上游程序跑出来的 .expected.txt 存档；
 # **上游 Lua 源码已不随仓库分发**（GPL-3.0-only，审计 J2.3）——
 # 需要重新生成时的取回配方见 tools/oracle/README.md
-cargo run -p stele-cli -- --scheme-dir <目录> --list    # 装载自建方案
+cargo run -p qingjian-cli -- --scheme-dir <目录> --list    # 装载自建方案
 ```
 
-**环境事实**：WSL2，仓库在 ext4（`/home/brennmond/projects/stele`），
+**环境事实**：WSL2，仓库在 ext4（`/home/brennmond/projects/qingjian`），
 rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 `librime-bin 1.16.1` 已装（`rime_deployer` 可用）。
 
@@ -682,7 +682,7 @@ rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 
 **P5 的第一版已落地（默认关）**：评审在 `docs/p5-vector-feasibility.md`，
 **执行书与实测在 `docs/embed-design.md`**。当前形态是**本地向量偏好记忆**：
-`stele-embed`（零依赖、无模型、无网络）把本地历史里的 `(上下文 → 下一个词)`
+`qingjian-embed`（零依赖、无模型、无网络）把本地历史里的 `(上下文 → 下一个词)`
 计数投影成 `i16` 向量，接在 `Lane::Input` 的重排链上；**默认关闭**（D46）。
 
 - 实测：对比集 **3/3**（基线 1/3，**无回归**）；向量表 **2.44 MiB @ 4 万词**；
@@ -705,7 +705,7 @@ rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 
 **一件不该忘的事**：`reference/` 下有两份**以 librime 源码为准**的调研
 （`rime-key-binding-actions.md` 1084 行、`rime-recognizer-and-affix.md` 573 行），
-每份文末都有「与 stele 实现的差异」表。**动手改这些零件之前先读它们**——
+每份文末都有「与 qingjian 实现的差异」表。**动手改这些零件之前先读它们**——
 P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在里面。
 
 ---
@@ -716,7 +716,7 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 
 | | |
 | --- | --- |
-| **Stele 本体** | MIT / Apache-2.0（**不变**） |
+| **Qingjian 本体** | MIT / Apache-2.0（**不变**） |
 | **插件代码** | **按行为重写**，不复制上游 Lua（阶段 A 的做法） |
 | **雾凇词表** | **不进仓库**，用户部署时自取；我们只提供装载路径与校验 |
 
@@ -772,7 +772,7 @@ P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在�
 | | |
 | --- | --- |
 | **目标** | 频率 + 时间衰减的用户记忆 |
-| **交付物** | 新 crate `stele-memory`（`MemoryStore` 的实现）+ 引擎侧接线 + CLI 开关 |
+| **交付物** | 新 crate `qingjian-memory`（`MemoryStore` 的实现）+ 引擎侧接线 + CLI 开关 |
 | **验收 1** | **打过的词下次优先**：同一个词连续上屏过 N 次后，它排到同码候选之前 |
 | **验收 2** | **用户记忆的按键路径零磁盘 I/O**（红线）：这条路径上一次 `read`/`write` 系统调用都不能有（词典查询 `TableLexicon` 不在范围内，它按需 `read_at`） |
 | **验收 3** | 进程重启后学到的词还在（持久化可用） |
@@ -795,7 +795,7 @@ RIME 的 `initial_quality: 1.2` 是加到**线性计数**上的
 浮点在不同平台会漂移。
 
 **建议定案**：加成 = `Score::from_weight(1 + k × f)` 的**定点值**，在
-**更新时**算好、存进 `MemoryEntry::bonus`。`stele-core::service` 已经这么
+**更新时**算好、存进 `MemoryEntry::bonus`。`qingjian-core::service` 已经这么
 定义了这个字段——它写明"换算由实现方在**更新时**完成，那一步可以用浮点；
 但**存下来的必须是定点**"。`k` 与 `f` 的取值要**先写成一个能证伪的测试**：
 给定次数与时间，断言 `bonus` 的整数值。
@@ -813,7 +813,7 @@ RIME 的 `initial_quality: 1.2` 是加到**线性计数**上的
 | **A. 反查规范化** | 给拼写层加"`Expansion` → 规范拼写"的反查 | `Spelling` trait 要加方法；反查**可能不唯一**（`nh` 既可能 `ni hao` 也可能 `na hao`），得再查词库确认 |
 | **B. 派生候选不学** | `if commit.attr.is_derived() { return; }` | 简拼命中不上学习榜；但**永远不会写出无效数据** |
 
-`docs/engine-design.md` 与 `stele-core::MemoryStore::record` 的文档都写了
+`docs/engine-design.md` 与 `qingjian-core::MemoryStore::record` 的文档都写了
 "**换算不出来就宁可不存**"。**建议先做 B**（十行、无新接口、可证伪），
 把 A 留到"下一词预测"落地时——那时本来就需要更完整的拼写层。
 
@@ -833,20 +833,20 @@ RIME 的 `initial_quality: 1.2` 是加到**线性计数**上的
 
 #### ④ 依赖：SQLite 还是自写格式（**这条可能改变工作量，先定**）
 
-PLAN §2.2 写的是 `stele-memory`（SQLite + 内存缓存）。但**现在有两个新事实**：
+PLAN §2.2 写的是 `qingjian-memory`（SQLite + 内存缓存）。但**现在有两个新事实**：
 
 1. **CI 里没有 `cargo-deny`**——PLAN §4.8 要求"依赖许可审查必须要有机制，
    否则 D9 只是一句自我声明"，而这条**至今没做**。引入第一个第三方依赖
    之前应当先补上它（那本身就是 P0 的欠账）。
-2. 我们的既有手艺是**自写的紧凑二进制 + 按需读取**（`stele-table`，零依赖、无 unsafe）。
+2. 我们的既有手艺是**自写的紧凑二进制 + 按需读取**（`qingjian-table`，零依赖、无 unsafe）。
 
 | 方案 | 做法 | 影响 |
 | --- | --- | --- |
-| **B1（推荐）** | **自写排序 KV 文件**：复用 `stele-table` 的思路（索引常驻 + 追加写 + 启动时全量读进内存） | 零依赖、无 unsafe、红线最容易守住；**多端复用同一份格式** |
+| **B1（推荐）** | **自写排序 KV 文件**：复用 `qingjian-table` 的思路（索引常驻 + 追加写 + 启动时全量读进内存） | 零依赖、无 unsafe、红线最容易守住；**多端复用同一份格式** |
 | **B2** | SQLite（`rusqlite`） | 少写代码、有事务；但要先给 CI 补 `cargo-deny`，并审 SQLite 的许可与体积 |
 
 > **为什么推荐 B1**：我们真正需要的只是一个"按键时零 I/O、启动时读一次"的
-> **有序表**——那正是 `stele-table` 已经解决过的问题。SQLite 的价值在并发事务
+> **有序表**——那正是 `qingjian-table` 已经解决过的问题。SQLite 的价值在并发事务
 > 与复杂查询，而用户词库两者都不需要。
 >
 > **这一条请所有者拍板**（它会显著改变第 2 步的工作量）。
@@ -871,8 +871,8 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 - `EngineImpl` 现在**只有 `schemes` 与 `infos`**（`EngineInner`），没有任何服务。
   按 `docs/engine-design.md` §4「组件如何拿到服务」：**服务在装配时注入，
   不穿过 `Query`**。所以给 `EngineImpl` 加一个服务集合，由**装配处**
-  （`stele-cli` / `stele-bench` / 测试）构造后传入。
-- 新增一个 `Ranker`（放在 `stele-memory`，**不放内核**）：持有
+  （`qingjian-cli` / `qingjian-bench` / 测试）构造后传入。
+- 新增一个 `Ranker`（放在 `qingjian-memory`，**不放内核**）：持有
   `Arc<dyn MemoryStore>`，按 `bonus_limit()` 给候选加分。
   **注意 `bonus_limit` 的语义**：上界**不保证**不产生跨类倒置——
   所以 `pipeline` 里那条 `has_cross_class_inversion` 的 debug 断言会真的用上。
@@ -883,15 +883,15 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 
 **第 4 步：事件接线（`Learned` / `ForgetRequested`）**
 `Session::drain_events` 已经会发 `Learned { input, text, origin, lane, attr }`。
-接线在 `stele-cli`（以及将来的前端）：**每个按键之后** `drain_events`，
+接线在 `qingjian-cli`（以及将来的前端）：**每个按键之后** `drain_events`，
 对 `Learned` 调 `record`，对 `ForgetRequested` 调 `forget`。
 **这一步最容易漏**——漏了不报错，只是"学了没记住"。
 所以要有**端到端断言**：同一串键跑两次，第二次的候选顺序变了。
 
 **第 5 步：称重与验收**
-- 给 `stele-bench` 加**每键词典查询次数**计数器
+- 给 `qingjian-bench` 加**每键词典查询次数**计数器
   （PLAN §6 那条"简拼的收益/成本"至今没实现，顺手做掉）。
-- 用 `--scheme-dir schemes/stele-default` 量**加记忆前/后**两组数字：
+- 用 `--scheme-dir schemes/qingjian-default` 量**加记忆前/后**两组数字：
   P50 / P99 / 常驻内存 / 加载时间。**数字要写回 §0 与 PLAN §9 的表**。
 - 逐条对 7.6.0 的五条验收写测试或给出实测数字。
 
@@ -966,7 +966,7 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 >
 > **一动代码之前先跑一遍基线并记下来**（**执行前**的基线：`cargo test --workspace`
 > **441 个**全过、clippy 零警告、**四条**门禁全过、`cargo fmt --check` 干净、
-> `stele --check` 8 组不变式通过。**执行后**：**467 个**测试，其余同）。
+> `qingjian --check` 8 组不变式通过。**执行后**：**467 个**测试，其余同）。
 
 ### 7.7.0 目标与验收（PLAN §3 的 P4b 行，原文）
 
@@ -988,7 +988,7 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 - **排序位置已定**（D43）：预测候选的插入发生在滤镜之前还是之后，
   要看它是否参与"按位置"的语义——**动手前先想清楚这一条**；
 - 记忆层的**成本纪律**可复用：实测单条占用 → 反推上限（见
-  `stele_memory::DEFAULT_CAPACITY` 的文档与 `stele-bench --seed-memory`）。
+  `qingjian_memory::DEFAULT_CAPACITY` 的文档与 `qingjian-bench --seed-memory`）。
 
 ### 7.7.2 动手前必须定掉的四件事（**不先定，事后就是全量返工**）
 
@@ -1008,7 +1008,7 @@ PLAN §4.8 的欠账：给 CI 加依赖许可审查（`cargo-deny` 或等价脚�
 #### ③ 内存预算怎么分（验收写 < 5 MB）
 
 P4a 的记忆已经占了约 4–6 MiB（3 万条上限），**红线剩下的余量要一起算总账**。
-**建议**：上限由实测反推（`stele-bench --seed-memory=N` 的同款做法），
+**建议**：上限由实测反推（`qingjian-bench --seed-memory=N` 的同款做法），
 把默认值写进称重台的报告里，照 §7.6.1 ③ 的格式。
 
 #### ④ 通用搭配表的来源与许可（PLAN §10）
@@ -1067,7 +1067,7 @@ P3.5 已经证明过：许可不明的数据（雾凇那两块）比 GPL 更难�
   最近这 16 条（30–45）里有 **9 条是"只有真的跑一遍才会发现"**——
   写一个声明新语法的**测试方案**本身就是一种探针。
 - **改动 `Lane::Predict` / 预测表 / `Services.prediction` 之后先跑
-  `cargo test -p stele-memory --test predict_next`**：那 15 条对比集是这条能力
+  `cargo test -p qingjian-memory --test predict_next`**：那 15 条对比集是这条能力
   **唯一的端到端证据**（HANDOFF §7.7 的验收线）。
   它的形状值得照抄——**每一行一份独立记忆**，基线那一步不省。
 - **量内存成本之前先问"尺子量的是我要的东西吗"**：RSS **增量**在"复用已驻留
@@ -1075,12 +1075,12 @@ P3.5 已经证明过：许可不明的数据（雾凇那两块）比 GPL 更难�
   突破上限量**斜率**，或与"0 条"那一次的总常驻相减。
 - **门禁与对照工装都在**：改动内核后跑 `bash scripts/verify-*.sh`；
   改动零件行为后跑 `python3 tools/compare-librime.py`；
-  改动那 10 个内联零件后跑 `cargo test -p stele-engine --test number_oracle
+  改动那 10 个内联零件后跑 `cargo test -p qingjian-engine --test number_oracle
   --test calc_oracle`（与上游逐字节对照）。
 - **P3.5 留下了两套新工装**（`tools/README.md` 有用法）：
   `tools/fetch-sources.sh` 取回干净来源的数据，`tools/wordlist-gen/`
   把源数据编成 `.dict.yaml`。**动了默认方案/词库就跑它们**，
-  并在改完后用 `stele --scheme-dir schemes/stele-default` 真的打几个词。
+  并在改完后用 `qingjian --scheme-dir schemes/qingjian-default` 真的打几个词。
 - **"装进来了"不等于"生效了"**：P3.5 里同一个症状（装配报告说装好了、
   功能就是不生效）出现了三次，原因各不相同。**配置类功能的验收必须是
   端到端断言**，不能只看 `--dump-config` 或 `--components` 的报告。
@@ -1088,7 +1088,7 @@ P3.5 已经证明过：许可不明的数据（雾凇那两块）比 GPL 更难�
   （门禁抓到过我一次，已移到 `tools/oracle/`）。
 - **改行为之前先读 `reference/` 里那两份以源码为准的调研**，以及
   `tools/oracle/README.md`——P3 到阶段 A 的 11 个 bug 全都写在里面。
-- **改动装配路径之后先跑 `cargo test -p stele-schemes --test inline_components`**：
+- **改动装配路径之后先跑 `cargo test -p qingjian-schemes --test inline_components`**：
   它是"零件真的被装配了"的唯一证据（15 条断言，10 个零件各一条）。
   涉及 `engine:` 清单、`build_pipeline`、`Services`、配置读取时必跑。
 - **"说 true 就必须真的有"**：`scheme::assembles()` 是一张**手写的**清单，

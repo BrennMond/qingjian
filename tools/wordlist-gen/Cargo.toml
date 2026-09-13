@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "Deploy-time generator: clean word lists -> stele .dict.yaml"
+description = "Deploy-time generator: clean word lists -> qingjian .dict.yaml"
 
 # **不属于 workspace**：它要外部的源数据文件才跑得动，而
 # `cargo test --workspace` 应当只看仓库内的东西。
@@ -14,7 +14,7 @@ description = "Deploy-time generator: clean word lists -> stele .dict.yaml"
 # 用它校验**自己写出来的**词库——生成器与装载器用同一个解析器，
 # 于是"生成器写出来的东西装载器读不懂"这类错误在生成期就暴露，
 # 而不是等到用户 `--scheme-dir` 的时候（第一版就这么翻过车）。
-stele-dict = { path = "../../crates/stele-dict" }
+qingjian-dict = { path = "../../crates/qingjian-dict" }
 
 [lints.rust]
 unsafe_code = "deny"

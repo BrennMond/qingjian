@@ -10,7 +10,7 @@
 ## 怎么跑
 
 ```bash
-cargo test -p stele-memory --test predict_next
+cargo test -p qingjian-memory --test predict_next
 ```
 
 测试会读这张表、按它生成一份**临时方案**（拼音音节表 + 词库都来自表里的编码），

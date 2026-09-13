@@ -1,9 +1,13 @@
-# Stele-IME（石经）
+# 青简输入法 / Qingjian IME
 
 一个**从原理出发、用 Rust 重写**的跨平台输入法引擎。
 
-> **名称**：全名 **Stele-IME**，简称 **Stele**；中文名 **石经**。
-> 「Stele」意为石碑，「石经」取"刻经于石"之典——把经典刻在石碑上。
+> **名称**：中文正式名 **青简输入法**；英文正式名 **Qingjian IME**；简称 **青简** / **Qingjian**。
+> 「青简」本身即完整、统一的专有名词，**不意译**为 Bamboo Slips 一类的英文词——
+> 保留原语言名称既点明中文根源，也避免意译把文化意象压扁成普通英文词。
+> 拼写连写、首字母大写（不写 `Qing Jian`，也不写 `QingJian`）。
+>
+> **项目沿革**：青简前身为 **Stele-IME**（*Qingjian was formerly developed under the name Stele*）。
 >
 > **文字形态：简体优先。** 本项目只维护简体形态的数据与体验；
 > **繁体不在我们适配的责任范围内**，但相关接口与配置项一律保留——
@@ -23,16 +27,16 @@
 > 隐私边界见 [`docs/privacy-model.md`](docs/privacy-model.md)。
 
 ```bash
-$ stele nihao                    # 拼音方案：规范拼写
+$ qingjian nihao                    # 拼音方案：规范拼写
 你好
-$ stele nh                       # 拼音方案：缩写（简拼），分数更低
+$ qingjian nh                       # 拼音方案：缩写（简拼），分数更低
 你好
-$ stele --schema shape ab        # 精确编码方案：同一个引擎，完全不同的输入法
+$ qingjian --schema shape ab        # 精确编码方案：同一个引擎，完全不同的输入法
 十
 
 # 换一套自己的方案与词库 —— 不需要重新编译
-$ stele --scheme-dir ./my-schemes --list
-$ stele --scheme-dir ./my-schemes mami
+$ qingjian --scheme-dir ./my-schemes --list
+$ qingjian --scheme-dir ./my-schemes mami
 猫咪
 ```
 
@@ -82,18 +86,18 @@ $ stele --scheme-dir ./my-schemes mami
 ## 仓库结构
 
 ```
-stele/
+qingjian/
 ├── crates/
-│   ├── stele-core/     # 抽象层：Engine/Session、组件 trait、数据结构（零依赖）
-│   ├── stele-engine/   # 原生引擎：拼写代数（含自写正则）、词库、两族翻译器、处理器、过滤器（零依赖）
-│   ├── stele-config/   # YAML 子集解析、$ref 跨文件引用、分层补丁、可读诊断
-│   ├── stele-dict/     # .dict.yaml（头部 + TSV 正文 + import_tables）
-│   ├── stele-table/    # 词库编译产物：紧凑二进制 + 按需分页（零依赖、无 unsafe）
-│   ├── stele-schemes/  # 方案装载 + 内嵌默认方案（**与内核分属不同 crate**）
-│   ├── stele-cli/      # 命令行调试前端（可执行文件名为 `stele`）
-│   └── stele-bench/    # 称重台：内存与延迟测量
+│   ├── qingjian-core/     # 抽象层：Engine/Session、组件 trait、数据结构（零依赖）
+│   ├── qingjian-engine/   # 原生引擎：拼写代数（含自写正则）、词库、两族翻译器、处理器、过滤器（零依赖）
+│   ├── qingjian-config/   # YAML 子集解析、$ref 跨文件引用、分层补丁、可读诊断
+│   ├── qingjian-dict/     # .dict.yaml（头部 + TSV 正文 + import_tables）
+│   ├── qingjian-table/    # 词库编译产物：紧凑二进制 + 按需分页（零依赖、无 unsafe）
+│   ├── qingjian-schemes/  # 方案装载 + 内嵌默认方案（**与内核分属不同 crate**）
+│   ├── qingjian-cli/      # 命令行调试前端（可执行文件名为 `qingjian`）
+│   └── qingjian-bench/    # 称重台：内存与延迟测量
 ├── schemes/            # 方案资产（与内核解耦）
-│   └── stele-default/  # 默认方案：pinyin（拼写图族）/ shape（精确编码族）+ 词库
+│   └── qingjian-default/  # 默认方案：pinyin（拼写图族）/ shape（精确编码族）+ 词库
 │       └── cn_dicts/generated.dict.yaml  # **生成的默认词库**（第三方 MIT/Apache 数据的派生物）
 ├── tools/              # 部署期工装（词库生成、上游对照、探针）
 │   ├── sources.lock    # 源数据的固定 revision + sha256（已跟踪的可复现输入）
@@ -117,25 +121,25 @@ cargo build --workspace
 cargo test --workspace
 
 # 打字
-cargo run -p stele-cli -- nihao                 # 规范拼写 → 你好
-cargo run -p stele-cli -- nh                    # 缩写拼写 → 你好
-cargo run -p stele-cli -- --candidates ni       # 看候选（分数 / 来源 / 属性）
-cargo run -p stele-cli -- --schema shape ab      # 精确编码方案 → 十
-cargo run -p stele-cli -- --list                 # 列出方案
+cargo run -p qingjian-cli -- nihao                 # 规范拼写 → 你好
+cargo run -p qingjian-cli -- nh                    # 缩写拼写 → 你好
+cargo run -p qingjian-cli -- --candidates ni       # 看候选（分数 / 来源 / 属性）
+cargo run -p qingjian-cli -- --schema shape ab      # 精确编码方案 → 十
+cargo run -p qingjian-cli -- --list                 # 列出方案
 
 # 装载自己的方案目录（方案与词库都是数据文件，改完不必重编译）
-cargo run -p stele-cli -- --scheme-dir ./my-schemes --list
-cargo run -p stele-cli -- --scheme-dir ./my-schemes mami
+cargo run -p qingjian-cli -- --scheme-dir ./my-schemes --list
+cargo run -p qingjian-cli -- --scheme-dir ./my-schemes mami
 
 # 内核自检（验证"可复现 / 精确优先 / 通用性"等 7 组不变式）
-cargo run -p stele-cli -- --check
+cargo run -p qingjian-cli -- --check
 
 # 称重台（用 --release，否则测的是未优化代码）
-cargo run -p stele-bench --release -- --iterations=200000
-cargo run -p stele-bench --release -- --json    # 便于 CI 记录历史
+cargo run -p qingjian-bench --release -- --iterations=200000
+cargo run -p qingjian-bench --release -- --json    # 便于 CI 记录历史
 ```
 
-**注意**：`--dump-config` 目前明确报告未实现（配置分层的机制已在 `stele-config` 里
+**注意**：`--dump-config` 目前明确报告未实现（配置分层的机制已在 `qingjian-config` 里
 实现并有测试，但还没接到 CLI 上）。**宁可报未实现，也不打印一份假的配置**——
 一个会骗人的调试工具比没有更糟。
 
@@ -150,7 +154,7 @@ my-schemes/
 ```
 
 配置写错时会**一次报出全部问题，每条带行号**——而不是静默忽略其中一个字段。
-完整格式见 `schemes/stele-default/` 里的两份示例，以及 `docs/engine-design.md` §6。
+完整格式见 `schemes/qingjian-default/` 里的两份示例，以及 `docs/engine-design.md` §6。
 
 ---
 
@@ -188,7 +192,7 @@ my-schemes/
 **本仓库分发第三方内容，不是"没有"**（旧版本此处写"不包含第三方词典数据"
 与事实不符）：
 
-- `schemes/stele-default/cn_dicts/generated.dict.yaml` 是 pinyin-data /
+- `schemes/qingjian-default/cn_dicts/generated.dict.yaml` 是 pinyin-data /
   THUOCL / jieba（MIT）与 OpenCC（Apache-2.0）的**派生产物**；
 - `tools/librime-probe/probe.c` 含逐字段抄自 librime（BSD-3-Clause）的 ABI 声明；
 - `reference/wiki-*.md` 是 Rime 官方 wiki 两页的**逐字副本**

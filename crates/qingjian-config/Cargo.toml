@@ -1,0 +1,16 @@
+[package]
+name = "qingjian-config"
+description = "方案与词典的配置模型：YAML 子集解析、$ref 引用、分层补丁、可读诊断。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 允许依赖内核的抽象（诊断类型），但不依赖引擎。
+[dependencies]
+qingjian-core = { path = "../qingjian-core" }
+
+[lints]
+workspace = true

@@ -3,86 +3,86 @@
 version = 3
 
 [[package]]
-name = "stele-bench"
+name = "qingjian-bench"
 version = "0.0.0"
 dependencies = [
- "stele-core",
- "stele-embed",
- "stele-engine",
- "stele-memory",
- "stele-schemes",
+ "qingjian-core",
+ "qingjian-embed",
+ "qingjian-engine",
+ "qingjian-memory",
+ "qingjian-schemes",
 ]
 
 [[package]]
-name = "stele-cli"
+name = "qingjian-cli"
 version = "0.0.0"
 dependencies = [
- "stele-core",
- "stele-embed",
- "stele-engine",
- "stele-memory",
- "stele-schemes",
+ "qingjian-core",
+ "qingjian-embed",
+ "qingjian-engine",
+ "qingjian-memory",
+ "qingjian-schemes",
 ]
 
 [[package]]
-name = "stele-config"
+name = "qingjian-config"
 version = "0.0.0"
 dependencies = [
- "stele-core",
+ "qingjian-core",
 ]
 
 [[package]]
-name = "stele-core"
+name = "qingjian-core"
 version = "0.0.0"
 
 [[package]]
-name = "stele-dict"
+name = "qingjian-dict"
 version = "0.0.0"
 dependencies = [
- "stele-config",
- "stele-core",
+ "qingjian-config",
+ "qingjian-core",
 ]
 
 [[package]]
-name = "stele-embed"
+name = "qingjian-embed"
 version = "0.0.0"
 dependencies = [
- "stele-core",
- "stele-engine",
- "stele-memory",
- "stele-schemes",
+ "qingjian-core",
+ "qingjian-engine",
+ "qingjian-memory",
+ "qingjian-schemes",
 ]
 
 [[package]]
-name = "stele-engine"
+name = "qingjian-engine"
 version = "0.0.0"
 dependencies = [
- "stele-core",
+ "qingjian-core",
 ]
 
 [[package]]
-name = "stele-memory"
+name = "qingjian-memory"
 version = "0.0.0"
 dependencies = [
- "stele-core",
- "stele-engine",
- "stele-schemes",
+ "qingjian-core",
+ "qingjian-engine",
+ "qingjian-schemes",
 ]
 
 [[package]]
-name = "stele-schemes"
+name = "qingjian-schemes"
 version = "0.0.0"
 dependencies = [
- "stele-config",
- "stele-core",
- "stele-dict",
- "stele-engine",
- "stele-table",
+ "qingjian-config",
+ "qingjian-core",
+ "qingjian-dict",
+ "qingjian-engine",
+ "qingjian-table",
 ]
 
 [[package]]
-name = "stele-table"
+name = "qingjian-table"
 version = "0.0.0"
 dependencies = [
- "stele-core",
+ "qingjian-core",
 ]

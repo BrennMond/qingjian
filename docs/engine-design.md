@@ -2,7 +2,7 @@
 
 > **本文是引擎抽象与数据结构的权威定义。** `PLAN.md` §2.3 只列要点，凡有冲突以本文为准（这是为了避免两处定义漂移）。
 >
-> 适用范围：`stele-core` 的公开类型与 trait，以及 `stele-engine` 必须遵守的契约。
+> 适用范围：`qingjian-core` 的公开类型与 trait，以及 `qingjian-engine` 必须遵守的契约。
 > 本文里的 Rust 代码是**设计意图的精确表达**，不是最终实现；字段名与签名在实现期可以微调，但**语义与不变式不可改**。
 
 ---
@@ -212,7 +212,7 @@ pub trait Session {
 
 - **命名检查**：引擎的类型名、函数名、注释里**不允许出现**"拼音 / 音节 / 声母 / 韵母 / 简拼 / 模糊音"等词。只允许"编码 / 拼写 / 编码单元 / 字母表"。
   - 例外：文档里举例时可以说"拼音方案下一个编码单元就是一个音节"。
-- **依赖检查**：`stele-core` 与 `stele-engine` **不得**包含任何内置词表、音节表或拼音规则文件。它们全部来自方案。
+- **依赖检查**：`qingjian-core` 与 `qingjian-engine` **不得**包含任何内置词表、音节表或拼音规则文件。它们全部来自方案。
 - **测试检查**：P2 之后必须有一组测试，用**同一个引擎 + 一份仓颉方案**跑通"编码 → 字"。**如果这个测试做不出来，说明通用性边界没守住。**
   - 这是对 §2.4.2 那张表的机械化验证，比任何文档声明都可靠。
 
@@ -222,7 +222,7 @@ pub trait Session {
 
 #### 2.5.1 内核提供"机制"，方案提供"个性"
 
-| | 内核（`stele-core` / `stele-engine`） | 方案（数据，随方案包分发） |
+| | 内核（`qingjian-core` / `qingjian-engine`） | 方案（数据，随方案包分发） |
 | --- | --- | --- |
 | **概念** | 编码 / 拼写 / 编码单元 / 编码字母表 / 候选 / 通道 / 段 | 具体有哪些编码单元、候选怎么显示 |
 | **扩展点分类** | 处理器 / 切分器 / 翻译器 / 滤镜 / 格式化器 | 用哪些、按什么顺序 |
@@ -248,14 +248,14 @@ DSH 用它把约 52 个包划成"库"（如纯函数、编解码器），不许�
 | 东西 | 是零件吗 | 为什么 |
 | --- | --- | --- |
 | 拼写代数的求值器 | ❌ **库** | 输入字符串 → 输出字符串，无状态、无上下文 |
-| `.dict.yaml` 解析器（`stele-dict`） | ❌ **库** | 纯解析 |
+| `.dict.yaml` 解析器（`qingjian-dict`） | ❌ **库** | 纯解析 |
 | 排序 / 去重函数 | ❌ **库** | 纯函数 |
 | 音节图最短路 | ❌ **库** | 纯算法（喂进去一个图，吐出一个路径） |
 | 拼音翻译器 | ✅ **零件** | 持有词库引用、参与流水线、产出候选 |
 | 记忆重排器 | ✅ **零件** | 持有存储、读上下文 |
 | 简繁滤镜 | ✅ **零件** | 持有转换表，参与流水线 |
 
-**判据的价值**：它防止我们把 `stele-core` 变成一个"什么都往里塞"的杂物间。**库可以零依赖、可以纯 `cargo test`、不需要注册表、不需要生命周期**——把纯算法留在库里，它们才可测、可复用、可裁剪。
+**判据的价值**：它防止我们把 `qingjian-core` 变成一个"什么都往里塞"的杂物间。**库可以零依赖、可以纯 `cargo test`、不需要注册表、不需要生命周期**——把纯算法留在库里，它们才可测、可复用、可裁剪。
 
 #### 2.5.2 "我要加个功能，该放哪"（决策地图）
 
@@ -291,7 +291,7 @@ DSH 用它把约 52 个包划成"库"（如纯函数、编解码器），不许�
 3. **用户补丁**：用户只写**差异**，不改原文件。
 4. **命令行覆盖**：临时试一把。
 
-且必须提供 **`stele --dump-config`**——打印**合并后**的完整方案，**打印出来的每一行都能被用户补丁覆盖**。这样"可配置性"不是靠文档描述，而是**可发现、可验证**的。
+且必须提供 **`qingjian --dump-config`**——打印**合并后**的完整方案，**打印出来的每一行都能被用户补丁覆盖**。这样"可配置性"不是靠文档描述，而是**可发现、可验证**的。
 
 ---
 
@@ -408,7 +408,7 @@ impl Score {
 }
 ```
 
-**定点数的具体约定**（必须在 `stele-core` 里写死并有测试）：
+**定点数的具体约定**（必须在 `qingjian-core` 里写死并有测试）：
 
 | 项 | 值 |
 | --- | --- |
@@ -716,7 +716,7 @@ pub struct Options {
 }
 ```
 
-**⚠️ 这里修正了 v2 初稿的一个 D20 违规**：初稿把 `ascii_mode` / `emoji` / `traditionalization` / `full_shape` / `ascii_punct` 写成了 `stele-core` 里的**结构体字段**。其中 `emoji` 和 `traditionalization` 是 **rime-ice 方案专有的**（换个方案就没有这两个概念），把它们写进核心，等于在引擎里内置了输入法专属知识——**直接违反 D20**。
+**⚠️ 这里修正了 v2 初稿的一个 D20 违规**：初稿把 `ascii_mode` / `emoji` / `traditionalization` / `full_shape` / `ascii_punct` 写成了 `qingjian-core` 里的**结构体字段**。其中 `emoji` 和 `traditionalization` 是 **rime-ice 方案专有的**（换个方案就没有这两个概念），把它们写进核心，等于在引擎里内置了输入法专属知识——**直接违反 D20**。
 
 正确的做法：
 
@@ -814,7 +814,7 @@ pub trait Formatter {
 
 | 角色 | 我们这里的形态 | 例子 |
 | --- | --- | --- |
-| **服务定义** | `stele-core` 里的 trait | `Lexicon`、`Ranker`、`MemoryStore`、`Clock` |
+| **服务定义** | `qingjian-core` 里的 trait | `Lexicon`、`Ranker`、`MemoryStore`、`Clock` |
 | **服务提供者** | 实现该 trait 的类型（可来自零件包） | 内存词库 / mmap 词库；个人 n-gram / 通用预测表 |
 | **消费者** | 使用该服务的组件 | 翻译器用 `Lexicon`；重排管线用 `Ranker` |
 
@@ -1203,7 +1203,7 @@ fn guard_precision(base_order: Vec<Candidate>, ranked: Vec<Candidate>) -> Vec<Ca
 
 **成本与一个被测试推翻的论断**
 
-本节最初写着"用 O(n) 的单调量替代 O(n²) 检查"，并声称"只要上界足够小，跨类倒置就构造上不可能"。**写 P0 的测试时，这两句话都被证伪了**（`crates/stele-core/tests/invariants.rs`）。
+本节最初写着"用 O(n) 的单调量替代 O(n²) 检查"，并声称"只要上界足够小，跨类倒置就构造上不可能"。**写 P0 的测试时，这两句话都被证伪了**（`crates/qingjian-core/tests/invariants.rs`）。
 
 **证伪一：加成上界不足以消除倒置。**
 上界 `L` 只保证"猜测候选最多升 `L`"。若某精确匹配的基础分是 `900`、某猜测候选是 `100`、`L = 2000`，那么猜测候选可以合法地升到 `2100` —— **照样压过精确匹配**。
@@ -1364,7 +1364,7 @@ DSH 的 `architecture.md` 给了一个比 RIME 更清晰的模型，我们**按�
 
 | DSH 的概念 | 我们的对应物 | 说明 |
 | --- | --- | --- |
-| **Service Definition** | `stele-core` 里的 trait | 服务接口 |
+| **Service Definition** | `qingjian-core` 里的 trait | 服务接口 |
 | **Service Provider** | 零件包里的实现 | 词库、重排器、存储 |
 | **Consumer** | 用它的组件 | 翻译器、重排管线 |
 | **bundle**（配置行 + 其挂载的代码，可被上层补丁） | **方案包** | 一份方案 YAML + 它需要的零件 |
@@ -1495,7 +1495,7 @@ DSH 有两套覆盖机制，而**它的"设置"那一套恰好补上了 RIME 的
 **这四条缺口就是我们相对 RIME 的"配置性升级"的具体内容。** 不是口号，是四个可验收的行为：
 
 1. **能撤销**：用户删掉补丁 → 立刻回到方案默认，不需要知道默认值是什么。
-2. **能溯源**：`stele --dump-config` 对每个值标注**它来自哪一层**（内置默认 / 方案包 / 用户补丁 / 命令行）。
+2. **能溯源**：`qingjian --dump-config` 对每个值标注**它来自哪一层**（内置默认 / 方案包 / 用户补丁 / 命令行）。
 3. **能检测冲突**：外部工具改配置时，版本号不匹配就报冲突，而不是静默覆盖（影响 P8 设置界面的设计）。
 4. **坏补丁不致命**：见 §5.6。
 
@@ -1547,9 +1547,9 @@ DSH 有一个值得学的做法：**55 个 `scripts/verify-*.ts` 检查脚本**�
 
 | 门禁 | 检查什么 | 对应原则 |
 | --- | --- | --- |
-| `verify-no-ime-vocab` | `stele-core` / `stele-engine` 的标识符与注释里不得出现拼音/音节/简拼等词 | D20 / §2.4.5 |
+| `verify-no-ime-vocab` | `qingjian-core` / `qingjian-engine` 的标识符与注释里不得出现拼音/音节/简拼等词 | D20 / §2.4.5 |
 | `verify-no-builtin-tables` | 内核 crate 里不得有内置词表/音节表/方案数据 | D20 |
-| `verify-no-scheme-data` | `stele-engine` 不得依赖 `schemes/` 下的任何东西，也不得依赖具体方案名 | D24 |
+| `verify-no-scheme-data` | `qingjian-engine` 不得依赖 `schemes/` 下的任何东西，也不得依赖具体方案名 | D24 |
 | `verify-no-scheme-depends-scheme` | 方案之间不得互相依赖 | D24 |
 | `verify-config-schema` | 每个零件的参数 schema 与文档目录同步（自动生成字段目录） | D17 |
 | `verify-missing-docs` | clippy `missing_docs` | §4.8 |
@@ -1559,10 +1559,10 @@ DSH 有一个值得学的做法：**55 个 `scripts/verify-*.ts` 检查脚本**�
 
 ---
 
-## 7. 模块划分（`stele-core`）
+## 7. 模块划分（`qingjian-core`）
 
 ```
-crates/stele-core/src/
+crates/qingjian-core/src/
 ├── lib.rs          # 再导出 + crate 级文档
 ├── key.rs          # Key, KeyCode, NamedKey, Modifiers
 ├── candidate.rs    # Candidate, Origin, SpellingAttr, Lane, Span, CandidateSink
@@ -1577,17 +1577,17 @@ crates/stele-core/src/
 └── error.rs        # Error / Result
 ```
 
-`stele-engine` 提供这些 trait 的**具体实现**（拼音处理器、DP 切分器、词库翻译器、去重滤镜……）以及零件注册表。
+`qingjian-engine` 提供这些 trait 的**具体实现**（拼音处理器、DP 切分器、词库翻译器、去重滤镜……）以及零件注册表。
 
 ---
 
-## 8. `stele-memory`：用户记忆（P4a ✅）
+## 8. `qingjian-memory`：用户记忆（P4a ✅）
 
 > **本节在 P4a 之后从"接口预留"改写为"实现说明"**：接口没变
 > （`MemoryStore` 的四个方法一字未动），但几条**当时的建议被实测或所有者
 > 决定推翻了**——那些结论必须写在这里，否则下一个会话会照着旧文字去改已经对的东西。
 
-**实际实现**（`crates/stele-memory/`，零依赖、无 `unsafe`）：
+**实际实现**（`crates/qingjian-memory/`，零依赖、无 `unsafe`）：
 
 | 模块 | 职责 |
 | --- | --- |
@@ -1611,7 +1611,7 @@ crates/stele-core/src/
    于是连那一次浮点都不需要，"跨平台逐位一致"成了类型层面的事实。
 3. **上限是 30 000 条，不是 100 000**。实测 +18.2 MiB/10 万条，
    叠上真实词库会越过 30 MB 红线（数字与推导见
-   `stele_memory::DEFAULT_CAPACITY` 的文档）。
+   `qingjian_memory::DEFAULT_CAPACITY` 的文档）。
 
 ### 仍然有效的那部分：接口
 
@@ -1640,7 +1640,7 @@ pub struct MemoryEntry {
     pub last_used: u64,
 }
 
-/// 用户记忆。**P4a 已实现**（`stele_memory::FileMemory`）。
+/// 用户记忆。**P4a 已实现**（`qingjian_memory::FileMemory`）。
 pub trait MemoryStore: Send + Sync {
     /// 记录一次上屏。**必须是异步 / 非阻塞路径。**
     ///
@@ -1715,7 +1715,7 @@ pub enum PredictionOrigin {
 
 > **P4a 的兑现方式**：落盘只有一条显式入口 `FileMemory::flush()`
 > （临时文件 + 原子 `rename`，全量重写而不是追加+合并——理由写在那个方法的文档里）。
-> 它不是"少 I/O"，而是**零 I/O**：`crates/stele-memory/tests/no_disk_io_on_keypath.rs`
+> 它不是"少 I/O"，而是**零 I/O**：`crates/qingjian-memory/tests/no_disk_io_on_keypath.rs`
 > 读 `/proc/self/io`，断言 1000 次按键之后 `syscr`/`syscw` 与
 > `read_bytes`/`write_bytes` **一个都没涨**。
 
@@ -1783,7 +1783,7 @@ value = 次数 c、衰减值 d、最后使用时间 t
 
 ## 10. 与 RIME 的差异一览
 
-| 方面 | RIME | Stele | 理由 |
+| 方面 | RIME | Qingjian | 理由 |
 | --- | --- | --- | --- |
 | 引擎抽象 | `Engine` 一个可变对象 | `Engine`（共享）+ `Session`（私有） | 多客户端、线程安全（D12） |
 | 按键返回 | `bool`（消费） | `Outcome` 枚举，带上屏信息 | 防止漏读、保留学习信息 |
@@ -1835,7 +1835,7 @@ value = 次数 c、衰减值 d、最后使用时间 t
 7. **方案配置里数值的域尚未定义。** RIME 的 `initial_quality: 1.2` 是加到**线性概率**上的（`exp(weight) + initial_quality`），而我们的 `score` 是对数域。方案配置里的数字按哪个域解释、在何处换算，必须先定，否则 P3 无法与雾凇对齐。
 8. **§5.5 的合并规则与 §5.6 的错误策略是本次审阅新定的**，还没有实现验证。
 9. **`Context`（已上屏窗口）的长度上限与清理时机未定**，P4b 才有答案；但它是常驻内存，必须计入 §0.2 的预算。
-10. **热路径上的分配未做优化，也未测量。** `Composition` 的 `input: String` / `preedit: String` 目前设计成**每次按键重建**。按 §0.2 的预算（P50 < 1 ms）这大概率无妨，但**这是假设，不是测量**——P1 必须用 `stele-bench` 验证，必要时改为复用缓冲区。同类嫌疑还有 `Commit` 每次上屏的 `String` 分配（上屏不频繁，风险低）。
+10. **热路径上的分配未做优化，也未测量。** `Composition` 的 `input: String` / `preedit: String` 目前设计成**每次按键重建**。按 §0.2 的预算（P50 < 1 ms）这大概率无妨，但**这是假设，不是测量**——P1 必须用 `qingjian-bench` 验证，必要时改为复用缓冲区。同类嫌疑还有 `Commit` 每次上屏的 `String` 分配（上屏不频繁，风险低）。
 11. **§0.2 的所有数字都是目标**，P1 结束时用实测校正。
 
 ---
@@ -1846,7 +1846,7 @@ value = 次数 c、衰减值 d、最后使用时间 t
 
 ### 13.1 一句话结论
 
-> **Stele 不是在推翻 RIME 的哲学，而是在恢复它。**
+> **Qingjian 不是在推翻 RIME 的哲学，而是在恢复它。**
 >
 > RIME 作者 2009 年的原话就是我们的 D20/D24：
 > 「**Rime 不是一種輸入法。是從各種常見鍵盤輸入法中提煉出來的抽象的輸入算法框架**……在不同的設定下，Rime 可化身爲不同的輸入法」（`RimeWithSchemata`）
@@ -1854,7 +1854,7 @@ value = 次数 c、衰减值 d、最后使用时间 t
 >
 > 而 librime 在十幾年的演进中**部分偏离了这个设计**：把 `Syllable`/`Syllabary` 当成引擎词汇（对仓颉是误导）、把五个开关焊进 `RimeStatus`、把关键行为放进 Lua、补丁机制不可撤销也不可溯源。**我们的工作是把它拉回来，并补上它缺的那几块。**
 
-### 13.2 Stele 确实更好的地方（**以作者自己的话为证**）
+### 13.2 Qingjian 确实更好的地方（**以作者自己的话为证**）
 
 | # | RIME 的问题 | 证据（作者原文） | 我们的对应 |
 | --- | --- | --- | --- |
@@ -1864,7 +1864,7 @@ value = 次数 c、衰减值 d、最后使用时间 t
 | 4 | **无撤销、无溯源、无冲突检测** | 三份报告一致确认：官方文档中 **NOT FOUND**；唯一替代是「**人工对比 `build/` 目录里的编译结果**」 | §6.2.1：可撤销 / 可溯源 / 版本号冲突检测 |
 | 5 | 无跨版本配置兼容契约 | **NOT FOUND IN THESE DOCUMENTS** | D27：方案格式 + 零件 API 两级版本门禁 |
 | 6 | 词典包**无兼容性检查** | 「目前 librime 並沒有機制保證加載的擴展包與主詞典兼容……**二進制擴展包不宜脫離於主詞典而製作和分發**」（`DictionaryPack`） | D28：内容寻址 + 校验不过即拒绝 |
-| 7 | 调试只能**倒推** | 「請對照 `<用戶文件夾>/build/` 文件夾內的編譯結果文件，**檢查配置源文件與補靪**」 | `stele --dump-config`，**每个值标注来自哪一层** |
+| 7 | 调试只能**倒推** | 「請對照 `<用戶文件夾>/build/` 文件夾內的編譯結果文件，**檢查配置源文件與補靪**」 | `qingjian --dump-config`，**每个值标注来自哪一层** |
 | 8 | 部署期**静默无输出** | 「編譯新的輸入方案需要一段時間，**此間若無法輸出中文，請稍等片刻**」 | §5.6：降级 + 保留上一份可用配置 + 诊断 |
 | 9 | **静默陷阱** | 根节点若用了 `__patch:`，会**静默禁用**自动加载 `.custom.yaml` | 分层显式，不靠隐式约定 |
 
@@ -1995,7 +1995,7 @@ impl dyn Session {
 | G7 | `?` 可选目标 | ✅ 已并入 §6.2.0 的约束 3 |
 | G8 | 分类不是公理 | ✅ 已在 §4 注明"四/五类是经验集合，长过一次" |
 | G9 | `Source` 有损 | ✅ 已拆为 `Origin`（单值）+ `SpellingAttr`（位集）；`is_exact` 改为两者合取 |
-| G10 | 学习主键必须是规范编码 | ✅ P4a 已补（D42）：键 = 规范编码（`Candidate::key` → `Commit::key`）；`nhao` 学的帮到 `nihao`，端到端有断言；不变式进了 `stele --check` 第 8 组 |
+| G10 | 学习主键必须是规范编码 | ✅ P4a 已补（D42）：键 = 规范编码（`Candidate::key` → `Commit::key`）；`nhao` 学的帮到 `nihao`，端到端有断言；不变式进了 `qingjian --check` 第 8 组 |
 | G11 | 取消学习 | ✅ 已补 `MemoryStore::forget` |
 | G12 | 猜测候选的 UI 标记 | ✅ 判据已明确为 `is_exact(origin, attr)` |
 | G13 | 并击/时序类输入法 | ⏸ **接口已留门**（`Session::tick` 默认空实现），P1 不实现 |
@@ -2031,7 +2031,7 @@ impl dyn Session {
 
 ### 14.3 公开类型的兼容性约定（新增）
 
-`stele-core` 的公开枚举一律标注 `#[non_exhaustive]`，理由：**引擎在 P1–P8 之间必然要加变体**（`Origin` 可能加"预测"、`Lane` 可能加第三条通道、`Trigger` 可能加语音上屏），而每个下游 `match` 都写死穷举会让每次加变体都变成破坏性变更。
+`qingjian-core` 的公开枚举一律标注 `#[non_exhaustive]`，理由：**引擎在 P1–P8 之间必然要加变体**（`Origin` 可能加"预测"、`Lane` 可能加第三条通道、`Trigger` 可能加语音上屏），而每个下游 `match` 都写死穷举会让每次加变体都变成破坏性变更。
 
 ```rust
 #[non_exhaustive]
@@ -2041,4 +2041,4 @@ pub enum Origin { UserWord, SystemWord, Literal, Sentence }
 
 **代价**：下游 `match` 必须写 `_ =>` 分支（多一行）。**收益**：内核演进不必每次发大版本。
 
-**这是"内部项目也值得做"的一处**：我们自己的前端（`stele-cli`、TSF、Android）也是下游，不这么写的话，每加一个变体就要同时改三个前端。
+**这是"内部项目也值得做"的一处**：我们自己的前端（`qingjian-cli`、TSF、Android）也是下游，不这么写的话，每加一个变体就要同时改三个前端。

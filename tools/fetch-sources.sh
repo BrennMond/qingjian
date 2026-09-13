@@ -6,7 +6,7 @@
 #   我们只取**授权明确或已知边界**的那几份，而它们**不进仓库**——
 #   用户在自己的机器上取一次，属于个人使用。
 #
-# 取回来的东西全部落在 `schemes/stele-default/build/`（.gitignore 已排除）。
+# 取回来的东西全部落在 `schemes/qingjian-default/build/`（.gitignore 已排除）。
 #
 # ── 与旧版的区别（阶段 4 / 审计 J2.2）─────────────────────────────────
 #
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="$ROOT/schemes/stele-default/build"
+DEST="$ROOT/schemes/qingjian-default/build"
 LOCK="$ROOT/tools/sources.lock"
 FETCHED="$DEST/fetched.lock"
 FORCE=0
@@ -177,4 +177,4 @@ fi
 echo
 echo "下一步："
 echo "  cargo run --manifest-path tools/wordlist-gen/Cargo.toml -- \\"
-echo "      --sources $DEST --out $ROOT/schemes/stele-default"
+echo "      --sources $DEST --out $ROOT/schemes/qingjian-default"

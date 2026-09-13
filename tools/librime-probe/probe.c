@@ -1033,10 +1033,10 @@ int main(int argc, char** argv) {
   RIME_STRUCT_INIT(RimeTraits, traits);
   traits.shared_data_dir = shared_dir;
   traits.user_data_dir = user_dir;
-  traits.distribution_name = "Stele IME librime probe";
-  traits.distribution_code_name = "stele-librime-probe";
+  traits.distribution_name = "Qingjian IME librime probe";
+  traits.distribution_code_name = "qingjian-librime-probe";
   traits.distribution_version = PROBE_VERSION;
-  traits.app_name = "rime.stele_probe";
+  traits.app_name = "rime.qingjian_probe";
   traits.modules = NULL;
   traits.min_log_level = opt.verbose ? 0 : 2;
   traits.log_dir = log_dir;

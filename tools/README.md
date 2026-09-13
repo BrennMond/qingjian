@@ -1,6 +1,6 @@
 # 词库管线（P3.5）
 
-这个目录里的东西解决一件事：**把"干净来源"的公开词表编成石经能装载的
+这个目录里的东西解决一件事：**把"干净来源"的公开词表编成青简能装载的
 `.dict.yaml`**，并让"这份数据是怎么来的"可以被重新跑一遍。
 
 它们**不进内核 crate、不进 CI**（与 `tools/` 里其它工装一样）：
@@ -11,13 +11,13 @@
 ## 两步
 
 ```bash
-# ① 取回源数据（一次网络访问；落进 schemes/stele-default/build/，该目录被 gitignore）
+# ① 取回源数据（一次网络访问；落进 schemes/qingjian-default/build/，该目录被 gitignore）
 #    下载地址固定到 commit SHA，清单是**已跟踪的** tools/sources.lock
 bash tools/fetch-sources.sh
 
 # ② 编成词库 + 同步方案的音节表
 cargo run --release --manifest-path tools/wordlist-gen/Cargo.toml -- \
-    --sources schemes/stele-default/build --out schemes/stele-default
+    --sources schemes/qingjian-default/build --out schemes/qingjian-default
 ```
 
 **可复现来源（阶段 4 / 审计 J2.2）**：`tools/sources.lock` 是权威清单，
@@ -26,7 +26,7 @@ sha256 与说明。旧版用的是浮动 `main` / `master`，且 sha256 只记�
 `build/sources.lock`（gitignore 目录里，克隆的人看不到）——两者都已改正。
 `fetch-sources.sh` 取回后逐条校验 sha256，不一致就报错停下。
 
-产物落在 **`schemes/stele-default/cn_dicts/generated.dict.yaml`**，
+产物落在 **`schemes/qingjian-default/cn_dicts/generated.dict.yaml`**，
 由主词典 `pinyin.dict.yaml`（一个**导入清单**）通过 `import_tables` 引用。
 这样"手写演示词库"（`base.dict.yaml`）与"生成词库"是两个独立文件，
 各自的来源一眼可见。
@@ -82,7 +82,7 @@ sha256 与说明。旧版用的是浮动 `main` / `master`，且 sha256 只记�
 
 ## 自检（"生成器写出来的东西装载器读不懂"）
 
-生成器在落盘前会**用真正的装载器**（`stele-dict`）把自己写出来的词库
+生成器在落盘前会**用真正的装载器**（`qingjian-dict`）把自己写出来的词库
 解析一遍。这条检查抓到的第一个错是：YAML 头部的 `import_tables` 列表项
 被续行吃掉了缩进，于是装载器报「同一层里混用了「键: 值」与「- 列表项」」。
 **旁路从来不坏，也从来不证明什么**——用真解析器是这里唯一有意义的选择。

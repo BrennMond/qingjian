@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # 门禁：内核 crate 必须保持**零第三方依赖**（PLAN D9）。
 #
-# 范围是 **`stele-core` 与 `stele-engine`**——PLAN §2.1 把这两个合称"内核"，
-# HANDOFF §3 也这么写。本脚本原先只检查 `stele-core`：
-# **文档说的范围比脚本宽**，那是一个静默的缺口（"stele-engine 里塞进依赖"
+# 范围是 **`qingjian-core` 与 `qingjian-engine`**——PLAN §2.1 把这两个合称"内核"，
+# HANDOFF §3 也这么写。本脚本原先只检查 `qingjian-core`：
+# **文档说的范围比脚本宽**，那是一个静默的缺口（"qingjian-engine 里塞进依赖"
 # 不会被任何门禁拦下）。现在两个都查。
 #
 # "零第三方"的准确含义是：**允许依赖同一个 workspace 里的其他 crate**
-# （`stele-engine` 依赖 `stele-core` 是设计的一部分），
+# （`qingjian-engine` 依赖 `qingjian-core` 是设计的一部分），
 # **不允许任何走 registry 的依赖**。
 # 判据因此落在"这一条依赖有没有 `path`"上——有 path 且指向仓库内部的
 # 目录才算内部依赖；写成版本号的（`foo = "1.0"`）一律算第三方。
@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # 内核 crate。加进来之前请先读 PLAN §2.1 对"内核"的定义。
-KERNEL_CRATES=(stele-core stele-engine)
+KERNEL_CRATES=(qingjian-core qingjian-engine)
 
 failed=0
 

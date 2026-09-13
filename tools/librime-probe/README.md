@@ -3,7 +3,7 @@
 ## 这是什么
 
 一个独立的小 C 程序，用来驱动**真实的 librime**（不是 Rust 侧的模拟实现），把逐键的
-候选、preedit、上屏结果记录成机器可读的 JSON。用途是给 Stele-IME 提供一份
+候选、preedit、上屏结果记录成机器可读的 JSON。用途是给 Qingjian IME 提供一份
 「上游 librime 到底怎么反应」的对照基线：同一个按键序列，librime 出什么候选、
 什么 preedit、什么时候上屏，都可以拿这里的输出逐字段比对。
 

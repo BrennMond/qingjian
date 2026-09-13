@@ -44,9 +44,9 @@ jobs:
       - name: 测试
         run: cargo test --workspace
       - name: 内核自检
-        run: cargo run -p stele-cli -- --check
+        run: cargo run -p qingjian-cli -- --check
       - name: 称重台（记录，不作门槛）
-        run: cargo run -p stele-bench --release -- --iterations=20000 --json
+        run: cargo run -p qingjian-bench --release -- --iterations=20000 --json
 
   # ── 交叉目标可编译性（P6/P7 的前置保障）───────────────────────────
   cross-check:
@@ -68,5 +68,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # 只检查内核：平台后端要到 P6/P7 才存在。
       - name: cargo check（内核）
-        run: cargo check -p stele-core --target ${{ matrix.target }}
+        run: cargo check -p qingjian-core --target ${{ matrix.target }}
         continue-on-error: true

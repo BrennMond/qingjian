@@ -37,7 +37,7 @@ librime 的拼音翻译器**不是**"把整串输入展开成编码、再逐条�
 | ② 拼写层补全 | 剩下的尾巴用 `ExpandSearch` 补成更长的拼写 | `algo/syllabifier.cc:224-228` |
 | ③ 造句 | 没有精确匹配的词时，在词图上组合 | `gear/script_translator.cc:503` |
 
-**Stele 三条都没有。** 第 8 节逐条列出差异。
+**Qingjian 三条都没有。** 第 8 节逐条列出差异。
 
 ---
 
@@ -147,7 +147,7 @@ if (enable_completion_ && farthest < input.length()) {
 把它们作为一条边接进图里，属性标成 `kCompletion` 并**扣一次可信度**
 （`:245-248`），最后把 `farthest` 推到输入末尾（`:262`）。
 
-**默认值**（这一点 Stele 的注释写反了）：
+**默认值**（这一点 Qingjian 的注释写反了）：
 
 ```cpp
 // librime@2479df5 src/rime/gear/translator_commons.h:176
@@ -257,14 +257,14 @@ if (enable_sentence_ && !translation) {
 
 同一份词表（`fixtures/shared.dict.yaml`），只改「缩写规则」与「补全」两个开关：
 
-| 缩写 | 补全 | librime 候选（前 3） | stele 候选（前 3） |
+| 缩写 | 补全 | librime 候选（前 3） | qingjian 候选（前 3） |
 | --- | --- | --- | --- |
 | 开 | 开 | 你好 拟好 尼号 | `niha`（字面量） |
 | 开 | 关 | 你好 拟好 尼号 | `niha` |
 | 关 | 开 | 你好 拟好 尼号 | `niha` |
 | 关 | 关 | 你 尼 泥 | `niha` |
 
-**对照 `nih`**（缩写开、补全关）：librime `你好 拟好 尼号`；stele `你好 拟好 尼号`。
+**对照 `nih`**（缩写开、补全关）：librime `你好 拟好 尼号`；qingjian `你好 拟好 尼号`。
 
 **怎么读这张表**
 
@@ -272,12 +272,12 @@ if (enable_sentence_ && !translation) {
   - 「缩写开」的两格走 ①：`h` 被认领，只消费 3 个字符，`a` 留在输入里；
   - 「缩写关、补全开」那一格走 ②：`ExpandSearch("ha")` → `hao`，消费全部 4 个字符。
   - 只有两条都关掉才失效（第 4 格）。
-- stele 4 格**全不命中**——但对照 `nih` 两边都命中，说明**它的缩写是活的**。
+- qingjian 4 格**全不命中**——但对照 `nih` 两边都命中，说明**它的缩写是活的**。
   它缺的是**两处**：
   1. **没有"只消费前缀"**：`SpellingTable::expand_into` 只把"到达末尾的路径"
-     当作展开结果（`crates/stele-engine/src/spelling.rs:638-639`），
+     当作展开结果（`crates/qingjian-engine/src/spelling.rs:638-639`），
      所以 `nih`（能整串消费）行、`niha`（不能）不行。
-  2. **补全在编码单元层**：`crates/stele-engine/src/translator.rs:192` 是
+  2. **补全在编码单元层**：`crates/qingjian-engine/src/translator.rs:192` 是
      `lexicon.prefix_lookup(&exp.code, ...)`，而尾巴 `ha` 产不出 `exp.code`，
      补全永远轮不到；librime 的补全在**拼写层**。
 
@@ -285,21 +285,21 @@ if (enable_sentence_ && !translation) {
 而「缩写关、补全开」那一格仍然命中 → 它只能是默认开的
 （`translator_commons.h:176`）。
 
-> **一条方法论记录**：本节第一版结论是错的——当时写的是"stele 只有缩写这一条通路，
-> 差在补全"。真正跑出这张表后才发现 stele **四格全空**，缺的是两处。
+> **一条方法论记录**：本节第一版结论是错的——当时写的是"qingjian 只有缩写这一条通路，
+> 差在补全"。真正跑出这张表后才发现 qingjian **四格全空**，缺的是两处。
 > "能解释现象"和"是那个原因"是两句话；**只改一个变量的实验**才是分界线。
 
 ---
 
-## 8. 与 stele 实现的差异
+## 8. 与 qingjian 实现的差异
 
 **这一节是快照，会过期。** 核对对象是本文落笔时磁盘上的代码。
 **只做记录，未修改任何实现文件。**
 
-| # | 主题 | librime 的事实 | stele 现状（写作时） | 结论 |
+| # | 主题 | librime 的事实 | qingjian 现状（写作时） | 结论 |
 | --- | --- | --- | --- | --- |
-| 1 | 切分图覆盖范围 | `interpreted_length` **可以小于**输入长度，查表在该前缀上做（`algo/syllabifier.cc:268`） | `SpellingTable::expand_into` 只把"到达末尾的路径"当展开结果（`spelling.rs:638-639`） | **语义差异。** stele 没有"只消费前缀"这回事 |
-| 2 | 补全的层级 | **拼写层**：`ExpandSearch(尾巴)`（`algo/syllabifier.cc:224-228`） | **编码单元层**：`lexicon.prefix_lookup(&exp.code, ...)`（`translator.rs:192`） | 尾巴不是合法单元时，stele 的补全永不触发 |
+| 1 | 切分图覆盖范围 | `interpreted_length` **可以小于**输入长度，查表在该前缀上做（`algo/syllabifier.cc:268`） | `SpellingTable::expand_into` 只把"到达末尾的路径"当展开结果（`spelling.rs:638-639`） | **语义差异。** qingjian 没有"只消费前缀"这回事 |
+| 2 | 补全的层级 | **拼写层**：`ExpandSearch(尾巴)`（`algo/syllabifier.cc:224-228`） | **编码单元层**：`lexicon.prefix_lookup(&exp.code, ...)`（`translator.rs:192`） | 尾巴不是合法单元时，qingjian 的补全永不触发 |
 | 3 | 补全的默认值 | `enable_completion_ = true`（`translator_commons.h:176`） | `default_completion() -> false`（`spec.rs:581`），且注释称「RIME 的默认也是关」（`spec.rs:577`） | **注释与上游不符**，默认值也相反；两者建议一起改 |
 | 4 | 造句 | 拼音族**无条件**（`script_translator.cc:503`）；码表族有开关、默认 `true` | **没有造句器** | 缺能力，且不需要语言模型（`poet.cc:249-252`） |
 | 5 | `enable_sentence` 的归属 | 只在码表族（`table_translator.h:43`） | 放在两族共用的 `TranslatorSpec`（`spec.rs:556`） | **建模错位**；且该字段零读取（rust-analyzer `references` 只返回声明 + `components.rs:711` 的赋值） |

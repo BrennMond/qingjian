@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """与 librime 的对照实验。
 
-中文职责：把同一批按键序列同时喂给**真实 librime** 与 **stele**，
+中文职责：把同一批按键序列同时喂给**真实 librime** 与 **qingjian**，
 逐条比对两边的可观察行为，输出一份可复现的对照报告。
-English role: feed the same key sequences to real librime and to stele, and
+English role: feed the same key sequences to real librime and to qingjian, and
 diff the observable behaviour case by case.
 
 # 它为什么存在（PLAN §3 的 P3 验收线）
@@ -41,7 +41,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ROOT / "tools" / "librime-probe" / "probe"
-STELE = ROOT / "target" / "release" / "stele"
+QINGJIAN = ROOT / "target" / "release" / "qingjian"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 用例集
@@ -120,20 +120,20 @@ def librime_observe(schema: str, keys: str) -> dict:
     }
 
 
-def stele_observe(schema: str, keys: str) -> dict:
-    """stele 侧的可观察行为。
+def qingjian_observe(schema: str, keys: str) -> dict:
+    """qingjian 侧的可观察行为。
 
     用 `--candidates` 拿到最终候选，再单独送一次空格看能否上屏——
     与 librime 侧的 `--select-space` 对应。
     """
-    if not STELE.exists():
-        raise SystemExit(f"找不到 {STELE}。先跑 `cargo build --release -p stele-cli`。")
+    if not QINGJIAN.exists():
+        raise SystemExit(f"找不到 {QINGJIAN}。先跑 `cargo build --release -p qingjian-cli`。")
     cand = subprocess.run(
-        [str(STELE), "--schema", schema, "--candidates", keys],
+        [str(QINGJIAN), "--schema", schema, "--candidates", keys],
         capture_output=True, text=True, timeout=60,
     )
     if cand.returncode != 0:
-        raise SystemExit(f"stele 失败：{cand.stderr.strip()[:400]}")
+        raise SystemExit(f"qingjian 失败：{cand.stderr.strip()[:400]}")
     texts: list[str] = []
     for line in cand.stdout.splitlines():
         line = line.strip()
@@ -143,7 +143,7 @@ def stele_observe(schema: str, keys: str) -> dict:
             texts.append(body.split()[0])
 
     commit_run = subprocess.run(
-        [str(STELE), "--schema", schema, keys],
+        [str(QINGJIAN), "--schema", schema, keys],
         capture_output=True, text=True, timeout=60,
     )
     commit = None
@@ -174,10 +174,10 @@ def check(kind: str, lib: dict, ste: dict) -> tuple[bool, str]:
         ok_lib = bool(lib["commit"])
         ok_ste = bool(ste["commit"] and ste["commit"].get("text"))
         if ok_lib != ok_ste:
-            return False, f"一边上屏一边没上屏：librime={ok_lib} stele={ok_ste}"
+            return False, f"一边上屏一边没上屏：librime={ok_lib} qingjian={ok_ste}"
         if not ok_lib:
             return False, "两边都没上屏"
-        return True, f"都上屏（librime={lib['commit']!r} stele={ste['commit']['text']!r}）"
+        return True, f"都上屏（librime={lib['commit']!r} qingjian={ste['commit']['text']!r}）"
     if kind == "commit-fullwidth-punct":
         # 比"是不是一个全角标点"，而不是比"哪一个"——两边的标点表
         # 是各自的数据（RIME 的是它的 `default.yaml`，我们的是自带预设）。
@@ -191,10 +191,10 @@ def check(kind: str, lib: dict, ste: dict) -> tuple[bool, str]:
         lt = (lib["commit"] or "")
         st = (ste["commit"] or {}).get("text") or ""
         if fullwidth(lt) != fullwidth(st):
-            return False, f"一边是全角标点一边不是：librime={lt!r} stele={st!r}"
+            return False, f"一边是全角标点一边不是：librime={lt!r} qingjian={st!r}"
         if not lt:
             return False, "两边都没上屏标点"
-        return True, f"都是全角标点（librime={lt!r} stele={st!r}）"
+        return True, f"都是全角标点（librime={lt!r} qingjian={st!r}）"
     if kind == "handled-all":
         if not all(lib["handled"]):
             return False, f"librime 有按键未被处理：{lib['handled']}"
@@ -205,16 +205,16 @@ def check(kind: str, lib: dict, ste: dict) -> tuple[bool, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="与 librime 的对照实验")
     ap.add_argument("--schema", default="luna_pinyin", help="librime 侧用哪个方案")
-    ap.add_argument("--stele-schema", default="pinyin", help="stele 侧用哪个方案")
+    ap.add_argument("--qingjian-schema", default="pinyin", help="qingjian 侧用哪个方案")
     ap.add_argument("--verbose", action="store_true", help="连同候选列表一起打印")
     args = ap.parse_args()
 
-    print("# stele × librime 对照报告")
+    print("# qingjian × librime 对照报告")
     print()
     print("| | |")
     print("| --- | --- |")
     print(f"| librime | 1.16.1 / `{args.schema}`（`--reset` 冷启动基线） |")
-    print(f"| stele | `{args.stele_schema}`（内嵌默认方案） |")
+    print(f"| qingjian | `{args.qingjian_schema}`（内嵌默认方案） |")
     print("| 比什么 | **结构**：能否上屏、按键是否被处理、切分边界 |")
     print("| 不比什么 | 候选排序与分数——两边的词库与语言模型不同，"
           "比排序等于比词库 |")
@@ -226,7 +226,7 @@ def main() -> int:
         print()
         try:
             lib = librime_observe(args.schema, keys)
-            ste = stele_observe(args.stele_schema, keys)
+            ste = qingjian_observe(args.qingjian_schema, keys)
         except SystemExit as e:
             print(f"- ⚠️ 跳过：{e}")
             print()
@@ -236,9 +236,9 @@ def main() -> int:
         print(f"- {mark} {why}")
         if args.verbose or not ok:
             print(f"  - librime 预编辑：{lib['final_preedit']!r}")
-            print(f"  - stele   预编辑：{ste['final_preedit']!r}")
+            print(f"  - qingjian   预编辑：{ste['final_preedit']!r}")
             print(f"  - librime 候选（前 5）：{lib['candidates'][:5]}")
-            print(f"  - stele   候选（前 5）：{ste['candidates'][:5]}")
+            print(f"  - qingjian   候选（前 5）：{ste['candidates'][:5]}")
         print()
         if not ok:
             failures += 1

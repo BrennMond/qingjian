@@ -21,7 +21,7 @@
 
 ### 1.1 承诺
 
-**Stele 引擎（`crates/`）不发起任何网络请求，不发送任何遥测，
+**Qingjian 引擎（`crates/`）不发起任何网络请求，不发送任何遥测，
 不采集任何使用数据到本机之外的任何地方。**
 
 ### 1.2 核实方式与结果
@@ -34,12 +34,12 @@ grep -rn -E "TcpStream|UdpSocket|reqwest|hyper|std::net|ureq|isahc|socket2|opens
 ```
 
 **观察到的全部命中都只是字符串/测试数据**，不是网络调用：正则识别器的
-测试用例里出现了 `http://x`、`https://x`（`crates/stele-engine/src/regex.rs`、
+测试用例里出现了 `http://x`、`https://x`（`crates/qingjian-engine/src/regex.rs`、
 `segmentor.rs`、`tests/regex_and_recognizer.rs`）。**没有任何 socket、
 HTTP 客户端或 TLS 依赖的使用点。**
 
 依赖侧同时成立：`Cargo.lock` 只有 **10 个 workspace 成员，0 个 registry 包**。
-`scripts/verify-zero-deps.sh` 守 `stele-core` / `stele-engine` 的零第三方依赖，
+`scripts/verify-zero-deps.sh` 守 `qingjian-core` / `qingjian-engine` 的零第三方依赖，
 `scripts/verify-deps.sh` 的受审白名单当前为空。没有依赖 ⇒ 没有"某个依赖偷偷
 联网"的供应链路径。
 
@@ -63,17 +63,17 @@ HTTP 客户端或 TLS 依赖的使用点。**
 
 ## 2. 数据分类：用户记忆里到底有什么
 
-用户记忆由两个实现承载：`stele_core::MemoryStore`（trait）与
-`stele_memory::FileMemory`（默认实现）。它包含**两张表**：
+用户记忆由两个实现承载：`qingjian_core::MemoryStore`（trait）与
+`qingjian_memory::FileMemory`（默认实现）。它包含**两张表**：
 
 | 表 | 键 | 值（每条记录） | 上限 |
 | --- | --- | --- | --- |
 | 输入表 | `(规范编码, 词)` | `count`（上屏次数）、`decayed_milli`（时间衰减后的累计频次）、`last_used`（Unix 秒） | `DEFAULT_CAPACITY = 30_000` 条 |
 | 预测表 | `(上文1, 上文2, 词)` | 同上 | `DEFAULT_PREDICT_CAPACITY = 20_000` 条 |
 
-**代码位置**：`crates/stele-core/src/service.rs`（`MemoryEntry`、`MemoryStore`）、
-`crates/stele-memory/src/store.rs`（`Entry`、`Inner`、`snapshot`、
-`prediction_snapshot`）、`crates/stele-memory/src/file.rs`（落盘格式）。
+**代码位置**：`crates/qingjian-core/src/service.rs`（`MemoryEntry`、`MemoryStore`）、
+`crates/qingjian-memory/src/store.rs`（`Entry`、`Inner`、`snapshot`、
+`prediction_snapshot`）、`crates/qingjian-memory/src/file.rs`（落盘格式）。
 
 **逐项说明**：
 
@@ -101,7 +101,7 @@ HTTP 客户端或 TLS 依赖的使用点。**
 不是"无害的缓存"。**
 
 **默认关闭**：CLI 不给 `--userdb <路径>` 就没有任何记忆，行为逐字节可复现
-（`crates/stele-cli/src/main.rs`）；预测（`--predict`）与本地向量（`--embed`）
+（`crates/qingjian-cli/src/main.rs`）；预测（`--predict`）与本地向量（`--embed`）
 还要再各自显式打开。
 
 ---
@@ -126,12 +126,12 @@ CLI 通过 `--userdb <路径>` 传入。**这是有意的**：位置策略属于
 新建/替换记忆文件时以 `0600`（仅所有者读写）创建：
 
 ```rust
-// crates/stele-memory/src/store.rs: write_private()
+// crates/qingjian-memory/src/store.rs: write_private()
 opts.mode(0o600);   // #[cfg(unix)]
 // 写临时文件 → fsync → rename → fsync 目录；目标文件继承 0600
 ```
 
-`crates/stele-memory/tests/persistence_failures.rs::the_memory_file_is_owner_only`
+`crates/qingjian-memory/tests/persistence_failures.rs::the_memory_file_is_owner_only`
 钉住这条行为。
 
 **权限**不是**完整的隐私方案**，本文不把它当结论：
@@ -144,9 +144,9 @@ opts.mode(0o600);   // #[cfg(unix)]
 
 ### 3.3 文件格式：自校验，但不加密、不防篡改
 
-`crates/stele-memory/src/file.rs`：
+`crates/qingjian-memory/src/file.rs`：
 
-- 魔数 `STELEMEM` + `VERSION = 2`；
+- 魔数 `QJIANMEM` + `VERSION = 2`；
 - 一个覆盖**前面全部字节**的 **FNV-1a** 校验和。
 
 含义要精确：
@@ -160,7 +160,7 @@ opts.mode(0o600);   // #[cfg(unix)]
 ### 3.4 落盘时机：按键路径一次都不碰
 
 **用户记忆这条路径**的按键**零磁盘 I/O** 是红线，由
-`crates/stele-memory/tests/no_disk_io_on_keypath.rs` 用 `/proc/self/io` 的
+`crates/qingjian-memory/tests/no_disk_io_on_keypath.rs` 用 `/proc/self/io` 的
 `syscr`/`syscw` 守着。写盘只发生在 `flush()`——由前端在
 "空闲 debounce / `onStop` / `onTrimMemory` / 正常退出"时调用
 （合同见 `docs/memory-persistence-design.md` §5）。
@@ -173,7 +173,7 @@ opts.mode(0o600);   // #[cfg(unix)]
 
 > **实现不在本次范围内。本文不声称它已经存在。**
 > 现状：**没有任何代码路径会因为焦点是密码框而停止学习**——
-> 只要前端调了 `stele_memory::apply_events`，`Event::Learned` 就会进记忆。
+> 只要前端调了 `qingjian_memory::apply_events`，`Event::Learned` 就会进记忆。
 
 ### 4.1 为什么必须有它
 
@@ -184,7 +184,7 @@ opts.mode(0o600);   // #[cfg(unix)]
 
 ### 4.2 设计：策略门放在"事件 → 记忆"的唯一映射点
 
-现有代码已经把映射收敛到一处：`crates/stele-memory/src/events.rs` 的
+现有代码已经把映射收敛到一处：`crates/qingjian-memory/src/events.rs` 的
 `apply_events(memory, events)`。**门就加在这里**，前端不需要各自 `match`：
 
 ```rust
@@ -250,10 +250,10 @@ pub fn apply_events_with_policy(
 | --- | --- | --- | --- |
 | 导出输入表 | `FileMemory::snapshot() -> Vec<MemoryEntry>` | `store.rs:430` | 只读视图，按 `(输入, 词)` 升序；字段：`input`、`text`、`count`、`bonus`、`last_used` |
 | 导出预测表 | `FileMemory::prediction_snapshot() -> Vec<PredictionEntry>` | `store.rs:452` | 只读视图；字段：`context`、`text`、`count`、`bonus`、`last_used` |
-| 取消一条学习 | `MemoryStore::forget(key, text)` | trait：`stele-core/src/service.rs:637`；实现：`store.rs:910` | 按**与记录相同的键**删除输入表的一条记录 |
+| 取消一条学习 | `MemoryStore::forget(key, text)` | trait：`qingjian-core/src/service.rs:637`；实现：`store.rs:910` | 按**与记录相同的键**删除输入表的一条记录 |
 | 落盘 | `FileMemory::flush() -> Result<bool, MemoryError>` | `store.rs:521` | 全量重写 + 原子替换；任何失败保留 dirty，可重试 |
 
-可观察出口已接到 CLI：`stele --userdb <路径> --dump-memory`
+可观察出口已接到 CLI：`qingjian --userdb <路径> --dump-memory`
 把两张表逐条打印（`--dump-memory` 会打印上屏文本，属于**用户显式要求**的导出）。
 
 ### 5.2 明确的缺口（不粉饰）
@@ -278,7 +278,7 @@ pub fn apply_events_with_policy(
 
 ## 6. 日志规则
 
-**引擎现状**：`crates/stele-memory/src/*.rs` 的运行时路径**没有**
+**引擎现状**：`crates/qingjian-memory/src/*.rs` 的运行时路径**没有**
 `println!` / `eprintln!`；错误通过 `MemoryError` 返回
 （`Io(std::io::Error)` / `Corrupt(String)`），`Corrupt` 只带**结构原因**
 （魔数、版本、校验和），**不带记忆内容**。CLI 的 `⚠` 提示同样只报
@@ -304,7 +304,7 @@ pub fn apply_events_with_policy(
 - **registry 依赖：0**。`Cargo.lock` 只有 workspace 成员；
   没有第三方运行时库，因此没有"某个库把数据发出去"的路径。
   门禁：`scripts/verify-zero-deps.sh`、`scripts/verify-deps.sh`。
-- **模型：没有**。`stele-embed`（P5）是**零依赖、无模型**的本地计数投影：
+- **模型：没有**。`qingjian-embed`（P5）是**零依赖、无模型**的本地计数投影：
   把本地历史里的 `(上下文 → 下一个词)` 计数投影成 `i16` 向量，
   不加载任何神经网络、不下载权重。
 - **随仓库分发的第三方数据**：默认词库（派生自 MIT / Apache-2.0 数据）
@@ -370,7 +370,7 @@ pub fn apply_events_with_policy(
 | 保证 | 证据 |
 | --- | --- |
 | 引擎不做网络请求、不发遥测 | §1.2 的符号搜索；`Cargo.lock` 0 个 registry 依赖 |
-| 用户记忆**默认关闭** | `crates/stele-cli/src/main.rs`（不给 `--userdb` 即无记忆） |
+| 用户记忆**默认关闭** | `crates/qingjian-cli/src/main.rs`（不给 `--userdb` 即无记忆） |
 | 用户记忆的按键路径零磁盘 I/O（词库查询仍 `read_at`） | `tests/no_disk_io_on_keypath.rs`（`/proc/self/io`） |
 | 记忆文件 Unix `0600` | `store.rs: write_private()`；`tests/persistence_failures.rs::the_memory_file_is_owner_only` |
 | 坏文件不自动覆盖 | `open_or_degrade` + `writable == false` |
@@ -401,5 +401,5 @@ pub fn apply_events_with_policy(
 
 *相关文件：`docs/memory-persistence-design.md`（落盘状态机与 Android 生命
 周期合同）、`THIRD_PARTY_NOTICES.md`（第三方数据与许可）、
-`crates/stele-core/src/service.rs`（`MemoryStore`）、
-`crates/stele-memory/src/{store,file,events}.rs`。*
+`crates/qingjian-core/src/service.rs`（`MemoryStore`）、
+`crates/qingjian-memory/src/{store,file,events}.rs`。*

@@ -103,7 +103,7 @@
 
 `default_completion()` 当前返回 `false`，注释称"Rime 默认也是关闭"——
 **那句注释是错的**，上游默认是 `true`。阶段 2 必须二选一：
-与上游对齐（默认 `true`），或明确写成"Stele 有意不同"并给出理由与文档。
+与上游对齐（默认 `true`），或明确写成"Qingjian 有意不同"并给出理由与文档。
 
 ### 2.4 词典约束搜索（**这是 `ssss` 的根治手段**）
 
@@ -137,8 +137,8 @@ pub trait CodeOracle {
 
 **代价**：`has_prefix` 落在按键路径上，每次展开一步一次。因此它必须是
 O(log n) 的索引查询，不是扫描；`TableLexicon` 的实现必须走紧凑索引
-（两台词库都已实现，见 `crates/stele-table/src/lexicon.rs` 与
-`crates/stele-engine/src/lexicon.rs`，并有
+（两台词库都已实现，见 `crates/qingjian-table/src/lexicon.rs` 与
+`crates/qingjian-engine/src/lexicon.rs`，并有
 `tests/lexicon_capability.rs` 守着两者语义一致）。
 
 #### ⚠️ 一次**实测否决**的落地方式（2026-09，必须留着这条记录）
@@ -176,7 +176,7 @@ s 音节在词库里存在（`沙士`/`上述`/`尚书`…），绝大多数分�
 
 ### 2.5 资源合同（**已实现一部分**）
 
-阶段 1 已经落地的部分（`crates/stele-engine/src/spelling.rs`）：
+阶段 1 已经落地的部分（`crates/qingjian-engine/src/spelling.rs`）：
 
 | 项 | 值 | 证据 |
 | --- | --- | --- |
@@ -321,5 +321,5 @@ composition，根本无法表达"这段确认了、剩下的接着打"。
 - **不把输入直接退化成字面量**来让预算好过——测试同时断言目标候选召回；
 - **不引入神经语言模型**作为造句的前提：第一版只用语词频与长度策略；
 - **不声称与 Rime 完全一致**：`script_translator` 与 `table_translator`
-  对 `enable_sentence` 的归属本就不同，Stele 可以有自己的语义，
+  对 `enable_sentence` 的归属本就不同，Qingjian 可以有自己的语义，
   但必须**文档化**并且不谎称相同。

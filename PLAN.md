@@ -1,10 +1,13 @@
-# PLAN — Stele-IME（石经）
+# PLAN — 青简输入法 / Qingjian IME
 
 > 项目章程与架构决策记录（ADR）。后续所有代码都须遵守本文约定。
 >
-> **名称**：全名 **Stele-IME**，简称 **Stele**；中文名 **石经**。
-> 代码、crate、路径一律用 `stele`；面向用户的中文界面与文档用「石经」。
-> （「Stele」原为一个 RIME 主题名，取其碑刻意象；「石经」是与之对仗的典故——把经典刻在石碑上，正合"输入法引擎"之意。）
+> **名称**：中文正式名 **青简输入法**；英文正式名 **Qingjian IME**；简称 **青简** / **Qingjian**。
+> 产品标题、界面与面向中文用户的文档优先写「青简输入法」；
+> 代码、crate、仓库与路径一律用 `qingjian`。
+> **「Qingjian」连写、首字母大写**——不写 `Qing Jian`，也不写成 `QingJian`。
+> 项目沿革：**青简前身为 Stele-IME**（English: *Qingjian was formerly developed
+> under the name Stele*）。旧名「Stele」只在沿革与致谢里出现。
 > 版本 **v2** · WSL2 本地开发。v1 → v2 的变更记录见文末附录。
 > 引擎抽象与数据结构的**权威定义**在 [`docs/engine-design.md`](docs/engine-design.md)，本文只记录决策与边界。
 
@@ -22,7 +25,7 @@
 4. **第三根支柱：离线与隐私的明确承诺。**
    - 经查证，**RIME 的官方设计文档中找不到任何关于隐私、离线或数据本地化的承诺**（三份独立对比报告一致确认 NOT FOUND）；作者 2009 年的开发计划第三期出现「**添加網絡功能**」。
    - **但这不能反推"librime 必不保护隐私"**：librime 本身是 BSD-3-Clause，"是否联网"取决于具体前端、部署、插件与用户配置，需逐项审计（审计 §3.1）。以上只是"上游文档没把隐私写成承诺"这一**事实**。
-   - 所以"离线 + 隐私"**不是 RIME 的既有卖点，而是 Stele 自己可以立起来、并且必须自己兑现的旗帜**（§5.5 铁律）。
+   - 所以"离线 + 隐私"**不是 RIME 的既有卖点，而是 Qingjian 自己可以立起来、并且必须自己兑现的旗帜**（§5.5 铁律）。
    - **不记录按键日志、不做遥测、不发网络请求**——这三条要写进面向用户的承诺里，而不只是内部约定；边界与"什么只是合同、什么已被代码核实"见 `docs/privacy-model.md`。
 
 ### 0.2 硬指标（不可退让的红线）
@@ -47,7 +50,7 @@
 
 | ID | 决策 | 理由 | 状态 |
 | --- | --- | --- | --- |
-| D1 | 项目代号 `stele` | 延续既有设计语言「碑铭」 | 已定 |
+| D1 | 项目代号 `qingjian` | 延续既有设计语言「碑铭」 | 已定 |
 | D2 | 许可证 **MIT OR Apache-2.0** | Rust 生态惯例；成立的前提是 D10（不分发第三方数据） | 已定 |
 | D3 | **Rust 原生引擎为主干** | 更快、更省、内存安全、跨平台 | 已定 |
 | D4 | librime **仅作参考**，不链接其代码 | 学原理；按需把模块翻译成 Rust | 已定 |
@@ -55,8 +58,8 @@
 | D6 | **复刻雾凇方案的关键行为** | 保留既有输入习惯。**范围收敛为跑通 `others/no_lua_schema`**（即不含 Lua 的雾凇） | 已定 |
 | D7 | ~~AI = 本地轻量 embedding，只做偏好重排~~ | 方向保留，**优先级下调**：见 D19 | **已修订** |
 | D8 | 开发环境 **WSL2 Ubuntu**，仓库放 ext4 | 最快的内核迭代循环 | 已定 |
-| D9 | 核心 crate **零第三方依赖优先** | 供应链安全、可审计。**限定为 `stele-core` / `stele-engine`**；周边 crate 允许受审依赖 | **已修订** |
-| D10 | **第三方的原始词典数据与模型不随项目分发**；由 MIT/Apache-2.0 来源**生成**的默认词库随仓库分发（逐项见 `THIRD_PARTY_NOTICES.md`） | rime-ice 为 GPL-3.0-only，且内部词源含限制性条款；本地取回与编译属个人使用，分发才产生义务。注意：`schemes/stele-default/cn_dicts/generated.dict.yaml` 是已跟踪的派生产物，**不适用**"什么都未分发"的说法 | 已定 |
+| D9 | 核心 crate **零第三方依赖优先** | 供应链安全、可审计。**限定为 `qingjian-core` / `qingjian-engine`**；周边 crate 允许受审依赖 | **已修订** |
+| D10 | **第三方的原始词典数据与模型不随项目分发**；由 MIT/Apache-2.0 来源**生成**的默认词库随仓库分发（逐项见 `THIRD_PARTY_NOTICES.md`） | rime-ice 为 GPL-3.0-only，且内部词源含限制性条款；本地取回与编译属个人使用，分发才产生义务。注意：`schemes/qingjian-default/cn_dicts/generated.dict.yaml` 是已跟踪的派生产物，**不适用**"什么都未分发"的说法 | 已定 |
 | D11 | 词典**格式**沿用 `.dict.yaml` 兼容写法，**数据自建/后置** | 格式是我们要长期支持的接口；自建数据可让权重可解释、无许可风险 | 已定 |
 | D12 | 引擎抽象拆为 **`Engine`（共享）+ `Session`（私有）** | 共享昂贵的词库，隔离廉价的会话状态；同时获得编译期的线程安全保证 | 已定 |
 | D13 | 候选分数使用**对数域** | 概率连乘变连加，避免下溢；重排器可直接加减贡献 | **已定：对数域 + 定点整数 `Score(i32)`** |
@@ -76,7 +79,7 @@
 | D27 | **方案格式版本 + 零件 API 版本，两级门禁** | DSH 恰恰**没有**这个（`engines.dsh` 只声明、无人读取），它可以如此是因为插件与宿主同版发布；而**方案是用户写的长期资产**，格式就是对外契约 | 已定 |
 | D28 | **编译产物按内容寻址 + 校验不通过即拒绝** | 防止"用错版本的产物凑合跑"；多版本可共存、可原子替换 | 已定 |
 | D30 | **重写风险审计的四处修正**：`Engine` 与 `SchemaCatalog` 分层、`Session::switch_schema`、`Session::tick` 预留、公开枚举一律 `#[non_exhaustive]` | 每一项都属于"事后改就是 API 级重写"的类型。详见 `docs/engine-design.md` §14.2 | 已定 |
-| D31 | **项目命名**：全名 `Stele-IME`、简称 `Stele`、中文名「**石经**」（**简体，不用繁体**） | 原 "Stele" 是 RIME 主题名，看不出是输入法；加全名后可辨识。中文名取"刻经于石"之典。**不写繁体「石經」**：本项目的起点是使用者的个人需求，看重的是好不好用，而不是文化姿态 | 已定 |
+| D31 | **项目命名**：中文正式名「**青简输入法**」、英文正式名 `Qingjian IME`、简称「青简」/ `Qingjian`；代码与路径用 `qingjian`，产品标题与中文文档用「青简输入法」 | 「青简」本身即完整、统一的专有名词，**不意译为 Bamboo Slips 一类的英文词**：保留原语言名称既点明中文根源，也避免意译把文化意象压扁成普通英文词。拼写一律连写、首字母大写（**不写 `Qing Jian`，不写 `QingJian`**）。旧名 `Stele` 不消失，仅保留在项目沿革与致谢中（“青简前身为 Stele-IME”）。**取代原 D31**：旧名取自 RIME 主题名的碑刻意象，与「青简」无关，其"刻经于石"的解释一并作废 | 已定 |
 | D32 | **语言形态：简体优先；繁体只保留接口与配置，不由项目适配** | 使用者本人的书写习惯是现行规范简体，且不愿为自己不熟悉的形态做适配。因此：① 随项目提供的方案数据只做简体；② `simplifier` 一类的转换**组件与开关一律保留**（接口不封死）；③ 需要繁体者自行配置数据——**我们提供机制，不承担内容** | 已定 |
 | D33 | **P1 的验收同时覆盖两个方案：一个拼音方案 + 一个精确编码方案** | P1 必须有某个具体方案才能端到端验证管线，而使用者真实用的是拼音，故拼音方案是**用例**而非**前提**。但若只验证拼音，D20 的"引擎通用性"就仍只是承诺——**故从 P1 起就并跑一个精确编码方案**（无拼写运算、无切分图），让通用性从第一天起被测试保护 | 已定 |
 | D34 | **标签只准从 `TagTable` 拿** | `Tag` 是 `&'static str`，而方案里的标签名在装载期 intern 一次。两处各自 `Box::leak("punct")` 会得到**两块内存**，`Vec::contains` 随之静默失效——标点整条链断掉且没有报错（真发生过） | 已定 |
@@ -104,8 +107,8 @@
 
 - **D5 → D10/D11**：v1 计划直接使用雾凇词库作为数据源。经核实 rime-ice 为 **GPL-3.0**，且其内部词源混合了 MIT / Apache-2.0 / LGPL / CC BY-SA，其中英文库（google-10000-english）明确限定"教育及个人研究用途"，腾讯词向量无许可声明。因此：**格式兼容，数据自建；是否引入外部数据推迟到引擎验证之后**。
 - **D7 → D19**：向量重排仍是方向，但排在频率与上下文之后，且必须通过内存预算评审。
-- **D9**：`stele-core` / `stele-engine` 保持零依赖；`stele-dict`（YAML 解析）、`stele-embed`（推理运行时）允许使用经过审查的依赖。
-  **一处对计划的修正（P4a 实测之后）**：`stele-memory` 原本写的是 SQLite，实际做成了**自写紧凑 KV**——我们需要的只是一个"按键时零 I/O、启动时读一次"的有序表，那正是 `stele-table` 已经解决过的形状，于是它连依赖都不需要。这也让 `scripts/verify-deps.sh` 的白名单**至今是空的**。第 0 步先把那条门禁补上了（PLAN §4.8 的欠账），所以将来真引入依赖时，那一步无法被跳过。
+- **D9**：`qingjian-core` / `qingjian-engine` 保持零依赖；`qingjian-dict`（YAML 解析）、`qingjian-embed`（推理运行时）允许使用经过审查的依赖。
+  **一处对计划的修正（P4a 实测之后）**：`qingjian-memory` 原本写的是 SQLite，实际做成了**自写紧凑 KV**——我们需要的只是一个"按键时零 I/O、启动时读一次"的有序表，那正是 `qingjian-table` 已经解决过的形状，于是它连依赖都不需要。这也让 `scripts/verify-deps.sh` 的白名单**至今是空的**。第 0 步先把那条门禁补上了（PLAN §4.8 的欠账），所以将来真引入依赖时，那一步无法被跳过。
 
 ---
 
@@ -117,46 +120,46 @@
 +--------------------------------------------------------------+
 | 前端 Frontends    Windows TSF / Android IME / CLI(调试)        |
 +--------------------------------------------------------------+
-| 桥接 FFI          stele-ffi   (C ABI / JNI)                   |
+| 桥接 FFI          qingjian-ffi   (C ABI / JNI)                   |
 +--------------------------------------------------------------+
 | 会话 Session      每客户端一份，私有、可变（见 D12）             |
 +--------------------------------------------------------------+
 | 引擎 Engine       加载好的方案 + 词库，共享、昂贵、只读           |
 +--------------------------------------------------------------+
-| 抽象 Core         stele-core：trait 定义与数据结构              |
+| 抽象 Core         qingjian-core：trait 定义与数据结构              |
 +--------------------------------------------------------------+
 
         侧挂服务（通过 trait 注入引擎，不是"上层"）
         +-------------------------------+  +----------------------+
-        | stele-memory  Lexicon/Ranker  |  | stele-embed  Ranker  |
+        | qingjian-memory  Lexicon/Ranker  |  | qingjian-embed  Ranker  |
         +-------------------------------+  +----------------------+
 ~~~
 
-> **v1 的图错在哪**：v1 把 `stele-memory` / `stele-embed` 画在引擎上方，但数据流又把"记忆与向量重排"放在引擎管线内部——两者不能同时成立。按 §2.5「外部资源一律 trait 注入」，它们是**注入引擎的服务实现**，不是上层。
-> **注意**：上图的"层"是逻辑分层；实现上 `stele-memory` 依赖 `stele-core` 的 trait，**不依赖** `stele-engine`。
+> **v1 的图错在哪**：v1 把 `qingjian-memory` / `qingjian-embed` 画在引擎上方，但数据流又把"记忆与向量重排"放在引擎管线内部——两者不能同时成立。按 §2.5「外部资源一律 trait 注入」，它们是**注入引擎的服务实现**，不是上层。
+> **注意**：上图的"层"是逻辑分层；实现上 `qingjian-memory` 依赖 `qingjian-core` 的 trait，**不依赖** `qingjian-engine`。
 
 ### 2.2 crate 结构
 
 ~~~
-stele/
+qingjian/
 ├── crates/
-│   ├── stele-core/     # 抽象：Engine/Session trait、组件 trait、数据结构、错误
-│   ├── stele-engine/   # 原生引擎：拼写代数、切分、翻译、过滤、重排管线
-│   ├── stele-dict/     # 词典：.dict.yaml 解析 + 编译产物读写
-│   ├── stele-config/   # 配置/方案模型：YAML 加载与校验
-│   ├── stele-table/    # 词库编译产物：紧凑二进制 + 按需分页
-│   ├── stele-schemes/  # 方案装载 + 内嵌默认方案（与内核分属不同 crate，见 D24）
-│   ├── stele-memory/   # 用户记忆：频率、衰减（**自写紧凑 KV，零第三方依赖**）
-│   ├── stele-embed/    # 轻量 embedding：条件性，见 D19
-│   ├── stele-cli/      # 命令行调试前端
-│   ├── stele-bench/    # 称重台：内存与延迟测量（P0 交付物，见 §9）
-│   ├── stele-rime/     # 可选：librime 对照后端（仅测试，不做发布依赖）
-│   └── stele-ffi/      # C ABI / JNI 桥
+│   ├── qingjian-core/     # 抽象：Engine/Session trait、组件 trait、数据结构、错误
+│   ├── qingjian-engine/   # 原生引擎：拼写代数、切分、翻译、过滤、重排管线
+│   ├── qingjian-dict/     # 词典：.dict.yaml 解析 + 编译产物读写
+│   ├── qingjian-config/   # 配置/方案模型：YAML 加载与校验
+│   ├── qingjian-table/    # 词库编译产物：紧凑二进制 + 按需分页
+│   ├── qingjian-schemes/  # 方案装载 + 内嵌默认方案（与内核分属不同 crate，见 D24）
+│   ├── qingjian-memory/   # 用户记忆：频率、衰减（**自写紧凑 KV，零第三方依赖**）
+│   ├── qingjian-embed/    # 轻量 embedding：条件性，见 D19
+│   ├── qingjian-cli/      # 命令行调试前端
+│   ├── qingjian-bench/    # 称重台：内存与延迟测量（P0 交付物，见 §9）
+│   ├── qingjian-rime/     # 可选：librime 对照后端（仅测试，不做发布依赖）
+│   └── qingjian-ffi/      # C ABI / JNI 桥
 ├── platforms/
 │   ├── windows/        # TSF 组件
 │   └── android/        # Kotlin InputMethodService + Rust .so
 ├── schemes/            # 方案资产（与内核解耦，见 D24）
-│   └── stele-default/  # 默认方案：行为对标雾凇，数据自建；内核里没有它的任何痕迹
+│   └── qingjian-default/  # 默认方案：行为对标雾凇，数据自建；内核里没有它的任何痕迹
 ├── docs/
 └── reference/          # 调研资料（RIME 内部机制、rime-ice、前端对接、官方 wiki）
 ~~~
@@ -187,11 +190,11 @@ stele/
 | 精确编码翻译器 | 输入串当作完整编码，直接查表 | 仓颉、五笔、英文输入、自定义短语、拆字反查 |
 | 拼写图翻译器 | 拼写展开成切分图，求最短路 + 组句 | 全拼、双拼、注音 |
 
-**守住边界的检查**：`stele-core` / `stele-engine` 不得内置任何词表、音节表或拼音规则；P2 之后必须有一组"同一引擎 + 一份仓颉方案跑通编码→字"的测试。**这个测试写不出来，就说明边界没守住。**
+**守住边界的检查**：`qingjian-core` / `qingjian-engine` 不得内置任何词表、音节表或拼音规则；P2 之后必须有一组"同一引擎 + 一份仓颉方案跑通编码→字"的测试。**这个测试写不出来，就说明边界没守住。**
 
 ### 2.5 边界规则
 
-- 平台无关代码只放 `crates/*`；平台相关只放 `platforms/*` 与 `stele-ffi`。
+- 平台无关代码只放 `crates/*`；平台相关只放 `platforms/*` 与 `qingjian-ffi`。
 - 引擎**不依赖任何 UI**，也**不直接读文件、时钟或网络**。
 - 外部资源（存储、模型、时钟、随机数）一律通过 trait 注入，保证可测试（见 §5.5）。
 - **禁止在引擎回调中重入引擎**（RIME 的回调是同步在调用线程上触发的，重入会导致死锁或借用冲突）。
@@ -210,19 +213,19 @@ stele/
 
 | 阶段 | 目标 | 主要交付物 | 验收标准 |
 | --- | --- | --- | --- |
-| **P0** | 环境、骨架、**称重台** | workspace + CI + 规范 + `stele-bench` | WSL2 里 `cargo build` / `cargo test` 通过；`stele-bench` 能输出内存与耗时 |
-| **P1** | 原生内核最小闭环 | 切分（**含变体拼写**）+ 内存词库 + 候选 + 会话 + CLI + **两个方案** | ① 拼音方案：`stele nihao` → 「你好」，`stele nh` → 「你好」；② **精确编码方案**：`stele <code>` → 字（**同一引擎，通用性被测试保护**，D33）；单测覆盖；§0.2 指标首次实测 |
+| **P0** | 环境、骨架、**称重台** | workspace + CI + 规范 + `qingjian-bench` | WSL2 里 `cargo build` / `cargo test` 通过；`qingjian-bench` 能输出内存与耗时 |
+| **P1** | 原生内核最小闭环 | 切分（**含变体拼写**）+ 内存词库 + 候选 + 会话 + CLI + **两个方案** | ① 拼音方案：`qingjian nihao` → 「你好」，`qingjian nh` → 「你好」；② **精确编码方案**：`qingjian <code>` → 字（**同一引擎，通用性被测试保护**，D33）；单测覆盖；§0.2 指标首次实测 |
 | **P2** | 词典格式与自建词库 | `.dict.yaml` 解析器 + 自建小词库 | 能加载自建词库并正常出候选 |
 | **P2.5** | 词库编译器 | 流式编译 → 紧凑二进制 + mmap 加载 | 产物/源 < 3×；部署峰值 < 150 MB；`Lexicon` 实现可整体替换 |
 | **P3** | 方案行为复刻 | 零件集 + 配置校验 + **分层补丁与 `--dump-config`**；跑通 `others/no_lua_schema` | 与 librime 的对照测试通过（对照工装仅用于测试） |
-| **P3.5** ✅ | **默认方案（开箱即用）** | `schemes/stele-default`：自有方案 YAML + **41 万条**词库 + OpenCC 数据装载 | ✅ 装上就能打字（实测：`stele --scheme-dir schemes/stele-default nihao` → 你好）；**内核里没有任何它的痕迹**（门禁守） |
-| **P4a** ✅ | 用户记忆：频率 + 时间衰减 | `stele-memory`（**自写紧凑 KV**，零依赖 + 内存缓存）+ 引擎侧 `Services` 注入 + CLI `--userdb` | ✅ 打过的词下次优先（端到端：同码两个词，选中 4 次后反超）；✅ **用户记忆的按键路径零磁盘 I/O**（`/proc/self/io` 的 `syscr`/`syscw` 与字节数在 1000 次按键后一个都没涨；**注意这是记忆路径的性质，词库查询 `TableLexicon` 仍用 `read_at`**）；✅ 重启后还在；✅ 内存增量实测 3 万条 +5.8 MiB（真实词库 + 记忆 = 17.8 MiB < 30 MB）；✅ 坏文件降级成"没有记忆"+ 一行警告（D26） |
-| **P4b** ✅ | **本地下一词预测**（`Lane::Predict`） | `stele-memory` 的**预测表**（bigram + trigram，键 = **上下文**）+ 流水线插入 + CLI `--predict`（**默认关**） | ✅ 对比集 `tools/predict/collocations.tsv`（15 条常见搭配）**端到端全过**：学过之后期望词是预测通道的**第 1 位**（`cargo test -p stele-memory --test predict_next`）；✅ 内存增量实测约 **4.0 MiB**（默认 20 000 条 × ≈210 B/条）< 5 MB；✅ 按键延迟与无预测**无可测差异**（P50 约 48 µs / P99 约 104 µs，真实词库）；✅ **用户记忆与预测的按键路径零磁盘 I/O**（`/proc/self/io` 那条测试已扩展到预测；词库查询仍走 `read_at`）；神经模型**撞红线，暂缓**。执行书见 `docs/HANDOFF.md` §7.7 |
-| **P5** | 向量偏好重排（**第一版已落地，默认关**） | `stele-embed` + 量化 | **可行性评审 + 第一版**（2026-09）：`docs/embed-design.md`（执行书与实测）、`docs/p5-vector-feasibility.md`（评审）。**本地、无模型、零依赖**：把用户本地历史里的 `(上下文 → 下一个词)` 计数投影成 `i16` 向量，在 `Lane::Input` 上加有界偏好分（前 3 名、≤4000 毫对数）。**默认关闭**（D46 第①条）。实测：对比集 3/3（基线 1/3，无回归）、向量表 **2.44 MiB @ 4 万词**、装载峰值约 +9 MiB、按键延迟无可测变化。**收益证据仍然很小（3 条自造用例）**，下一步是所有者手写更大的对比集，并把两步共现/子词回退补上 |
+| **P3.5** ✅ | **默认方案（开箱即用）** | `schemes/qingjian-default`：自有方案 YAML + **41 万条**词库 + OpenCC 数据装载 | ✅ 装上就能打字（实测：`qingjian --scheme-dir schemes/qingjian-default nihao` → 你好）；**内核里没有任何它的痕迹**（门禁守） |
+| **P4a** ✅ | 用户记忆：频率 + 时间衰减 | `qingjian-memory`（**自写紧凑 KV**，零依赖 + 内存缓存）+ 引擎侧 `Services` 注入 + CLI `--userdb` | ✅ 打过的词下次优先（端到端：同码两个词，选中 4 次后反超）；✅ **用户记忆的按键路径零磁盘 I/O**（`/proc/self/io` 的 `syscr`/`syscw` 与字节数在 1000 次按键后一个都没涨；**注意这是记忆路径的性质，词库查询 `TableLexicon` 仍用 `read_at`**）；✅ 重启后还在；✅ 内存增量实测 3 万条 +5.8 MiB（真实词库 + 记忆 = 17.8 MiB < 30 MB）；✅ 坏文件降级成"没有记忆"+ 一行警告（D26） |
+| **P4b** ✅ | **本地下一词预测**（`Lane::Predict`） | `qingjian-memory` 的**预测表**（bigram + trigram，键 = **上下文**）+ 流水线插入 + CLI `--predict`（**默认关**） | ✅ 对比集 `tools/predict/collocations.tsv`（15 条常见搭配）**端到端全过**：学过之后期望词是预测通道的**第 1 位**（`cargo test -p qingjian-memory --test predict_next`）；✅ 内存增量实测约 **4.0 MiB**（默认 20 000 条 × ≈210 B/条）< 5 MB；✅ 按键延迟与无预测**无可测差异**（P50 约 48 µs / P99 约 104 µs，真实词库）；✅ **用户记忆与预测的按键路径零磁盘 I/O**（`/proc/self/io` 那条测试已扩展到预测；词库查询仍走 `read_at`）；神经模型**撞红线，暂缓**。执行书见 `docs/HANDOFF.md` §7.7 |
+| **P5** | 向量偏好重排（**第一版已落地，默认关**） | `qingjian-embed` + 量化 | **可行性评审 + 第一版**（2026-09）：`docs/embed-design.md`（执行书与实测）、`docs/p5-vector-feasibility.md`（评审）。**本地、无模型、零依赖**：把用户本地历史里的 `(上下文 → 下一个词)` 计数投影成 `i16` 向量，在 `Lane::Input` 上加有界偏好分（前 3 名、≤4000 毫对数）。**默认关闭**（D46 第①条）。实测：对比集 3/3（基线 1/3，无回归）、向量表 **2.44 MiB @ 4 万词**、装载峰值约 +9 MiB、按键延迟无可测变化。**收益证据仍然很小（3 条自造用例）**，下一步是所有者手写更大的对比集，并把两步共现/子词回退补上 |
 | **P6** | Windows 前端 | 引擎独立进程 + TSF 组件 | Windows 真机可打字 |
 | **P7** | Android 前端 | `InputMethodService` + JNI | 真机可打字；内存达标 |
 | **P8** | 设置与人性化 | 设置界面 | 关键功能一键可达 |
-| *可选* | librime 兼容层 | `stele-rime` | 仅作行为对照，不做发布依赖 |
+| *可选* | librime 兼容层 | `qingjian-rime` | 仅作行为对照，不做发布依赖 |
 
 **说明**
 
@@ -255,7 +258,7 @@ stele/
 //!
 //! 中文职责：把连续拼音串切成合法音节序列，是候选生成的第一步。
 //! English role: split a continuous pinyin string into valid syllables.
-//! 架构位置：stele-engine 管线 input -> segment -> translate -> filter。
+//! 架构位置：qingjian-engine 管线 input -> segment -> translate -> filter。
 ~~~~
 
 ### 4.3 公开 API 文档模板
@@ -276,7 +279,7 @@ stele/
 /// 遇到非拼音字符或无法切分时返回 `SegmentError`。
 ///
 /// # Examples / 示例
-/// 见 crates/stele-engine/tests/segment.rs。
+/// 见 crates/qingjian-engine/tests/segment.rs。
 ~~~~
 
 > **章节标题必须用英文规范名**（`# Arguments` / `# Returns` / `# Errors` / `# Examples`），
@@ -309,7 +312,7 @@ stele/
 ### 4.8 工具强制（v2 新增）
 
 - `rustfmt.toml`：统一格式；CI 检查 `cargo fmt --check`。
-- Clippy：CI 上 `cargo clippy -- -D warnings`；`stele-core` 强制 `missing_docs`。
+- Clippy：CI 上 `cargo clippy -- -D warnings`；`qingjian-core` 强制 `missing_docs`。
 - `rust-toolchain.toml`：固定 toolchain 版本（见 §7）。
 - CI 矩阵：至少覆盖 `linux`，并对 `windows` / `android` 目标做 `cargo check`。
 - **依赖许可审查（v2 补）**：D9 允许周边 crate 使用"受审依赖"，但**"受审"必须有机制**——CI 上加 `cargo-deny`（或 `cargo-license`），对新增依赖做许可证白名单与重复依赖检查。否则 D9 只是一句自我声明。
@@ -341,7 +344,7 @@ stele/
 7. **可替换**：外部资源通过 trait 注入。
 8. **文档**：每个 crate 有 README；公开 API 按 §4 注释。
 9. **零件可裁剪**：不使用的功能不应被编入二进制（D17）。
-10. **通用性**：`stele-core` / `stele-engine` 内不得出现输入法专属知识（D20）。命名检查 + 依赖检查 + 仓颉方案测试。
+10. **通用性**：`qingjian-core` / `qingjian-engine` 内不得出现输入法专属知识（D20）。命名检查 + 依赖检查 + 仓颉方案测试。
 11. **内核与方案分离**：内核提供机制，方案提供个性（D24）。**判定规则：数据能描述的选择属于方案；需要新控制流的属于内核。** 内核的边界是诚实的——加第五类扩展点、加服务接口、加改写运算，都要改内核。
 12. **能力闭环（设计清单，不是闸门）**：
     - 新增一个能力时，**顺手**回答三个角色：**接口是什么（定义）/ 谁实现（提供者）/ 谁消费（消费者）**。
@@ -364,15 +367,15 @@ stele/
 - **G9 `Source` 是有损建模**：RIME 的拼写属性（模糊/缩略/纠错/补全）是**可叠加的位集**，而我们的 `Source` 是单选题。必须拆成 `SpellingAttr`（位集）+ `Origin`（单值）。
 - ~~**G10 用户词主键必须是规范编码**~~ **✅ P4a 已处置（D42）**：RIME 警告——用简拼/异拼/拼错的编码存进用户词典，会变成**永远检索不到的无效数据**，症状是"学过的词有时出现有时不出现"，极难排查。
   **处置与上游一致**：键就是**规范编码**。区别只在"谁来算"——RIME 在翻译器里查用户词典，我们把编码渲染成键**挂在候选上**，一路带到 `Commit` 与 `Event`。于是没有任何一层需要反查，而"写进去的键一定查得回来"是恒等式。
-  **跨拼法共享因此也回来了**：用户用 `nhao` 学的词，敲 `nihao` 时照样优先（端到端断言 + CLI 演示都在 HANDOFF §4）。这条不变式进了 `stele --check` 的第 8 组。
+  **跨拼法共享因此也回来了**：用户用 `nhao` 学的词，敲 `nihao` 时照样优先（端到端断言 + CLI 演示都在 HANDOFF §4）。这条不变式进了 `qingjian --check` 的第 8 组。
 - **G11 `MemoryStore` 缺 `forget`**：用户需要能**取消一次学习**（RIME：从词库删词只取消调频效果）。
 - **G12 猜测候选要在 UI 上有标记**：RIME 对生成型候选打 ☯ 并提示用户确认。这既是安全阀，也让"精确优先"对用户可见。
 - **G13 并击/时序类输入法**（RIME 的 `chord_composer`）：需要按键聚合与"单键 vs 和弦"的时序判定。我们的 `Key` 假设了字符键，**和弦不是字符**。P1 不做，但接口要留门。
 - **G14 拼写运算的语义细节**：每个算子只跑一次不做不动点迭代；`erase` 是全匹配、其余是全局替换；`xlit` 唯一按 UTF-32 处理；分隔符是单个 ASCII 字符且参数内不能转义；**算子顺序即语义**。
 - **方案切换（G2 的连带问题）**：`SchemaCatalog` + 会话内切换的具体 API；多方案的内存预算与 LRU 淘汰策略（D29）。
 - **配置数值的域**：RIME 的 `initial_quality: 1.2` 是加到**线性计数**上的（`exp(weight) + initial_quality`），而我们的 `score` 是定点对数域。方案配置里的数字按哪个域解释、在何处换算，必须先定。
-  **P4a 的部分答案**：用户记忆的加成**只在更新时换算一次、存下来的永远是定点 `Score`**，而且用的是**全整数**的曲线（`stele-memory/src/decay.rs`），所以连"更新时用浮点"都不需要。方案里其它配置数字（`initial_quality` 一类）仍未定。
-- ~~**简拼的收益/成本**~~ **✅ P4a 已有实测数据**：拼音 / 真实词库下**每次按键的词典查询次数 P50 19、P99 64、max 64（平均 33.2）**。用 `stele-bench --scheme-dir schemes/stele-default --schema=pinyin --count-queries` 复现。**读法**：这是变体拼写的**成本**——每多一条拼写展开就多一次查表；而"收益"（少敲几个键）是使用者自己能感觉到的。
+  **P4a 的部分答案**：用户记忆的加成**只在更新时换算一次、存下来的永远是定点 `Score`**，而且用的是**全整数**的曲线（`qingjian-memory/src/decay.rs`），所以连"更新时用浮点"都不需要。方案里其它配置数字（`initial_quality` 一类）仍未定。
+- ~~**简拼的收益/成本**~~ **✅ P4a 已有实测数据**：拼音 / 真实词库下**每次按键的词典查询次数 P50 19、P99 64、max 64（平均 33.2）**。用 `qingjian-bench --scheme-dir schemes/qingjian-default --schema=pinyin --count-queries` 复现。**读法**：这是变体拼写的**成本**——每多一条拼写展开就多一次查表；而"收益"（少敲几个键）是使用者自己能感觉到的。
 - ~~用户词库的并发模型~~ **✅ P4a 已定并实测**：`MemoryStore` 的方法都是 `&self`，实现里用 `RwLock`（查走读锁、写走写锁），中毒一律 `into_inner` 继续（D26：输入法的失败是自锁的）。**实测**：挂上 3 万条记忆之后按键 P50 只涨 1–2 µs，因此**不需要**"每会话一份只读快照"那类无锁读法（HANDOFF §7.6.2 第 3 步留的退路没有动用）。
 - 声调：rime-ice 全库无调（`nve` / `lve` / `ju` / `qu` 写法），是否需要预留？
 - 零件自描述配置的具体格式；简繁转换数据来源；模糊音/纠错数据来源。
@@ -388,7 +391,7 @@ stele/
 | 项 | 状态 |
 | --- | --- |
 | 系统 | WSL2，内核 `6.18.33.2-microsoft-standard-WSL2`，x86_64 |
-| 仓库路径 | `/home/brennmond/projects/stele`（ext4 ✅，**不要**放 `/mnt/c/...`） |
+| 仓库路径 | `/home/brennmond/projects/qingjian`（ext4 ✅，**不要**放 `/mnt/c/...`） |
 | git | 2.53.0 已装，**尚未 `git init`** |
 | Rust | rustc / cargo **1.98.1，来自 Homebrew**（`/home/linuxbrew`），**没有 rustup** |
 | 磁盘占用 | 项目本体约 100 KB |
@@ -418,11 +421,11 @@ rustc --version && cargo --version
 
 | 交付物 | 状态 |
 | --- | --- |
-| workspace（`stele-core` / `stele-cli` / `stele-bench`） | ✅ |
+| workspace（`qingjian-core` / `qingjian-cli` / `qingjian-bench`） | ✅ |
 | `cargo build` / `cargo test` / `cargo fmt --check` / `cargo clippy` | ✅ 全绿（35 单测 + 7 集成测试 + 2 文档测试） |
-| `stele-core` 全部核心类型与 trait（按 `docs/engine-design.md`） | ✅ |
-| 称重台 `stele-bench`（延迟分位数 / RSS / 启动，支持 `--json`） | ✅ 已跑出第一组基线 |
-| CLI `stele`（`--check` 内核自检 / `--dump-config` 明确报未实现） | ✅ |
+| `qingjian-core` 全部核心类型与 trait（按 `docs/engine-design.md`） | ✅ |
+| 称重台 `qingjian-bench`（延迟分位数 / RSS / 启动，支持 `--json`） | ✅ 已跑出第一组基线 |
+| CLI `qingjian`（`--check` 内核自检 / `--dump-config` 明确报未实现） | ✅ |
 | 三条 CI 门禁脚本 | ✅ **并已反向验证能抓住故意违规**（P4a 增至四条：多了依赖许可审查） |
 | `rust-toolchain.toml` / `rustfmt.toml` / `.gitignore` / 双许可证 / README / CI workflow | ✅ |
 
@@ -439,9 +442,9 @@ rustc --version && cargo --version
 
 | 验收项 | 结果 |
 | --- | --- |
-| 拼音方案：`stele nihao` → 「你好」 | ✅ |
-| 拼音方案：`stele nh` → 「你好」（变体拼写） | ✅ 且分数更低、属性标为 `ABBREV` |
-| **精确编码方案**：`stele --schema shape-demo ab` → 「十」 | ✅ **同一个引擎**（D33 的通用性验收） |
+| 拼音方案：`qingjian nihao` → 「你好」 | ✅ |
+| 拼音方案：`qingjian nh` → 「你好」（变体拼写） | ✅ 且分数更低、属性标为 `ABBREV` |
+| **精确编码方案**：`qingjian --schema shape-demo ab` → 「十」 | ✅ **同一个引擎**（D33 的通用性验收） |
 | 测试覆盖 | ✅ **99 个**（含 16 个方案级端到端集成测试） |
 | §0.2 指标首次实测 | ✅ 见下表 |
 
@@ -464,9 +467,9 @@ rustc --version && cargo --version
    于是"只写一条缩写规则"会导致**连规范拼写都查不到**。RIME 的代数里
    `Sa = (A → A)` 是**基线**，规则只在其上派生。已改为"规范拼写永远在内"。
 2. **CI 门禁抓住了我自己的架构违规。** `verify-no-ime-vocab.sh` 报出
-   `crates/stele-engine/src/builtin.rs` 里有 `pinyin_scheme` ——
+   `crates/qingjian-engine/src/builtin.rs` 里有 `pinyin_scheme` ——
    **方案数据被放进了内核 crate**，正是 D24 要禁止的。已抽出独立 crate
-   `stele-schemes-builtin`。**这条门禁第一次运行就证明了自己有用。**
+   `qingjian-schemes-builtin`。**这条门禁第一次运行就证明了自己有用。**
 3. **`Event::Learned` 缺 `attr`。** 没有它，G10（落库前把编码规范化）**无法实现**——
    接收方无从知道该不该换算。已补。
 4. **组件 trait 必须 `Send`。** 流水线整体要能被搬到别的线程（TSF 组件跑在
@@ -479,15 +482,15 @@ rustc --version && cargo --version
 
 ### P2 已完成（实建记录）
 
-**验收标准达成**：`stele --scheme-dir <目录>` **能加载自建的方案与词库并正常出候选**，
+**验收标准达成**：`qingjian --scheme-dir <目录>` **能加载自建的方案与词库并正常出候选**，
 且**不需要重新编译**。
 
 ```bash
-$ stele --scheme-dir /tmp/myscheme --list
+$ qingjian --scheme-dir /tmp/myscheme --list
 demo           我的方案                       family=-
-$ stele --scheme-dir /tmp/myscheme mami
+$ qingjian --scheme-dir /tmp/myscheme mami
 猫咪
-$ stele --scheme-dir /tmp/myscheme mm      # 缩写规则同样生效
+$ qingjian --scheme-dir /tmp/myscheme mm      # 缩写规则同样生效
 猫咪
 ```
 
@@ -495,13 +498,13 @@ $ stele --scheme-dir /tmp/myscheme mm      # 缩写规则同样生效
 
 | crate | 职责 | 依赖 |
 | --- | --- | --- |
-| `stele-config` | YAML 子集解析、`$ref` 跨文件引用、分层补丁、可读诊断 | 仅 `stele-core` |
-| `stele-dict` | `.dict.yaml`（YAML 头部 + TSV 正文 + `import_tables`） | `stele-config` |
-| `stele-schemes` | 方案装载；内嵌默认方案；目录装载 | 三者 + `stele-engine` |
+| `qingjian-config` | YAML 子集解析、`$ref` 跨文件引用、分层补丁、可读诊断 | 仅 `qingjian-core` |
+| `qingjian-dict` | `.dict.yaml`（YAML 头部 + TSV 正文 + `import_tables`） | `qingjian-config` |
+| `qingjian-schemes` | 方案装载；内嵌默认方案；目录装载 | 三者 + `qingjian-engine` |
 
-**新增数据资产**：`schemes/stele-default/`（`pinyin` / `shape` 两份方案 + 三份词库）。
+**新增数据资产**：`schemes/qingjian-default/`（`pinyin` / `shape` 两份方案 + 三份词库）。
 它们通过 `include_str!` **内嵌**，因此"文件是真身、二进制里是同一份"——
-**单一数据来源**；而且 `stele` 每次启动走的都是**真正的解析器**，
+**单一数据来源**；而且 `qingjian` 每次启动走的都是**真正的解析器**，
 不是一条"只有测试才会走"的旁路。**旁路从来不坏，也从来不证明什么。**
 
 **P2 过程中发现的问题**
@@ -539,7 +542,7 @@ $ stele --scheme-dir /tmp/myscheme mm      # 缩写规则同样生效
 RIME 自己的部署峰值实测是 780 MB – 1 GB。
 **不换实现，我们恰好复现了它最糟糕的那个问题——而"内存比 RIME 小"正是这个项目存在的理由。**
 
-**新增 crate**：`stele-table`——紧凑二进制格式 + 流式编译器 + 按需分页的 `TableLexicon`。
+**新增 crate**：`qingjian-table`——紧凑二进制格式 + 流式编译器 + 按需分页的 `TableLexicon`。
 
 **关于"mmap"的一处实现选择**：`std` 里没有 mmap，用它要引入 `memmap2`
 （项目第一个第三方依赖）或写 `unsafe`。我们改用**索引常驻 + 词条按需
@@ -600,7 +603,7 @@ speller:
 | `zang` | 张 | `derive` 从 `zhang` 派生 |
 | `hm` | 落兜底 | `erase` 消除 |
 
-**正则引擎是自写的**（`stele-engine/src/regex.rs`，16 个测试）：
+**正则引擎是自写的**（`qingjian-engine/src/regex.rs`，16 个测试）：
 支持字面量、`.`、字符类与范围、`\d\w\s`、捕获组、选择、`* + ? {n,m}`、锚点。
 **不支持的语法（非贪婪、反向引用、环视）一律报错并指出替代写法**，
 而不是"大概能跑"。
@@ -625,10 +628,10 @@ speller:
 | **与 librime 的对照** | `tools/compare-librime.py` + `tools/librime-probe/`（无 `librime-dev` 时用 `rime_get_api()` 函数表驱动） | **6 条结构用例全过**，报告见 `tools/librime-probe/samples/compare-report.md` |
 | **按键语义对齐** | `send` 从链头重派发 + 重入标志、动作选择链、`set_option`/`unset_option`、12 个编辑器动作 + `noop`、`when: predicting` | 每条都有"只在正确实现下才通过"的测试 |
 
-**零件覆盖报告的读法**（`stele --components`）：剩下的 2 个是
+**零件覆盖报告的读法**（`qingjian --components`）：剩下的 2 个是
 `simplifier@emoji` 与 `simplifier@traditionalize`，缺的是 **OpenCC 的数据文件**
 （emoji.json / s2t.json），而机制已经实现并可用内联表验证——
-`crates/stele-schemes/tests/schemes/p3features.schema.yaml` 的 `fanti` 段就是。
+`crates/qingjian-schemes/tests/schemes/p3features.schema.yaml` 的 `fanti` 段就是。
 
 **"跑通 `no_lua_schema`"这句话现在的准确状态**：
 
@@ -660,7 +663,7 @@ speller:
 `tools/compare-librime.py` 跑第一次就发现：默认拼音方案**没有声明
 `punctuator`**，于是 `,` 什么都打不出来，而 librime 出「，」。
 修法不是特判，而是给默认方案补上 RIME 形状的 `engine:` 零件清单，
-并给引擎加了**预设**机制（`import_preset`，见 `stele_engine::presets`）。
+并给引擎加了**预设**机制（`import_preset`，见 `qingjian_engine::presets`）。
 
 ### 性能（改动之后实测，release）
 
@@ -677,7 +680,7 @@ speller:
 再加"没有认领时整串一段"的快速路径，落到 542 ns；
 阶段 A 又加了 10 个内联零件之后是 601 ns。
 
-`stele-bench` 因此多了 `--schema=`：**延迟数字必须注明测的是哪个方案**
+`qingjian-bench` 因此多了 `--schema=`：**延迟数字必须注明测的是哪个方案**
 （零件数差别很大，180 ns 与 601 ns 是同一套代码）。
 
 ### 阶段 A：把 rime-ice 的 Lua 插件重写成原生零件（10/10，已装配）
@@ -703,9 +706,9 @@ speller:
 > **装配状态（2026-09 补齐）**：这 10 个零件**曾经只有实现、没有装配**——
 > 注册表标着"已实现"，而 `LoadedSchema::build_pipeline` 里一次都没引用过它们
 > （详见 `docs/HANDOFF.md` §5 第 36 条）。现在 **10/10 全部装配**，配置可读，
-> 端到端断言在 `crates/stele-schemes/tests/inline_components.rs`。
+> 端到端断言在 `crates/qingjian-schemes/tests/inline_components.rs`。
 > 判断"某个零件名有没有装配分支"的可执行答案是
-> `stele_engine::scheme::assembles(name)`，且有一条测试守着它与实现不漂移。
+> `qingjian_engine::scheme::assembles(name)`，且有一条测试守着它与实现不漂移。
 
 **余下 4 个都已被归类（不是"没做完"）**：
 
@@ -766,7 +769,7 @@ tools/oracle/<零件>/
 
 **P0 必须交付**
 
-1. `stele-bench` 能测量并输出：
+1. `qingjian-bench` 能测量并输出：
    - 按键延迟分布（P50 / P95 / P99 / max），输入序列可配置
    - 常驻内存（RSS）
    - 冷启动耗时
@@ -797,7 +800,7 @@ tools/oracle/<零件>/
 > **常驻内存的 19–20 MiB 是一个被低估的数**：引擎装载那一段会留下一大片
 > 已驻留的空闲堆，前两万条记录直接把它填满，RSS 一动不动。权威的单条成本
 > 只能用"突破默认上限量斜率"得到：
-> `stele-bench --scheme-dir schemes/stele-default --schema=pinyin --userdb /tmp/m.mem --predict-cap=300000 --seed-predict=N`
+> `qingjian-bench --scheme-dir schemes/qingjian-default --schema=pinyin --userdb /tmp/m.mem --predict-cap=300000 --seed-predict=N`
 > 给出 **≈188 字节/条（10 万条）/ ≈211 字节/条（20 万条）**，
 > 因此默认上限 20 000 条 ≈ **4.0 MiB**（P4b 的验收是 < 5 MB）。
 > 这个方法上的坑记在 HANDOFF §5 第 44 条。
@@ -806,11 +809,11 @@ tools/oracle/<零件>/
 > 之内（三次重复测量的区间：无记忆 48.6–50.0 µs，有记忆 49.2–51.1 µs），
 > 常驻从 13.6 MiB 涨到 **17.8 MiB**——都在红线的三分之一以内。
 > 上限取 **30 000 条**是实测反推的：计划里建议的 100 000 条要 +18.2 MiB，
-> 叠上词库会**越过 30 MB**（见 `stele_memory::DEFAULT_CAPACITY` 的文档）。
+> 叠上词库会**越过 30 MB**（见 `qingjian_memory::DEFAULT_CAPACITY` 的文档）。
 >
 > **每键词典查询次数**（PLAN §6 那条一直没答的问题）：拼音 / 真实词库下
 > **P50 19、P99 64、max 64，平均 33.2**。用
-> `stele-bench --scheme-dir … --schema=pinyin --count-queries` 复现。
+> `qingjian-bench --scheme-dir … --schema=pinyin --count-queries` 复现。
 > 这个数字是**变体拼写的成本**：每多一条拼写展开就多一次查表。
 
 > **这两行的差距（601 ns vs 50 µs）全部来自词库大小**：演示词库几十条，
@@ -863,7 +866,7 @@ tools/oracle/<零件>/
 
 上面讲的是"不分发什么"。**实际随仓库分发的第三方内容是这些**：
 
-1. `schemes/stele-default/cn_dicts/generated.dict.yaml` —— 41 万条，
+1. `schemes/qingjian-default/cn_dicts/generated.dict.yaml` —— 41 万条，
    由 pinyin-data / THUOCL / jieba（MIT）与 OpenCC `TSCharacters.txt`
    （Apache-2.0）生成；`pinyin.schema.yaml` 的 `speller.alphabet` 段同源。
 2. `tools/librime-probe/probe.c` —— 含逐字段抄自 librime（BSD-3-Clause）的
@@ -880,7 +883,7 @@ tools/oracle/<零件>/
 
 **P3.5 定下的三条边界**（与项目所有者共同确认，2026-09）
 
-1. **Stele 保持 MIT / Apache-2.0**。内核、零件、默认方案的数据都是自有代码。
+1. **Qingjian 保持 MIT / Apache-2.0**。内核、零件、默认方案的数据都是自有代码。
 2. **不复制 rime-ice 的 Lua 实现**。它的**行为**（用户看到什么）可以对齐，
    **代码**不搬——因此插件全部按行为重写（阶段 A）。
    这也顺带避开一个更细的坑：那些脚本带着 Lua 的痕迹
@@ -912,7 +915,7 @@ tools/oracle/<零件>/
 **修订**
 - **D5**：从"直接使用雾凇词库数据"改为"格式兼容 + 数据自建 / 用户自备"（许可原因，见 §10）。
 - **D7**：向量的优先级下调到频率与上下文之后，并增加内存评审门槛（D19）。
-- **D9**：零依赖范围限定为 `stele-core` / `stele-engine`。
+- **D9**：零依赖范围限定为 `qingjian-core` / `qingjian-engine`。
 - **D6**：复刻范围收敛为 `others/no_lua_schema`（无 Lua 的雾凇）。
 - **D14**：从"简拼归属切分器"精化为"变体拼写的**声明**属于方案数据、**编译**属于通用编译器、**运行**属于通用切分器"；引擎内不得出现拼音词汇。
 
@@ -931,7 +934,7 @@ tools/oracle/<零件>/
 
 - 新增 **D24 内核与方案分离**、**D25 方案分层组合与按条目 id 补丁**。
 - 新增 §5.11 / §5.12 两条铁律（内核与方案分离、能力闭环清单）。
-- 路线图新增 **P3.5 默认方案**：雾凇只是**行为参照**，默认方案是**自有资产**（`schemes/stele-default/`），内核里不留它的痕迹。
+- 路线图新增 **P3.5 默认方案**：雾凇只是**行为参照**，默认方案是**自有资产**（`schemes/qingjian-default/`），内核里不留它的痕迹。
 - `docs/engine-design.md` 新增 §2.5（完整分界表 + "我要加个功能该放哪"决策地图）、§6.1–6.3（三层能力模型、按条目 id 补丁、注册可撤销）。
 - **修正一处同类错误**：`Query` 里曾有一个 `lexicon` 字段——**那是"单个词库"的假设被焊进内核**，而雾凇一个方案挂了 4 个以上词库。已改为**服务在组件构造时注入**。
 - **补齐一个缺失的扩展点类别**：`Formatter`（RIME 有 `formatter.h`，v2 初稿漏了它，导致"方案里怎么配置显示格式"在设计里无处安放）。
@@ -948,12 +951,12 @@ tools/oracle/<零件>/
 ### 第六轮修订（逐行对比 RIME 官方设计文档之后）
 
 - 读了 RIME 作者的全部设计文档（25 页，存档于 `.rime-wiki/`），产出 4 份逐行引用的对比报告。
-- **结论**：Stele 的 D20/D24 **不是新发明，而是 RIME 2009 年的原始设计**（作者原话：「輸入引擎是跨輸入法的通用程序，輸入方案／schema 即是那差異的部份」「爲了避免知道得太多，這引擎的內部構造必須精巧」）。librime 在十几年演进中偏离了它；**我们在把它拉回来**。
+- **结论**：Qingjian 的 D20/D24 **不是新发明，而是 RIME 2009 年的原始设计**（作者原话：「輸入引擎是跨輸入法的通用程序，輸入方案／schema 即是那差異的部份」「爲了避免知道得太多，這引擎的內部構造必須精巧」）。librime 在十几年演进中偏离了它；**我们在把它拉回来**。
 - **发现并补齐 14 个我方缺口（G1–G14）**：跨文件节点复用、拼写层与词库层分离、翻译器的 tag 绑定、原样上屏兜底、`Source` 有损建模、用户词主键必须是规范编码、取消学习、UI 猜测标记、并击时序预留、拼写运算语义细节等。详见 `docs/engine-design.md` §13–§14。
 - **最有价值的三个发现**：
   1. **`Source` 是有损的**——RIME 的拼写属性（模糊/缩略）是**可叠加的位集**，单选题表达不了。已拆为 `Origin` + `SpellingAttr`。
   2. **用户词主键必须是规范编码**——否则会变成"永远检索不到的无效数据"，症状是"学过的词有时出现有时不出现"。
-  3. **RIME 的官方文档没有把隐私与离线写成承诺**——文档 NOT FOUND，且作者早期计划里出现「添加網絡功能」。**这是 Stele 可以立自己旗帜的地方**，已提升为 §0.1 的第三根支柱。**但不能由此推断"Rime 不隐私/会联网"**：librime 是 BSD-3-Clause，是否联网取决于前端、部署、插件与配置（审计 §3.1）。
+  3. **RIME 的官方文档没有把隐私与离线写成承诺**——文档 NOT FOUND，且作者早期计划里出现「添加網絡功能」。**这是 Qingjian 可以立自己旗帜的地方**，已提升为 §0.1 的第三根支柱。**但不能由此推断"Rime 不隐私/会联网"**：librime 是 BSD-3-Clause，是否联网取决于前端、部署、插件与配置（审计 §3.1）。
 - **重写风险审计**（§14.2）又发现并修掉 4 个地基问题：`Engine` 与方案目录的角色冲突、缺 `switch_schema`、缺 `tick` 时序预留、公开枚举不可扩展。
 - 新增 **D29 方案切换**、**D30 审计修正**、**D31 项目命名**。
 
@@ -966,7 +969,7 @@ tools/oracle/<零件>/
 
 ### 新增文件
 - `docs/engine-design.md`（引擎设计权威定义）
-- `schemes/stele-default/`（默认方案资产，见 P3.5）
+- `schemes/qingjian-default/`（默认方案资产，见 P3.5）
 - `reference/`（调研资料：librime 内部机制、rime-ice、前端对接、RIME 官方 wiki 备份）
 
 ### 过程记录

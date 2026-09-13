@@ -2,7 +2,7 @@
 
 这里放的是**上游函数实际跑出来的输出存档**（`*.expected.txt`），
 以及用 `luajit` 重新生成它们的**配方**（上游 URL + 固定 revision）。
-用途只有一个：给 stele 的 Rust 重写一个**可复核**的判据——
+用途只有一个：给 qingjian 的 Rust 重写一个**可复核**的判据——
 "我们与上游一致"这句话必须能被重新跑一遍，而不是靠记忆。
 
 ## 为什么需要它
@@ -31,13 +31,13 @@ GPL（PLAN §10 已经把这条规则写清楚了）——**所以源码被移�
 只留下测试真正依赖的输出存档。
 
 保留 `.expected.txt` 是安全的：它是"跑出来的结果"，不是代码；
-`crates/stele-engine/tests/{number_oracle,calc_oracle}.rs` 读的也只有它。
+`crates/qingjian-engine/tests/{number_oracle,calc_oracle}.rs` 读的也只有它。
 
 ## 怎么用
 
 ```bash
 # 跑对照测试（只需要 .expected.txt，不需要任何 .lua）
-cargo test -p stele-engine --test number_oracle --test calc_oracle
+cargo test -p qingjian-engine --test number_oracle --test calc_oracle
 
 # 想重新生成对照数据（需要 luajit；**在你自己的机器上做，不要提交**）：
 #   ① 取回上游那两份 Lua（固定 revision，落在 gitignore 的 .work/ 下）

@@ -13,7 +13,7 @@
 #       留出用例：先把前面的词上屏（建立上下文），再敲最后一个编码，
 #       然后看"期望词"排在第几位。
 #
-# 断言（crates/stele-embed/tests/context_cases.rs）：
+# 断言（crates/qingjian-embed/tests/context_cases.rs）：
 #   · **基线**（只有词库权重 + P4a）在"上下文该说话"的用例上是错的；
 #   · **加上向量重排**之后，全部用例期望词排第 1；
 #   · 而且**不许有净损失**——基线本来对的用例，加了向量仍然是第 1。
@@ -22,7 +22,7 @@
 # 于是基线必然选错。这不是为了让向量赢，而是为了让"上下文"成为唯一的判别依据：
 # 如果向量没学到上下文，它同样会选错。
 #
-# 跑：cargo test -p stele-embed --test context_cases
+# 跑：cargo test -p qingjian-embed --test context_cases
 
 history	jin tian	今天	tian qi	天气
 history	jin tian	今天	tian qi	天气

@@ -4,7 +4,7 @@ Extracted from the primary source `.rime-wiki/RimeWithSchemata.md` by 佛振 (re
 
 ## 0. The author's framing
 
-RIME makes the same claim Stele does:
+RIME makes the same claim Qingjian does:
 
 > 「Rime 不是一種輸入法。是從各種常見鍵盤輸入法中提煉出來的抽象的輸入算法框架。因爲 Rime 涵蓋了大多數輸入法的「共性」，所以在不同的設定下，Rime 可化身爲不同的輸入法用來打字。」 `[S:64]`
 > ("Rime is not an input method. It is an abstract input-algorithm framework distilled from various common keyboard input methods. Because Rime covers the *commonality* of most input methods, under different settings Rime can become different input methods for typing.")

@@ -1,6 +1,6 @@
-# Stele-IME 部署源数据锁文件 —— **已跟踪的可复现输入**（阶段 4 / 审计 J2.2）
+# Qingjian IME 部署源数据锁文件 —— **已跟踪的可复现输入**（阶段 4 / 审计 J2.2）
 #
-# 这个文件**进仓库**，取回的数据**不进**（落在 `schemes/stele-default/build/`，
+# 这个文件**进仓库**，取回的数据**不进**（落在 `schemes/qingjian-default/build/`，
 # 被 `.gitignore` 排除）。它替换了旧方案里"只存在于 build/ 的
 # sources.lock"——那份文件是**输出**，克隆仓库的人看不到；
 # 这一份是**输入**，`tools/fetch-sources.sh` 以它为唯一权威清单。
@@ -10,7 +10,7 @@
 # 每行一条记录，字段用 `|` 分隔（上游 URL 中不含 `|`）。`#` 起是注释，
 # 空行忽略。
 #
-#   字段 1  目标路径（相对 `schemes/stele-default/build/`）
+#   字段 1  目标路径（相对 `schemes/qingjian-default/build/`）
 #   字段 2  下载 URL。**必须固定到 commit SHA 或 release asset**，
 #           不得出现 `main` / `master` / `latest` 这类浮动引用。
 #   字段 3  revision：commit SHA（release asset 时写 tag 名）
@@ -24,7 +24,7 @@
 # ── sha256 是怎么来的（不是猜的） ──────────────────────────────────────
 #
 # 本文件的全部 sha256 于 2026-09-13 按**字段 2 的 URL** 下载后实测；
-# 同时与仓库里已有的 `schemes/stele-default/build/` 副本核对，
+# 同时与仓库里已有的 `schemes/qingjian-default/build/` 副本核对，
 # 16 份**全部逐字节一致**。也就是说：这些哈希对应的正是字段 3 的 revision。
 # 复现命令见 `THIRD_PARTY_NOTICES.md` §6。
 #

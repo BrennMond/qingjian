@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 status=0
 
-CORE_DIRS=("$ROOT/crates/stele-core" "$ROOT/crates/stele-engine")
+CORE_DIRS=("$ROOT/crates/qingjian-core" "$ROOT/crates/qingjian-engine")
 
 # ── 1) 内核 crate 的源码目录下不得有数据文件 ──────────────────────────
 for dir in "${CORE_DIRS[@]}"; do

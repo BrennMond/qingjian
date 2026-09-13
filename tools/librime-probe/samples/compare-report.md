@@ -1,27 +1,27 @@
-# stele × librime 对照报告
+# qingjian × librime 对照报告
 
 | | |
 | --- | --- |
 | librime | 1.16.1 / `luna_pinyin`（`--reset` 冷启动基线） |
-| stele | `pinyin`（内嵌默认方案） |
+| qingjian | `pinyin`（内嵌默认方案） |
 | 比什么 | **结构**：能否上屏、按键是否被处理、切分边界 |
 | 不比什么 | 候选排序与分数——两边的词库与语言模型不同，比排序等于比词库 |
 
 ## `nihao` — full-spelling
 
-- ✓ 都上屏（librime='你好' stele='你好'）
+- ✓ 都上屏（librime='你好' qingjian='你好'）
 
 ## `ni` — single-unit
 
-- ✓ 都上屏（librime='你' stele='你'）
+- ✓ 都上屏（librime='你' qingjian='你'）
 
 ## `nh` — abbreviation
 
-- ✓ 都上屏（librime='你會' stele='你好'）
+- ✓ 都上屏（librime='你會' qingjian='你好'）
 
 ## `,` — punctuation
 
-- ✓ 都是全角标点（librime='，' stele='，'）
+- ✓ 都是全角标点（librime='，' qingjian='，'）
 
 ## `uUni` — prefix-not-configured
 

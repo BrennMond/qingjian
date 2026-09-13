@@ -1,7 +1,7 @@
-//! # wordlist-gen — 把干净来源的词表编成石经的 `.dict.yaml`
+//! # wordlist-gen — 把干净来源的词表编成青简的 `.dict.yaml`
 //!
 //! 中文职责：读「汉字→拼音」表与几份带词频的公开词表，编出一份
-//! `schemes/stele-default/` 能直接装载的词库，并**同步更新方案里的音节表**。
+//! `schemes/qingjian-default/` 能直接装载的词库，并**同步更新方案里的音节表**。
 //! English role: turn clean public word/pinyin sources into a `.dict.yaml`
 //! the default scheme can load, and keep the scheme's alphabet in sync.
 //!
@@ -10,7 +10,7 @@
 //!
 //! # 为什么需要它（P3.5）
 //!
-//! 在这之前 `schemes/stele-default` 只有 30 条演示词，于是
+//! 在这之前 `schemes/qingjian-default` 只有 30 条演示词，于是
 //! "装上就能打字"是空的、librime 对照只能比结构比不了排序（HANDOFF §4）。
 //! 而雾凇那 44 MB 词表**不进仓库**（授权混合，PLAN §10），因此默认词库必须
 //! 由**可分发来源**在部署期生成。这个工具就是那条路径。
@@ -47,8 +47,8 @@
 //! ```text
 //! bash tools/fetch-sources.sh
 //! cargo run --manifest-path tools/wordlist-gen/Cargo.toml -- \
-//!     --sources schemes/stele-default/build \
-//!     --out     schemes/stele-default
+//!     --sources schemes/qingjian-default/build \
+//!     --out     schemes/qingjian-default
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -80,8 +80,8 @@ fn usage() -> String {
     format!(
         "用法: wordlist-gen [选项]\n\
          \n\
-           --sources <目录>   源数据目录（默认 schemes/stele-default/build）\n\
-           --out <目录>       写到哪里（默认 schemes/stele-default）\n\
+           --sources <目录>   源数据目录（默认 schemes/qingjian-default/build）\n\
+           --out <目录>       写到哪里（默认 schemes/qingjian-default）\n\
            --max-per-source N 每份 THUOCL 词表最多取 N 条（按词频降序）\n\
            --max-chars N      单字最多收录 N 个（默认 {DEFAULT_MAX_CHARS}）\n\
            --traditional-chars <文件>\n\
@@ -95,8 +95,8 @@ fn usage() -> String {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
-        sources: PathBuf::from("schemes/stele-default/build"),
-        out: PathBuf::from("schemes/stele-default"),
+        sources: PathBuf::from("schemes/qingjian-default/build"),
+        out: PathBuf::from("schemes/qingjian-default"),
         max_per_source: None,
         max_chars: DEFAULT_MAX_CHARS,
         dry_run: false,
@@ -574,7 +574,7 @@ fn dict_header(policy: ReadingPolicy, entries: usize, sources: &[String]) -> Str
         }
     };
     let mut out = String::new();
-    out.push_str("# 石经・拼音 —— 默认词库（**生成产物，不要手改**）\n");
+    out.push_str("# 青简・拼音 —— 默认词库（**生成产物，不要手改**）\n");
     out.push_str("#\n");
     out.push_str("# 由 `tools/wordlist-gen` 从下列**授权明确**的来源生成：\n");
     for s in sources {
@@ -590,7 +590,7 @@ fn dict_header(policy: ReadingPolicy, entries: usize, sources: &[String]) -> Str
     out.push_str("# 重新生成：\n");
     out.push_str("#   bash tools/fetch-sources.sh\n");
     out.push_str("#   cargo run --manifest-path tools/wordlist-gen/Cargo.toml -- \\\n");
-    out.push_str("#       --sources schemes/stele-default/build --out schemes/stele-default\n");
+    out.push_str("#       --sources schemes/qingjian-default/build --out schemes/qingjian-default\n");
     out.push('\n');
     out.push_str("---\n");
     // **词表名与文件名要一致**：主词典用 `import_tables: [cn_dicts/generated]`
@@ -838,11 +838,11 @@ fn run() -> Result<(), String> {
     }
 
     // **自己校验一遍再落盘**：生成器与装载器用同一个解析器
-    // （`stele-dict`），于是"生成器写出来的东西装载器读不懂"这类错误
+    // （`qingjian-dict`），于是"生成器写出来的东西装载器读不懂"这类错误
     // 在生成期就暴露，而不是等到用户 `--scheme-dir` 的时候。
     // 第一版就翻过车：YAML 头部的一个缩进被续行吃掉，装载器报
     // 「同一层里混用了「键: 值」与「- 列表项」」。
-    let probe = stele_dict::parse_dict(&out, "generated.dict.yaml")
+    let probe = qingjian_dict::parse_dict(&out, "generated.dict.yaml")
         .map_err(|e| format!("生成器自己写出来的词库读不回去（这是生成器的 bug）：{e}"))?;
     eprintln!(
         "· 自检：产出的词库能被装载器解析（{} 条，头部 name={}）",
@@ -1038,7 +1038,7 @@ mod tests {
         // 去解析生成的头部，而不是拿眼睛看。
         let header = dict_header(ReadingPolicy::First, 1, &["测试来源".to_owned()]);
         let text = format!("{header}甲\tyi\t1\n");
-        let parsed = stele_dict::parse_dict(&text, "t.dict.yaml").unwrap();
+        let parsed = qingjian_dict::parse_dict(&text, "t.dict.yaml").unwrap();
         assert_eq!(parsed.header.name, "generated");
         assert!(parsed.header.import_tables.is_empty());
         assert_eq!(parsed.entries.len(), 1);

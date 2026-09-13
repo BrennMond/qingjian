@@ -18,7 +18,7 @@
 在 `Lane::Input` 的重排链上加一个有界的偏好分。
 
 ```bash
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --userdb /tmp/u.mem --embed --candidates=4 tianqi
 ```
 
@@ -88,7 +88,7 @@ score(上下文, w) = dot(s, v_w)
 **刻意把期望词的 P4a 次数压得比对手低**，于是基线必然选错——
 上下文成了唯一的判别依据。向量若没学到上下文，它同样会选错。
 
-### 3.1 实测（`cargo test -p stele-embed --test context_cases -- --nocapture`）
+### 3.1 实测（`cargo test -p qingjian-embed --test context_cases -- --nocapture`）
 
 | 用例 | 基线（权重 + P4a） | 加上向量 |
 | --- | --- | --- |
@@ -113,7 +113,7 @@ score(上下文, w) = dot(s, v_w)
 | 规模 | 常驻（式样） | 来源 |
 | --- | --- | --- |
 | 5 000 词 | **0.3 MiB** | 轻度用户 |
-| **40 000 词（实测）** | **2.44 MiB** | `stele-bench … --embed` 打印的 `2500 KiB` |
+| **40 000 词（实测）** | **2.44 MiB** | `qingjian-bench … --embed` 打印的 `2500 KiB` |
 | 50 000 词（上界） | 3.05 MiB | 外推（预测表到不了这个规模） |
 
 **装载峰值另算**：训练时还有一块 `V × dim × 4 字节` 的 `i32` 累加缓冲
@@ -173,18 +173,18 @@ score(上下文, w) = dot(s, v_w)
 
 ```bash
 # ① 单元与端到端（含 §3 的 A/B 对照，会打印每条用例的名次）
-cargo test -p stele-embed
-cargo test -p stele-embed --test context_cases -- --nocapture
+cargo test -p qingjian-embed
+cargo test -p qingjian-embed --test context_cases -- --nocapture
 
 # ② 内存与延迟（真实词库；先灌历史，再量）
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default --schema=pinyin \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default --schema=pinyin \
     --userdb /tmp/e.mem --seed-memory=30000
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default --schema=pinyin \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default --schema=pinyin \
     --userdb /tmp/e.mem --seed-predict=20000
-cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default --schema=pinyin \
+cargo run -p qingjian-bench --release -- --scheme-dir schemes/qingjian-default --schema=pinyin \
     --userdb /tmp/e.mem --embed          # 报告里会打出向量表的大小与加成上限
 
 # ③ 手工看效果（连续上屏建立上下文，再敲同码的另一个词）
-cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+cargo run -p qingjian-cli --release -- --scheme-dir schemes/qingjian-default \
     --userdb /tmp/u.mem --embed --candidates=4 tianqi
 ```

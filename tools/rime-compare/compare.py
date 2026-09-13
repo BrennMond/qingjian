@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""RIME × Stele 对比测试。
+"""RIME × Qingjian 对比测试。
 
 中文职责：以 **librime**（引擎）与 **plum**（方案/配方管理器）两个上游为准，
-把 Stele 与真实 RIME 放在同一套定义下对照，输出一份可复现的报告。
-English role: compare Stele against upstream RIME (librime runtime + plum recipe
+把 Qingjian 与真实 RIME 放在同一套定义下对照，输出一份可复现的报告。
+English role: compare Qingjian against upstream RIME (librime runtime + plum recipe
 ecosystem) under explicit, falsifiable definitions, and emit one report.
 
 # 四个维度（每个维度**先定义比什么**，再比）
 
 | 维度 | 对照对象 | 断言什么 | 出处 |
 | --- | --- | --- | --- |
-| **A 结构行为** | 真实 librime（系统运行库）vs stele | 能否上屏 / 按键是否被处理 / 全角标点 | `tools/compare-librime.py`（P3 的验收线，原样调用） |
+| **A 结构行为** | 真实 librime（系统运行库）vs qingjian | 能否上屏 / 按键是否被处理 / 全角标点 | `tools/compare-librime.py`（P3 的验收线，原样调用） |
 | **B 同一份词表下的排序** | 两边读**同一份** `.dict.yaml` | 同码候选必须都按词库权重降序；简拼都要命中 | 本目录 `fixtures/` |
-| **C 上游方案能否装载** | `/usr/share/rime-data`（plum preset 的部署产物） | 每个上游方案能否被 Stele 装载，不能的原因是哪一类 | librime 仓库 + plum preset |
-| **D 配方覆盖** | plum 的 `preset-packages.conf` / `extra-packages.conf` | 每个配方在这台机器上的部署情况与 Stele 的装载结果 | plum 仓库 |
+| **C 上游方案能否装载** | `/usr/share/rime-data`（plum preset 的部署产物） | 每个上游方案能否被 Qingjian 装载，不能的原因是哪一类 | librime 仓库 + plum preset |
+| **D 配方覆盖** | plum 的 `preset-packages.conf` / `extra-packages.conf` | 每个配方在这台机器上的部署情况与 Qingjian 的装载结果 | plum 仓库 |
 
 **B 是这次新增的核心**：`tools/compare-librime.py` 的报告里写着一句
 "要比排序，得先让两边吃同一份词表"。两侧读同一份词表之后，
@@ -36,7 +36,7 @@ ecosystem) under explicit, falsifiable definitions, and emit one report.
 
 # 用法
 
-    cargo build --release -p stele-cli
+    cargo build --release -p qingjian-cli
     cd tools/librime-probe && ./build.sh        # 一次性：编出 probe
     python3 tools/rime-compare/compare.py       # 写报告 + 打印摘要
     python3 tools/rime-compare/compare.py --skip-structural   # 跳过 A（较慢）
@@ -67,12 +67,12 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 DEFAULT_PROBE = ROOT / "tools" / "librime-probe" / "probe"
-DEFAULT_STELE = ROOT / "target" / "release" / "stele"
+DEFAULT_QINGJIAN = ROOT / "target" / "release" / "qingjian"
 DEFAULT_RIME_DATA = Path("/usr/share/rime-data")
 DEFAULT_PLUM = ROOT / ".work" / "upstream" / "plum"
 DEFAULT_WORK = ROOT / ".work" / "rime-compare"
 
-SCHEMA_ID = "stele-cmp"
+SCHEMA_ID = "qingjian-cmp"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 用例集
@@ -97,7 +97,7 @@ ABBREV_CASES: list[tuple[str, str]] = [
 ]
 
 # 分歧观察用例：只记录，不断言。
-# 这些输入**故意**让 RIME 与 Stele 的模型分叉（前缀匹配 / 造句），
+# 这些输入**故意**让 RIME 与 Qingjian 的模型分叉（前缀匹配 / 造句），
 # 用来把差异摆到报告里。`机制` 一列写清 librime 是靠哪条通路做到的。
 DIVERGENCE_CASES: list[tuple[str, str, str]] = [
     ("niha", "末音节只打了一半（`ha` 是 `hao` 的前缀）", "predictive 查询（`Prism::ExpandSearch`）"),
@@ -111,7 +111,7 @@ DIVERGENCE_CASES: list[tuple[str, str, str]] = [
 MATRIX_INPUT = "niha"
 MATRIX_EXPECTED = "你好"
 # 对照输入：`nih` 是**能整串消费**的缩写（`ni` + `h`）。两边都该命中——
-# 它用来排除"stele 没有缩写"这个误判：stele 的缩写是活的，
+# 它用来排除"qingjian 没有缩写"这个误判：qingjian 的缩写是活的，
 # 它缺的是"允许切分图只覆盖前缀"。
 MATRIX_CONTROL = "nih"
 
@@ -124,11 +124,11 @@ MATRIX_CONTROL = "nih"
 # 也要**反向验证**（拿它去跑一遍已知的样本，看有没有误判）。
 FAILURE_CATEGORIES: list[tuple[str, str, str]] = [
     ("import_preset", "引用了 RIME 自带预设（`default` / `symbols`）：机制有、**资产**没搬（D24）", "intentional"),
-    ("开关缺少", "RIME 的开关可以只写 `options:`（单选组），Stele 要求 `name`", "gap"),
-    ("不认识的按键名", "RIME 用 X11 keysym 名（`KP_1`、`Shift+exclam`…），Stele 只认自己的键名", "gap"),
+    ("开关缺少", "RIME 的开关可以只写 `options:`（单选组），Qingjian 要求 `name`", "gap"),
+    ("不认识的按键名", "RIME 用 X11 keysym 名（`KP_1`、`Shift+exclam`…），Qingjian 只认自己的键名", "gap"),
     ("引用了字母表里没有的编码单元", "词条编码未按空格切成字母表单元（精确编码族要求编码可逐项枚举）", "gap"),
     ("不是数字", "词库权重列不是数字：RIME 的 `%` 百分比权重，或 `columns:` 声明的非文字列（如 `stem`）", "gap"),
-    ("缺少 `speller.alphabet`", "`alphabet` 由 `__patch` 指向另一个 YAML 的子树补全，Stele 未实现跨文件 `__patch`", "gap"),
+    ("缺少 `speller.alphabet`", "`alphabet` 由 `__patch` 指向另一个 YAML 的子树补全，Qingjian 未实现跨文件 `__patch`", "gap"),
     ("`speller.rules` 必须是列表", "`speller.algebra` 是 `__patch` 映射而不是规则列表（同上）", "gap"),
 ]
 
@@ -220,10 +220,10 @@ def expected_order(entries: list[tuple[str, str, float]], keys: str) -> list[str
 
 
 def prepare_shared(work: Path) -> tuple[Path, Path]:
-    """把 fixtures 铺成两个可直接装载的目录（RIME 侧 / Stele 侧）。"""
+    """把 fixtures 铺成两个可直接装载的目录（RIME 侧 / Qingjian 侧）。"""
     rime_dir = work / "shared" / "rime"
-    stele_dir = work / "shared" / "stele"
-    for d in (rime_dir, stele_dir):
+    qingjian_dir = work / "shared" / "qingjian"
+    for d in (rime_dir, qingjian_dir):
         if d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True)
@@ -234,10 +234,10 @@ def prepare_shared(work: Path) -> tuple[Path, Path]:
         rime_dir / f"{SCHEMA_ID}.schema.yaml",
     )
     shutil.copy(
-        FIXTURES / "stele" / f"{SCHEMA_ID}.schema.yaml",
-        stele_dir / f"{SCHEMA_ID}.schema.yaml",
+        FIXTURES / "qingjian" / f"{SCHEMA_ID}.schema.yaml",
+        qingjian_dir / f"{SCHEMA_ID}.schema.yaml",
     )
-    return rime_dir, stele_dir
+    return rime_dir, qingjian_dir
 
 
 def _variant_rime(target: Path, *, abbrev: bool, completion: bool) -> None:
@@ -264,26 +264,26 @@ def _variant_rime(target: Path, *, abbrev: bool, completion: bool) -> None:
     (target / f"{SCHEMA_ID}.schema.yaml").write_text(text, encoding="utf-8")
 
 
-def _variant_stele(target: Path, *, abbrev: bool, completion: bool) -> None:
-    """铺一份 Stele 侧变体：改「缩写规则」与 `enable_word_completion`。
+def _variant_qingjian(target: Path, *, abbrev: bool, completion: bool) -> None:
+    """铺一份 Qingjian 侧变体：改「缩写规则」与 `enable_word_completion`。
 
     `enable_word_completion` **显式写成开或关**（不靠默认值），
     这样矩阵比的是"开关的作用"，不是"两边的默认值"。
     """
-    text = (FIXTURES / "stele" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
+    text = (FIXTURES / "qingjian" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
     if not abbrev:
         before = text
         text = text.replace(
             "  rules:\n    - abbrev: { take: 1, weight: 0.5 }\n", "  rules: []\n"
         )
-        assert text != before, "Stele 侧缩写规则替换失败：fixture 改了？"
+        assert text != before, "Qingjian 侧缩写规则替换失败：fixture 改了？"
     before = text
     text = text.replace(
         f"translator:\n  dictionary: {SCHEMA_ID}",
         f"translator:\n  dictionary: {SCHEMA_ID}\n  enable_word_completion: "
         + ("true" if completion else "false"),
     )
-    assert text != before, "Stele 侧 completion 替换失败：fixture 改了？"
+    assert text != before, "Qingjian 侧 completion 替换失败：fixture 改了？"
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy(FIXTURES / "shared.dict.yaml", target / f"{SCHEMA_ID}.dict.yaml")
     (target / f"{SCHEMA_ID}.schema.yaml").write_text(text, encoding="utf-8")
@@ -311,13 +311,13 @@ def librime_candidates(
     return [c["text"] for c in keys_recs[-1]["context"].get("candidates", [])]
 
 
-def stele_candidates(stele: Path, stele_dir: Path, keys: str, n: int = 10) -> list[str]:
+def qingjian_candidates(qingjian: Path, qingjian_dir: Path, keys: str, n: int = 10) -> list[str]:
     p = run(
-        [stele, "--scheme-dir", stele_dir, "--schema", SCHEMA_ID, f"--candidates={n}", keys],
+        [qingjian, "--scheme-dir", qingjian_dir, "--schema", SCHEMA_ID, f"--candidates={n}", keys],
         timeout=180,
     )
     if p.returncode != 0:
-        raise RuntimeError(f"stele 失败（exit {p.returncode}）：{p.stderr.strip()[:300]}")
+        raise RuntimeError(f"qingjian 失败（exit {p.returncode}）：{p.stderr.strip()[:300]}")
     out: list[str] = []
     for line in p.stdout.splitlines():
         m = re.match(r"^\s*\d+\.\s+(\S+)\s+score=", line)
@@ -326,8 +326,8 @@ def stele_candidates(stele: Path, stele_dir: Path, keys: str, n: int = 10) -> li
     return out
 
 
-def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, bool]:
-    rime_dir, stele_dir = prepare_shared(work)
+def section_shared_wordlist(probe: Path, qingjian: Path, work: Path) -> tuple[str, bool]:
+    rime_dir, qingjian_dir = prepare_shared(work)
     user_dir = work / "shared" / "user"
     entries = parse_shared_dict(FIXTURES / "shared.dict.yaml")
     lines: list[str] = []
@@ -345,13 +345,13 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     # ── B1：排序不变式 ──
     lines.append("### B1 排序不变式：同码候选必须按词库权重降序")
     lines.append("")
-    lines.append("| 输入 | 说明 | 词表算出的期望序 | librime | stele | 判定 |")
+    lines.append("| 输入 | 说明 | 词表算出的期望序 | librime | qingjian | 判定 |")
     lines.append("| --- | --- | --- | --- | --- | --- |")
     for keys, note in ORDER_CASES:
         want = expected_order(entries, keys)
         lib = librime_candidates(probe, rime_dir, user_dir, keys, reset=first_librime_call)
         first_librime_call = False
-        ste = stele_candidates(stele, stele_dir, keys)
+        ste = qingjian_candidates(qingjian, qingjian_dir, keys)
 
         # 只比较"期望集合里的词"的相对顺序——librime 会额外产出
         # 前缀候选 / 造句候选，那是维度 B2 记录的分歧，不该让这条断言红。
@@ -373,12 +373,12 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     # ── B2：简拼 ──
     lines.append("### B2 缩写（简拼）：每个音节取首字母也要命中")
     lines.append("")
-    lines.append("| 输入 | 期望词 | librime 第 1 位非字面量 | stele 第 1 位非字面量 | 判定 |")
+    lines.append("| 输入 | 期望词 | librime 第 1 位非字面量 | qingjian 第 1 位非字面量 | 判定 |")
     lines.append("| --- | --- | --- | --- | --- |")
     for keys, word in ABBREV_CASES:
         lib = librime_candidates(probe, rime_dir, user_dir, keys)
-        ste = stele_candidates(stele, stele_dir, keys)
-        # stele 的字面量候选等于输入串，librime 不产出字面量——比对时都剔掉
+        ste = qingjian_candidates(qingjian, qingjian_dir, keys)
+        # qingjian 的字面量候选等于输入串，librime 不产出字面量——比对时都剔掉
         lib_rank1 = next((t for t in lib if t != keys), None)
         ste_rank1 = next((t for t in ste if t != keys), None)
         good = lib_rank1 == word and ste_rank1 == word
@@ -395,11 +395,11 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     # ── B3：分歧观察 ──
     lines.append("### B3 分歧观察（记录，不判失败）：前缀匹配与造句")
     lines.append("")
-    lines.append("| 输入 | 说明 | librime 走的通路 | librime 候选（前 5） | stele 候选（前 5） |")
+    lines.append("| 输入 | 说明 | librime 走的通路 | librime 候选（前 5） | qingjian 候选（前 5） |")
     lines.append("| --- | --- | --- | --- | --- |")
     for keys, note, mechanism in DIVERGENCE_CASES:
         lib = librime_candidates(probe, rime_dir, user_dir, keys)
-        ste = stele_candidates(stele, stele_dir, keys)
+        ste = qingjian_candidates(qingjian, qingjian_dir, keys)
         lines.append(
             f"| `{keys}` | {md_escape(note)} | {md_escape(mechanism)} | "
             f"{' '.join(lib[:5]) or '（无）'} | {' '.join(ste[:5]) or '（无）'} |"
@@ -409,9 +409,9 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
                  "（末音节打一半 `niha`、只认前缀段 `nihaoshijie`），"
                  "也可以用单字**造句**（`haoni` → 好你）。")
     lines.append("> ")
-    lines.append("> **Stele 的模型**：拼写图把**整串输入**展开成若干条编码，"
+    lines.append("> **Qingjian 的模型**：拼写图把**整串输入**展开成若干条编码，"
                  "每条编码做一次精确查表；输入消费不完就退化成「字面量」候选"
-                 "（B3 三行的 stele 列都只剩输入串本身）。")
+                 "（B3 三行的 qingjian 列都只剩输入串本身）。")
     lines.append("> ")
     lines.append("> **librime 有三条通路**（下一节的矩阵把它们分开）："
                  "① 切分图只覆盖**能解释的前缀**，查表在该子图上做"
@@ -432,7 +432,7 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     lines.append(f"同一份词表、同一个输入 `{MATRIX_INPUT}`，只改两个开关，"
                  f"看哪一格还能给出「{MATRIX_EXPECTED}」。")
     lines.append("")
-    lines.append("| 缩写 | 补全 | librime 候选（前 3） | stele 候选（前 3） |")
+    lines.append("| 缩写 | 补全 | librime 候选（前 3） | qingjian 候选（前 3） |")
     lines.append("| --- | --- | --- | --- |")
     mx_root = work / "shared" / "mx"
     if mx_root.exists():
@@ -442,13 +442,13 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     for abbrev in (True, False):
         for completion in (True, False):
             rdir = mx_root / f"rime-a{int(abbrev)}-c{int(completion)}"
-            sdir = mx_root / f"stele-a{int(abbrev)}-c{int(completion)}"
+            sdir = mx_root / f"qingjian-a{int(abbrev)}-c{int(completion)}"
             _variant_rime(rdir, abbrev=abbrev, completion=completion)
-            _variant_stele(sdir, abbrev=abbrev, completion=completion)
+            _variant_qingjian(sdir, abbrev=abbrev, completion=completion)
             lib_cells[(abbrev, completion)] = librime_candidates(
                 probe, rdir, rdir / "user", MATRIX_INPUT
             )
-            ste_cells[(abbrev, completion)] = stele_candidates(stele, sdir, MATRIX_INPUT)
+            ste_cells[(abbrev, completion)] = qingjian_candidates(qingjian, sdir, MATRIX_INPUT)
             lines.append(
                 f"| {'开' if abbrev else '关'} | {'开' if completion else '关'} | "
                 f"{' '.join(lib_cells[(abbrev, completion)][:3]) or '（无）'} | "
@@ -469,31 +469,31 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     lines.append(f"- **librime**：4 格里 {len(lib_hits)} 格命中「{MATRIX_EXPECTED}」"
                  f"（未命中：{_fmt([k for k in lib_cells if k not in lib_hits])}）"
                  f"——它有**不止一条**通路。")
-    lines.append(f"- **stele**：4 格里 {len(ste_hits)} 格命中"
+    lines.append(f"- **qingjian**：4 格里 {len(ste_hits)} 格命中"
                  f"（未命中：{_fmt([k for k in ste_cells if k not in ste_hits])}）。")
     lines.append("")
 
-    # 对照：把"stele 没有缩写"这个误判排除掉。
+    # 对照：把"qingjian 没有缩写"这个误判排除掉。
     ctrl_dir = mx_root / "rime-a1-c0"
     ctrl_lib = librime_candidates(probe, ctrl_dir, ctrl_dir / "user", MATRIX_CONTROL)
-    ctrl_ste = stele_candidates(stele, mx_root / "stele-a1-c0", MATRIX_CONTROL)
+    ctrl_ste = qingjian_candidates(qingjian, mx_root / "qingjian-a1-c0", MATRIX_CONTROL)
     ctrl_hit = MATRIX_EXPECTED in ctrl_lib and MATRIX_EXPECTED in ctrl_ste
     lines.append(f"- **对照 `{MATRIX_CONTROL}`**（缩写开、补全关）："
                  f"librime `{' '.join(ctrl_lib[:3]) or '（无）'}`；"
-                 f"stele `{' '.join(ctrl_ste[:3]) or '（无）'}` —— "
-                 f"{'两边都命中，所以 **stele 的缩写通路是活的**' if ctrl_hit else '对照不成立，需先查清'}。")
+                 f"qingjian `{' '.join(ctrl_ste[:3]) or '（无）'}` —— "
+                 f"{'两边都命中，所以 **qingjian 的缩写通路是活的**' if ctrl_hit else '对照不成立，需先查清'}。")
     lines.append("")
     lines.append("> **定位结论：差的是两处，不是一处。**")
     lines.append("> ")
-    lines.append("> 1. **Stele 不存在「只消费前缀」这回事。** 它要求整串输入都能切成"
+    lines.append("> 1. **Qingjian 不存在「只消费前缀」这回事。** 它要求整串输入都能切成"
                  "编码单元，否则退化成字面量。所以「缩写开」的两格也不命中："
                  f"`{MATRIX_INPUT}` = `ni` + `ha`，而 `ha` 不是字母表里的单元"
                  f"（对照 `{MATRIX_CONTROL}` = `ni` + `h` 能整串消费，两边都命中）。"
                  "librime 那边，切分图只覆盖能解释的前缀、`a` 留在输入里照样出词——"
                  "`src/rime/algo/syllabifier.cc:268` 的 `interpreted_length` "
                  "**可以小于输入长度**。")
-    lines.append("> 2. **Stele 的补全在编码单元层，用不上。** "
-                 "`crates/stele-engine/src/translator.rs:192` 做的是 "
+    lines.append("> 2. **Qingjian 的补全在编码单元层，用不上。** "
+                 "`crates/qingjian-engine/src/translator.rs:192` 做的是 "
                  "`lexicon.prefix_lookup(&exp.code, ...)`——尾巴 `ha` 产不出 `exp.code`，"
                  "补全永远轮不到。librime 的补全在**拼写层**"
                  "（`Prism::ExpandSearch`，`src/rime/algo/syllabifier.cc:224-228`），"
@@ -512,38 +512,38 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
     # 配置项，只有在端到端跑一遍时才会暴露（HANDOFF §5 第 36 条的同一形状）。
     lines.append("### B4 配置项核对：被解析、但引擎里没人读的开关")
     lines.append("")
-    sentence_dir = work / "shared" / "stele-sentence"
+    sentence_dir = work / "shared" / "qingjian-sentence"
     if sentence_dir.exists():
         shutil.rmtree(sentence_dir)
     sentence_dir.mkdir(parents=True)
     shutil.copy(FIXTURES / "shared.dict.yaml", sentence_dir / f"{SCHEMA_ID}.dict.yaml")
-    schema_text = (FIXTURES / "stele" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
+    schema_text = (FIXTURES / "qingjian" / f"{SCHEMA_ID}.schema.yaml").read_text(encoding="utf-8")
     schema_text = schema_text.replace(
-        "translator:\n  dictionary: stele-cmp",
-        "translator:\n  dictionary: stele-cmp\n  enable_sentence: true",
+        "translator:\n  dictionary: qingjian-cmp",
+        "translator:\n  dictionary: qingjian-cmp\n  enable_sentence: true",
     )
     (sentence_dir / f"{SCHEMA_ID}.schema.yaml").write_text(schema_text, encoding="utf-8")
 
     keys = "haoni"
     lib = librime_candidates(probe, rime_dir, user_dir, keys)
-    ste_off = stele_candidates(stele, stele_dir, keys)
-    ste_on = stele_candidates(stele, sentence_dir, keys)
-    lines.append("| 输入 | librime | stele（默认） | stele（`enable_sentence: true`） |")
+    ste_off = qingjian_candidates(qingjian, qingjian_dir, keys)
+    ste_on = qingjian_candidates(qingjian, sentence_dir, keys)
+    lines.append("| 输入 | librime | qingjian（默认） | qingjian（`enable_sentence: true`） |")
     lines.append("| --- | --- | --- | --- |")
     lines.append(
         f"| `{keys}` | {' '.join(lib[:4])} | {' '.join(ste_off[:3])} | {' '.join(ste_on[:3])} |"
     )
     lines.append("")
     same = ste_off == ste_on
-    lines.append(f"- `enable_sentence: true` 前后，stele 的输出**完全{'相同' if same else '不同'}**"
+    lines.append(f"- `enable_sentence: true` 前后，qingjian 的输出**完全{'相同' if same else '不同'}**"
                  f"（{'开关没有生效' if same else '开关生效了'}）。")
     lines.append("")
     lines.append("> **代码侧核对（这次用的是 rust-analyzer，不是 grep）**："
                  "`rust_analyzer_references` 在 `TranslatorSpec::enable_sentence` 上"
-                 "只返回 **2 处**——声明 `crates/stele-engine/src/spec.rs:556` 与赋值 "
-                 "`crates/stele-schemes/src/components.rs:711`，**零读取**。"
+                 "只返回 **2 处**——声明 `crates/qingjian-engine/src/spec.rs:556` 与赋值 "
+                 "`crates/qingjian-schemes/src/components.rs:711`，**零读取**。"
                  "对照 `TranslatorSpec::completion()` 有 5 处引用，其中 "
-                 "`crates/stele-engine/src/scheme.rs:1159/1172` 是真实消费点。"
+                 "`crates/qingjian-engine/src/scheme.rs:1159/1172` 是真实消费点。"
                  "也就是说：**方案里写 `enable_sentence: true` 不会有任何效果，"
                  "也不会有警告**——这与 HANDOFF §5 第 36 条"
                  "（「实现了」与「被装配了」是两件事）同形，只是这次连「实现」都没有。")
@@ -554,7 +554,7 @@ def section_shared_wordlist(probe: Path, stele: Path, work: Path) -> tuple[str, 
                  "而 `script_translator`（拼音族）**根本没有这个开关**——"
                  "它在「至少两个音节、且没有精确匹配的词」时**无条件造句**"
                  "（`src/rime/gear/script_translator.cc:503`）。"
-                 "Stele 把它放进了两族共用的 `TranslatorSpec`，而两族都没有接。")
+                 "Qingjian 把它放进了两族共用的 `TranslatorSpec`，而两族都没有接。")
     lines.append("> ")
     lines.append("> **`default_completion()` 的注释与上游不符，且已被 B3.1 实测证实**："
                  "注释写着「RIME 的默认也是关」，而 librime 的 "
@@ -597,7 +597,7 @@ def first_diagnostic(log: str) -> str:
     return ""
 
 
-def section_loadability(stele: Path, rime_data: Path, work: Path) -> tuple[str, bool]:
+def section_loadability(qingjian: Path, rime_data: Path, work: Path) -> tuple[str, bool]:
     lines: list[str] = []
     schemes = sorted(rime_data.glob("*.schema.yaml"))
     if not schemes:
@@ -621,7 +621,7 @@ def section_loadability(stele: Path, rime_data: Path, work: Path) -> tuple[str, 
             os.symlink(f, d / f.name)
         os.symlink(sch, d / sch.name)
 
-        p = run([stele, "--scheme-dir", d, "--list"], timeout=600)
+        p = run([qingjian, "--scheme-dir", d, "--list"], timeout=600)
         log = (p.stdout + p.stderr).strip()
         # 原始日志留在 work 目录里当证据（报告只放归类与首条诊断）
         (root / f"{sid}.log").write_text(log + "\n", encoding="utf-8")
@@ -662,16 +662,16 @@ def section_loadability(stele: Path, rime_data: Path, work: Path) -> tuple[str, 
                  "标着「缺口」的才是能力问题，其中可归成四组：")
     lines.append("> ")
     lines.append("> 1. **字典格式**：RIME 的 `columns:` 声明（`cangjie5` 的 `stem` 列）"
-                 "与 `%` 百分比权重（`luna_pinyin` / `terra_pinyin`）——`stele-dict` 只认"
+                 "与 `%` 百分比权重（`luna_pinyin` / `terra_pinyin`）——`qingjian-dict` 只认"
                  "「词 `TAB` 编码 `TAB` 数字权重」。")
     lines.append("> 2. **编码切分**：RIME 码表方案的编码是字符集上的**无空格字符串**"
-                 "（`stroke` 的 `shhsh`），Stele 要求编码按空格切成字母表单元。")
+                 "（`stroke` 的 `shhsh`），Qingjian 要求编码按空格切成字母表单元。")
     lines.append("> 3. **配置机制**：跨文件的 `__patch`（`pinyin:/abbreviation`）"
                  "与只给 `options:` 的单选组开关。")
     lines.append("> 4. **键名**：X11 keysym 名（`KP_1`、`Shift+exclam`）。")
     lines.append("")
-    lines.append("**另一条观察（C2）**：把整目录一次交给 Stele"
-                 "（`stele --scheme-dir /usr/share/rime-data --list`）时，"
+    lines.append("**另一条观察（C2）**：把整目录一次交给 Qingjian"
+                 "（`qingjian --scheme-dir /usr/share/rime-data --list`）时，"
                  "它**停在第一个坏方案上**（`bopomofo`），后面的方案一个都没报。"
                  "逐目录隔离才有上面这张表。要不要改成「跳过坏的、装载好的」"
                  "是个产品决定——但它现在意味着**一个坏方案会让整目录都用不了**。")
@@ -709,7 +709,7 @@ def section_plum(plum: Path, rime_data: Path, load_rows: dict[str, str]) -> tupl
     lines.append(f"plum 副本：`{plum}`（{git_rev(plum)}）；"
                  f"本机已部署 {len(installed)} 个方案。")
     lines.append("")
-    lines.append("| 配方 | 类别 | 本机部署的方案 | Stele 装载结果 |")
+    lines.append("| 配方 | 类别 | 本机部署的方案 | Qingjian 装载结果 |")
     lines.append("| --- | --- | --- | --- |")
     for kind, packages in (("preset", preset), ("extra", extra)):
         for pkg in packages:
@@ -733,7 +733,7 @@ def section_plum(plum: Path, rime_data: Path, load_rows: dict[str, str]) -> tupl
     lines.append("> **映射是启发式的**：配方名（`luna-pinyin`）与方案 id"
                  "（`luna_pinyin`）没有正式对应表，这里按第一个下划线/连字符前的"
                  "词根匹配。`essay` / `prelude` 是共享资产（八股文词表、默认配置），"
-                 "**不含方案**，所以它们的「Stele 装载结果」写「无方案」——那不是失败。")
+                 "**不含方案**，所以它们的「Qingjian 装载结果」写「无方案」——那不是失败。")
     lines.append("> ")
     lines.append("> `extra` 组的配方在本机**没有部署**，因此无法实测；"
                  "要覆盖它们得先用 plum 取回（`rime-install`），"
@@ -758,9 +758,9 @@ def librime_version(probe: Path) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="RIME × Stele 对比测试")
+    ap = argparse.ArgumentParser(description="RIME × Qingjian 对比测试")
     ap.add_argument("--probe", default=str(DEFAULT_PROBE))
-    ap.add_argument("--stele", default=str(DEFAULT_STELE))
+    ap.add_argument("--qingjian", default=str(DEFAULT_QINGJIAN))
     ap.add_argument("--rime-data", default=str(DEFAULT_RIME_DATA))
     ap.add_argument("--plum", default=str(DEFAULT_PLUM))
     ap.add_argument("--work", default=str(DEFAULT_WORK))
@@ -768,26 +768,26 @@ def main() -> int:
     ap.add_argument("--skip-structural", action="store_true", help="跳过维度 A（较慢）")
     args = ap.parse_args()
 
-    probe, stele = Path(args.probe), Path(args.stele)
+    probe, qingjian = Path(args.probe), Path(args.qingjian)
     rime_data, plum, work = Path(args.rime_data), Path(args.plum), Path(args.work)
     if not probe.exists():
         print(f"找不到探针 {probe}。先跑 `cd tools/librime-probe && ./build.sh`。", file=sys.stderr)
         return 2
-    if not stele.exists():
-        print(f"找不到 {stele}。先跑 `cargo build --release -p stele-cli`。", file=sys.stderr)
+    if not qingjian.exists():
+        print(f"找不到 {qingjian}。先跑 `cargo build --release -p qingjian-cli`。", file=sys.stderr)
         return 2
     work.mkdir(parents=True, exist_ok=True)
 
     failures: list[str] = []
     report: list[str] = []
-    report.append("# RIME × Stele 对比测试报告")
+    report.append("# RIME × Qingjian 对比测试报告")
     report.append("")
     report.append("| | |")
     report.append("| --- | --- |")
     report.append(f"| librime | {librime_version(probe)}（系统运行库，经 `dlopen` 调用） |")
     report.append(f"| librime 源码副本 | `{git_rev(ROOT / '.work' / 'upstream' / 'librime')}`（只用于引用行号） |")
     report.append(f"| plum 源码副本 | `{git_rev(plum)}`（维度 D 的配方表） |")
-    report.append(f"| stele | `{stele.relative_to(ROOT) if str(stele).startswith(str(ROOT)) else stele}` |")
+    report.append(f"| qingjian | `{qingjian.relative_to(ROOT) if str(qingjian).startswith(str(ROOT)) else qingjian}` |")
     report.append(f"| 上游方案数据 | `{rime_data}`（plum preset 的部署产物） |")
     report.append("")
     report.append("生成命令：`python3 tools/rime-compare/compare.py`")
@@ -804,7 +804,7 @@ def main() -> int:
     report.append("")
 
     # A
-    report.append("## A. 结构行为（librime 运行时 vs stele）")
+    report.append("## A. 结构行为（librime 运行时 vs qingjian）")
     report.append("")
     if args.skip_structural:
         report.append("_（`--skip-structural`：本维度未跑）_")
@@ -823,7 +823,7 @@ def main() -> int:
     report.append("## B. 同一份词表下的排序对照 ★")
     report.append("")
     try:
-        body, ok = section_shared_wordlist(probe, stele, work)
+        body, ok = section_shared_wordlist(probe, qingjian, work)
         if not ok:
             failures.append("B 排序不变式")
         report.append(body)
@@ -833,13 +833,13 @@ def main() -> int:
     report.append("")
 
     # C
-    report.append("## C. 上游方案能否装载（plum preset → stele）")
+    report.append("## C. 上游方案能否装载（plum preset → qingjian）")
     report.append("")
     load_rows: dict[str, str] = {}
     c_gap_schemes: list[str] = []
     if rime_data.exists():
         try:
-            body, _ = section_loadability(stele, rime_data, work)
+            body, _ = section_loadability(qingjian, rime_data, work)
             # 从报告里回填"方案 → 结果"，供维度 D 引用
             for line in body.splitlines():
                 m = re.match(r"^\| `([^`]+)` \| (✓ 可装载|✗ 装载失败) \|", line)
@@ -876,17 +876,17 @@ def main() -> int:
     report.append("")
     report.append(f"1. **「不完整输入」缺的是两处能力**（B3 / B3.1，"
                   f"{len(DIVERGENCE_CASES)} 条用例 + 4 格矩阵）：")
-    report.append("   - **没有「只消费前缀」**：Stele 要求整串输入都能切成编码单元，"
+    report.append("   - **没有「只消费前缀」**：Qingjian 要求整串输入都能切成编码单元，"
                   "否则退化成字面量；librime 的切分图可以只覆盖能解释的前缀。")
     report.append("   - **补全在编码单元层，用不上**：尾巴产不出 `exp.code` 时补全永远轮不到；"
                   "librime 的补全在拼写层（`Prism::ExpandSearch`）。")
     report.append("2. **没有造句器**（B3 / B4）：librime 在没有精确匹配的词时自动造句，"
                   "**不需要语言模型**（`Poet` 无 `grammar` 时走动态规划）；"
-                  "Stele 的 `enable_sentence` 被解析但零读取，两族都没接。"
+                  "Qingjian 的 `enable_sentence` 被解析但零读取，两族都没接。"
                   "上游 `script_translator` 甚至没有这个开关（无条件造句），"
                   "`table_translator` 的默认值是 `true`。")
     report.append("3. **`enable_completion` 的默认值与注释不符**（B3.1 / B4）："
-                  "librime 初值 `true`，Stele 的 `default_completion()` 返回 `false` "
+                  "librime 初值 `true`，Qingjian 的 `default_completion()` 返回 `false` "
                   "且注释声称「RIME 的默认也是关」——矩阵已实测证实。")
     report.append(f"4. **{len(c_gap_schemes)} 个上游 preset 方案有真实装载缺口**（C）："
                   "字典 `columns:` / `%` 权重、码表编码的无空格字符串、"

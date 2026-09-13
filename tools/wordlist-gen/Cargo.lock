@@ -3,27 +3,27 @@
 version = 4
 
 [[package]]
-name = "stele-config"
+name = "qingjian-config"
 version = "0.0.0"
 dependencies = [
- "stele-core",
+ "qingjian-core",
 ]
 
 [[package]]
-name = "stele-core"
+name = "qingjian-core"
 version = "0.0.0"
 
 [[package]]
-name = "stele-dict"
+name = "qingjian-dict"
 version = "0.0.0"
 dependencies = [
- "stele-config",
- "stele-core",
+ "qingjian-config",
+ "qingjian-core",
 ]
 
 [[package]]
 name = "wordlist-gen"
 version = "0.0.0"
 dependencies = [
- "stele-dict",
+ "qingjian-dict",
 ]
