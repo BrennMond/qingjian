@@ -393,7 +393,7 @@ qingjian/
 | 系统 | WSL2，内核 `6.18.33.2-microsoft-standard-WSL2`，x86_64 |
 | 仓库路径 | `/home/brennmond/projects/qingjian`（ext4 ✅，**不要**放 `/mnt/c/...`） |
 | git | 2.53.0 已装，**尚未 `git init`** |
-| Rust | rustc / cargo **1.98.1，来自 Homebrew**（`/home/linuxbrew`），**没有 rustup** |
+| Rust | rustc / cargo **1.98.1，来自 Homebrew**（`/home/linuxbrew`）；**rustup 已装**（`~/.cargo/bin/rustup`，toolchain `1.98` 已装），但 PATH 上 `cargo` 仍先命中 Homebrew（`~/.cargo/bin` 在其后）——`rust-toolchain.toml` 只对 rustup 的 shim 生效 |
 | 磁盘占用 | 项目本体约 100 KB |
 
 **待办（P0）**
