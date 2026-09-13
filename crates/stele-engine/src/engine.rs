@@ -187,7 +187,38 @@ impl SessionImpl {
             return Some(self.finish_commit(commit));
         }
 
-        // ── 意图二：直接上屏一段文本（标点、按键重绑定的"发送"） ──
+        // ── 意图二：上屏当前候选的注释 ──
+        if let PendingCommit::CommitComment { .. } = pending {
+            let c = self.candidates.first()?;
+            let text = c.comment.clone()?;
+            let commit = Commit {
+                text,
+                input: self.state.composition.input.clone(),
+                context: self.state.context.recent().to_vec(),
+                origin: stele_core::Origin::Literal,
+                attr: stele_core::SpellingAttr::NORMAL,
+                lane: Lane::Input,
+                trigger: Trigger::Explicit,
+            };
+            return Some(self.finish_commit(commit));
+        }
+
+        // ── 意图三：从记忆里删掉当前候选（学习型删除） ──
+        //
+        // 引擎在这里**只发事件**：真正落库是 P4a 的 `MemoryStore::forget`。
+        // 现在没有记忆实现，因此这条意图的效果是"什么都不发生"——
+        // 但它有通路，P4a 接上就行，不必再改接口。
+        if let PendingCommit::DeleteCandidate { index } = pending {
+            if let Some(c) = self.candidates.get(index) {
+                self.events.push(Event::ForgetRequested {
+                    input: self.state.composition.input.clone(),
+                    text: c.text.clone(),
+                });
+            }
+            return None;
+        }
+
+        // ── 意图四：直接上屏一段文本（标点、按键重绑定的"发送"） ──
         //
         // 注意这里**不看候选列表**：标点直出不依赖输入被翻译成什么，
         // 所以即使候选为空、输入串为空，标点也照样上屏。

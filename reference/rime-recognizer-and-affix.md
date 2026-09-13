@@ -420,14 +420,33 @@ uq: { tag: uq, prefix: "uU", dictionary: luna_pinyin, enable_user_dict: false, e
 
 **翻译器看到的是「前缀之后的正文」，前缀不在它的段里。**
 
-理由：`TranslateSegments`（`engine.cc:171` 之后的 `TranslateSegments`）对每个 `Segment` 取 `input.substr(segment.start, segment.length())` 作为查询串。正文段的 `start` 已经 `+= prefix_.length()`，所以前缀字符**不在**这个区间内。
+理由：
+
+```cpp
+// librime@4e6f839 src/rime/engine.cc:203-215
+void ConcreteEngine::TranslateSegments(Segmentation* segments) {
+  DLOG(INFO) << "TranslateSegments: " << *segments;
+  for (Segment& segment : *segments) {
+    DLOG(INFO) << "segment [" << segment.start << ", " << segment.end
+               << "), status: " << segment.status;
+    if (segment.status >= Segment::kGuess)
+      continue;
+    size_t len = segment.end - segment.start;
+    string input = segments->input().substr(segment.start, len);
+    DLOG(INFO) << "translating segment: [" << input << "]";
+    auto menu = New<Menu>();
+    for (auto& translator : translators_) {
+      auto translation = translator->Query(input, segment);
+```
+
+引擎给每个段的查询串是 **`input.substr(segment.start, segment.end - segment.start)`**。正文段的 `start` 已经 `+= prefix_.length()`（`affix_segmentor.cc:80`），所以前缀字符**不在**这个区间内。前缀段自己也被 `status = kGuess` 预置了（`:73`），会被 `if (segment.status >= Segment::kGuess) continue;` 跳过翻译。
 
 实测印证（§2.3）：`prefix: "zz"` + 输入 `zzni` → `table_translator@wq` 收到的查询串就是 `"ni"`，候选与直接查 `ni` 完全一致；preedit 也不含 `zz`。
 
 **两个容易踩的细节**：
 
 - **段的 `start/end` 不含前缀**，但**整条输入串仍然含前缀**。凡是按"输入串下标"而不是"段下标"工作的代码（例如我们自己的实现）都必须显式跳掉前缀长度，否则会错位。
-- `Segment::length` 字段在构造时固定（`segmentation.h:36-37`：`length(end_pos - start_pos)`），**改 `end` 不会同步 `length`**。`affix_segmentor` 情形 C 里 `segmentation->back().end = k;`（`:95`）就只改了 `end`——所以按 `length` 还是按 `end - start` 读，结果可能不同。这是 librime 自身的一处不一致，移植时要盯着。
+- **`Segment::length` 是个几乎没人读的字段，不要信它。** 它在构造时算一次（`segmentation.h:36-37`：`length(end_pos - start_pos)`），而 `affix_segmentor` 情形 C 里 `segmentation->back().end = k;`（`:95`）只改 `end`、不同步 `length`。我们核对了 `librime@4e6f839` 的 `src/`：**没有任何一处读取 `Segment::length`**；`TranslateSegments` 是现算 `end - start` 的。所以这个不一致在 librime 里目前无害，但移植时若照着 `length` 实现就会在带 `suffix` 的边界情形下错位。
 
 ### 3.3 还有一个前置分支：`partial` 续段
 
@@ -535,7 +554,7 @@ bool TagMatching::TagsMatch(Segment* segment) {
 | --- | --- | --- | --- | --- |
 | 1 | `prefix` 的含义 | **字面字符串**（§2）。`"uU"` = 两个字面字符 | `crates/stele-engine/src/segmentor.rs:498` 的 `expand_prefix("uU")` 返回 `["uU", "u", "U"]`；同文件 `:858` 的断言把这个行为固定了下来；`:402-406` 的文档注释把它称为「RIME 约定：`prefix: "uU"` 表示大小写两种写法都接受」 | **这是自己发明的约定。** 后果：单独敲 `u` 也会被 affix 段吃掉；rime-ice 里以 `u` 开头的正常拼音输入会误入拆字段。修法：`prefix` 只保留字面串本身，删掉"大小写变体补充"。注意同文件 `:470-496` 的**另一段注释已经写对了**（「`prefix: "uU"` …字面的两个字符 `uU` 一起出现」），文件内部自相矛盾 |
 | 2 | `recognizer/patterns` 的值类型 | 必须是标量；列表被**静默跳过**（§1.1） | 需要核对解析器是否对列表报错或静默忽略 | 若我们接受列表并"取并集"，行为会比 librime 更宽松，方案在两边的表现会分叉 |
-| 3 | 模式的匹配语义 | `regex_search` + 强制"结束于串尾" + "起点在段边界"（§1.4） | `crates/stele-engine/src/regex.rs`（897 行）与 `segmentor.rs` 里的 `InputScan` / `match_prefix_len` 看起来是**前缀式**匹配 | 需要逐条核对：我们是否允许"从中间开始、结束于串尾"的匹配（如 `uppercase` 那类不写 `^` 的模式）；若只做前缀匹配，系统 `default.yaml` 的 `uppercase` 与 rime-ice 的 `unicode: "^U[a-f0-9]+"`（**注意没有 `$`**）等写法会失效 |
+| 3 | 模式的匹配语义 | `regex_search` + 强制"结束于串尾" + "起点在段边界"（§1.4） | `crates/stele-engine/src/regex.rs`（897 行）与 `segmentor.rs` 里的 `InputScan` / `match_prefix_len` 看起来是**前缀式**匹配 | 需要逐条核对：我们是否允许"**不锚定起点、但结束于串尾**"的匹配。真实反例就在眼前：`/usr/share/rime-data/default.yaml:60` 的 `uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"` **没有 `^`**，而 rime-ice 的 no-lua 方案用 `recognizer/import_preset: default` 继承了它。若我们只做前缀匹配，`Ni hao` 这类"大写开头的整串"就不会被识别成 `uppercase` 段 |
 | 4 | 多条模式的优先级 | 按**模式名字典序**，先命中者赢（§1.4 第 4 条） | 需要核对 | 若我们按声明顺序或按"最长匹配"选，结果会不同 |
 | 5 | leading literal 缓存 | librime **没有**（§1.5） | 我们若有，是自研优化 | 不是冲突，但**不能声称与 librime 一致**；需要单独验证它与 `regex_search` 语义等价 |
 | 6 | `affix_segmentor` 的触发前提 | 必须由 `matcher` + `recognizer/patterns/<tag>` **先贴标签**（§1.3、§4.1）；裸写 `affix_segmentor` 读的是 `segmentor/*` 命名空间 | 需要核对 | 若我们把"前缀匹配"直接做进 affix 组件、不依赖 recognizer 打标签，在缺少 `recognizer/patterns/<tag>` 的方案上我们会比 librime 更宽松（librime 那边是彻底不工作） |

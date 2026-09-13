@@ -126,6 +126,24 @@ pub enum PendingCommit {
         /// 触发方式。
         trigger: Trigger,
     },
+    /// **上屏当前候选的注释**（RIME 的 `commit_comment`）。
+    ///
+    /// 这是第三种意图，因为它的文本既不在候选列表的 `text` 里、
+    /// 也不是处理器自己带的——它在**当前候选的 `comment` 字段**里。
+    /// 用前两种都表达不了：`Select` 上屏 `text`，`Literal` 上屏固定文本。
+    CommitComment {
+        /// 上屏后是否清空输入（librime 的 `commit_comment` 会 `Clear()`）。
+        clear: bool,
+    },
+    /// **从记忆里删掉当前候选**（RIME 的 `delete_candidate`，学习型删除）。
+    ///
+    /// 引擎在这里只能**表达意图**：真正"从用户词典里删掉"是 P4a
+    /// （`MemoryStore::forget`）的事。这条意图让那个能力有一条通路，
+    /// 而不必等到 P4a 再改接口。
+    DeleteCandidate {
+        /// 被删候选在**已渲染列表**里的下标。
+        index: usize,
+    },
 }
 
 impl PendingCommit {
@@ -151,11 +169,25 @@ impl PendingCommit {
         }
     }
 
-    /// 触发方式（两个变体都有）。
+    /// 上屏当前候选的注释。
+    #[must_use]
+    pub const fn commit_comment() -> Self {
+        Self::CommitComment { clear: true }
+    }
+
+    /// 删除第 `index` 个候选的学习记录。
+    #[must_use]
+    pub const fn delete_candidate(index: usize) -> Self {
+        Self::DeleteCandidate { index }
+    }
+
+    /// 触发方式。
     #[must_use]
     pub const fn trigger(&self) -> Trigger {
         match self {
             Self::Select { trigger, .. } | Self::Literal { trigger, .. } => *trigger,
+            // 注释上屏与"删候选"都不产生上屏记录，给一个最接近的触发方式。
+            Self::CommitComment { .. } | Self::DeleteCandidate { .. } => Trigger::Explicit,
         }
     }
 }
@@ -195,6 +227,17 @@ pub enum Event {
         attr: SpellingAttr,
         /// 上屏时的通道。
         lane: Lane,
+    },
+    /// **用户要求删除这个候选的学习记录**（RIME 的 `delete_candidate`）。
+    ///
+    /// 前端可以忽略它；P4a 的 `MemoryStore::forget` 会消费它。
+    /// 现在就发出这条事件的理由与 `Session::tick` 相同：**事后加事件
+    /// 意味着所有前端都要改一遍**，而现在加只是多一个 `match` 分支。
+    ForgetRequested {
+        /// 当时的输入（**未规范化**，与 `Learned` 同一条约定）。
+        input: String,
+        /// 要求删除的候选文本。
+        text: String,
     },
     /// 开关被引擎改动（例如自动切换到英文模式）。
     OptionChanged {
@@ -261,5 +304,16 @@ mod tests {
             other => panic!("应当是直出意图，实际 {other:?}"),
         }
         assert_eq!(lit.trigger(), Trigger::Punctuation);
+
+        // 另外两种意图：上屏注释、删候选。它们的文本来源与前两种都不同，
+        // 因此必须是独立的变体（见各变体的说明）。
+        assert!(matches!(
+            PendingCommit::commit_comment(),
+            PendingCommit::CommitComment { clear: true }
+        ));
+        assert!(matches!(
+            PendingCommit::delete_candidate(3),
+            PendingCommit::DeleteCandidate { index: 3 }
+        ));
     }
 }

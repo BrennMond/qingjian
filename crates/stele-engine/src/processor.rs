@@ -289,6 +289,72 @@ impl stele_core::Processor for Editor {
                     ProcessResult::Noop
                 }
             }
+            A::CommitComment => {
+                // 注释在**候选**里，而处理器看不到候选列表——因此这里
+                // 只表达意图，由会话取当前高亮候选的 `comment` 上屏。
+                if state.composition.is_active() {
+                    state.pending_commit = Some(PendingCommit::CommitComment { clear: true });
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::CommitComposition => {
+                // `ctx->ConfirmCurrentSelection() || ctx->Commit()`：
+                // 有候选就选第一个（确认），确认之后没有候选菜单了才整串上屏。
+                // 会话在兑现时会处理"候选不存在"的情形。
+                if state.composition.is_active() {
+                    state.pending_commit = Some(PendingCommit::keyboard(0, Trigger::Enter));
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::ReopenOrConfirm => {
+                // 我们没有"已选段"这一层状态（P3 的分段每次重算），
+                // 因此"退回上一个已选段"退不回去 —— 按 librime 的语义
+                // 落到后半句：确认当前选择。
+                if state.composition.is_active() {
+                    state.pending_commit = Some(PendingCommit::keyboard(0, Trigger::Space));
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::BackStep => {
+                // 三级兜底：退段 / 退选择 / 退一个字符。前两级要的是
+                // "已选段"与"选择历史"，我们没有，于是落到第三级——
+                // 与 `BackUnit` 的区别在这里体现：`BackUnit` **优先按
+                // 编码单元**退，而 `BackStep` 只退一个字符。
+                if state.composition.input.is_empty() {
+                    return ProcessResult::Noop;
+                }
+                state.composition.input.pop();
+                state.composition.caret = state.composition.input.len();
+                state.composition.segments.clear();
+                ProcessResult::Accepted
+            }
+            A::DeleteCandidate => {
+                // 学习型删除：真正"从记忆里删掉"是 P4a 的事
+                // （`MemoryStore::forget`）。这里把意图交出去。
+                if state.composition.is_active() {
+                    state.pending_commit =
+                        Some(PendingCommit::DeleteCandidate { index: 0 });
+                    ProcessResult::Accepted
+                } else {
+                    ProcessResult::Noop
+                }
+            }
+            A::Noop => {
+                // `editor/bindings` 是**整体替换**默认表的（librime 的
+                // `LoadConfig` 也是覆盖式写入），因此"解除绑定"在这里
+                // 等价于"不写这一条"。走到这里说明方案**显式写了** `noop`：
+                // 它的意思是"这个键别管了"，也就是**还给系统**。
+                //
+                // 与 `ProcessResult::Noop`（"我不管，后面的人可能管"）
+                // 的区别很重要：后者会让后面的处理器继续处理这个键。
+                ProcessResult::Rejected
+            }
         }
     }
 }
@@ -549,6 +615,8 @@ impl stele_core::Processor for KeyBinder {
                 crate::spec::WhenPredicate::Composing => state.composition.is_active(),
                 crate::spec::WhenPredicate::Paging => state.candidate_pages > 1,
                 crate::spec::WhenPredicate::HasMenu => state.candidate_count > 0,
+                // 下一词预测是 P4b 的内容；现在永远为假（见 `WhenPredicate`）。
+                crate::spec::WhenPredicate::Predicting => false,
             };
             if !ok || !b.accept.iter().any(|c| c.matches(key)) {
                 continue;
@@ -819,6 +887,57 @@ mod tests {
         let plain = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
         assert_eq!(ed.process(&mut s, &plain), ProcessResult::Accepted);
         assert_eq!(s.composition.input, "n");
+    }
+
+    #[test]
+    fn the_full_rime_action_vocabulary_is_parsed() {
+        // librime 的 12 个动作 + `noop` 一个都不能少：少一个就会让
+        // 一份从 RIME 抄来的方案**整份装不进去**（装载期报"不认识的动作"）。
+        for name in crate::spec::EditorAction::all_names() {
+            assert!(
+                crate::spec::EditorAction::parse(name).is_some(),
+                "{name} 列在 all_names 里却解析不出来"
+            );
+        }
+        assert_eq!(
+            crate::spec::EditorAction::parse("commit_comment"),
+            Some(crate::spec::EditorAction::CommitComment)
+        );
+        assert_eq!(
+            crate::spec::EditorAction::parse("noop"),
+            Some(crate::spec::EditorAction::Noop)
+        );
+    }
+
+    #[test]
+    fn noop_means_unbind_not_do_nothing() {
+        use crate::spec::{EditorAction as A, KeyChord as C};
+        // 方案显式把空格解绑 → 空格应当**还给系统**，而不是继续被
+        // 后面的处理器（选择器）当成"确认候选"。这就是 librime 里
+        // `this->erase(key_event)` 的意思。
+        let mut ed = Editor::new(vec![(
+            C::new(KeyCode::Named(NamedKey::Space), Modifiers::NONE),
+            A::Noop,
+        )]);
+        let mut s = state();
+        s.composition.input = "ni".into();
+        let space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::NONE);
+        assert_eq!(ed.process(&mut s, &space), ProcessResult::Rejected);
+        assert!(s.pending_commit.is_none(), "解绑之后不该再请求上屏");
+    }
+
+    #[test]
+    fn commit_comment_asks_the_session_for_the_current_comment() {
+        use crate::spec::{EditorAction as A, KeyChord as C};
+        let mut ed = Editor::new(vec![(
+            C::new(KeyCode::Named(NamedKey::Enter), Modifiers::CTRL),
+            A::CommitComment,
+        )]);
+        let mut s = state();
+        s.composition.input = "ni".into();
+        let key = Key::press(KeyCode::Named(NamedKey::Enter), Modifiers::CTRL);
+        assert_eq!(ed.process(&mut s, &key), ProcessResult::Accepted);
+        assert_eq!(s.pending_commit, Some(PendingCommit::commit_comment()));
     }
 
     #[test]

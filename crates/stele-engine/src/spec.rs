@@ -85,6 +85,42 @@ pub enum EditorAction {
     DeleteForward,
     /// 取消本次输入（Esc）。
     Cancel,
+    /// 上屏**当前候选的注释**（`commit_comment`）。
+    CommitComment,
+    /// 确认当前选择；确认后若没有候选了，就把输入整串上屏
+    /// （`commit_composition`）。
+    CommitComposition,
+    /// 退回上一个已选段重新选；退不回去就确认当前选择
+    /// （`toggle_selection`）。
+    ReopenOrConfirm,
+    /// 退段 / 退选择 / 退一个输入字符，三级兜底（`back`）。
+    ///
+    /// 与 [`EditorAction::BackUnit`] 的区别：`BackUnit` 是**按编码单元**
+    /// 退（RIME 的 `back_syllable`），`Back` 是"能退多少退多少"的兜底链。
+    BackStep,
+    /// 从用户词典里删掉当前候选（`delete_candidate`，学习型删除）。
+    DeleteCandidate,
+    /// **解除这个键的默认绑定**。
+    ///
+    /// librime 里它叫 `noop`，而语义**不是"什么都不做的空动作"**：
+    ///
+    /// ```cpp
+    /// if (action == kActionNoop) {
+    ///   this->erase(key_event);   // ← 删掉这个键的默认绑定
+    ///   return kAccepted;
+    /// }
+    /// ```
+    ///
+    /// 差别很实际：`editor` 有一张**默认绑定表**（空格=确认、退格=回退…），
+    /// 方案写 `space: noop` 的意思是"空格别管了，还给系统"。
+    /// 若把它实现成"空动作"，方案**删不掉**任何默认绑定——
+    /// 于是"我明明把空格解绑了，它还在确认候选"。
+    ///
+    /// 我们是按"整个替换默认表"实现 `editor/bindings` 的
+    /// （见 [`crate::processor::Editor`]），因此解除绑定在这里等价于
+    /// **不写这一条**。它的存在意义是：方案从 RIME 那边抄过来时，
+    /// `noop` 必须能被解析，而不是报"不认识的动作品名"。
+    Noop,
 }
 
 impl EditorAction {
@@ -104,6 +140,12 @@ impl EditorAction {
             "back_syllable" | "back_unit" => Self::BackUnit,
             "delete" => Self::DeleteForward,
             "cancel" => Self::Cancel,
+            "commit_comment" => Self::CommitComment,
+            "commit_composition" => Self::CommitComposition,
+            "toggle_selection" => Self::ReopenOrConfirm,
+            "back" => Self::BackStep,
+            "delete_candidate" => Self::DeleteCandidate,
+            "noop" => Self::Noop,
             _ => return None,
         })
     }
@@ -119,6 +161,12 @@ impl EditorAction {
             "back_syllable",
             "delete",
             "cancel",
+            "commit_comment",
+            "commit_composition",
+            "toggle_selection",
+            "back",
+            "delete_candidate",
+            "noop",
         ]
     }
 }
@@ -275,6 +323,11 @@ pub enum WhenPredicate {
     Paging,
     /// 有候选时。
     HasMenu,
+    /// 上一条候选是预测来的（`Lane::Predict`）。
+    ///
+    /// **目前永远为假**：核心引擎还没有任何零件给分段打 `prediction` 标签
+    /// （下一词预测是 P4b）。留在这里是为了"RIME 的方案能原样读进来"。
+    Predicting,
 }
 
 impl WhenPredicate {
@@ -286,6 +339,11 @@ impl WhenPredicate {
             "composing" => Self::Composing,
             "paging" => Self::Paging,
             "has_menu" => Self::HasMenu,
+            // librime 的第五个合法谓词。核心引擎里目前没有零件写
+            // `prediction` 标签，因此它**永远不会成立**——但**必须能解析**：
+            // 报"不认识的谓词"会让一份从 RIME 抄来的方案整份装不进去，
+            // 而实际行为并不缺（那个绑定只是不生效）。
+            "predicting" => Self::Predicting,
             _ => return None,
         })
     }
@@ -293,7 +351,7 @@ impl WhenPredicate {
     /// 全部取值（供诊断列出）。
     #[must_use]
     pub fn all_names() -> &'static [&'static str] {
-        &["always", "composing", "paging", "has_menu"]
+        &["always", "composing", "paging", "has_menu", "predicting"]
     }
 }
 
