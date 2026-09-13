@@ -38,39 +38,40 @@ pub mod spelling;
 pub mod tag;
 pub mod translator;
 
-pub use calc::{CalcError, CalcTranslator, lua_number_to_string, replace_factorial, replace_percent};
+pub use calc::{
+    lua_number_to_string, replace_factorial, replace_percent, CalcError, CalcTranslator,
+};
 pub use engine::{EngineImpl, SessionImpl};
 pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
 pub use inline::{
-    AutoCapFilter, CivilTime, DateTranslator, LongWordFilter, PinCandFilter, PinTable,
-    NumberTranslator, ReduceEnglishFilter, UnicodeTranslator, UuidTranslator, VFilter,
     civil_from_days, civil_from_unix, derived_keys, is_english_word, month_day_zh, split_number,
-    strip_punct, year_zh,
+    strip_punct, year_zh, AutoCapFilter, CivilTime, DateTranslator, LongWordFilter,
+    NumberTranslator, PinCandFilter, PinTable, ReduceEnglishFilter, UnicodeTranslator,
+    UuidTranslator, VFilter,
 };
-pub use keyspec::{KeyChord, key_code_name, key_for_char, parse_key_name};
+pub use keyspec::{key_code_name, key_for_char, parse_key_name, KeyChord};
 pub use lexicon::{Entry, InMemoryLexicon, LexiconError, TextIndex};
 pub use pipeline::{PipelineImpl, CANDIDATE_CAP, DEFAULT_PAGE_SIZE};
+pub use presets::{Preset, PRESET_STELE};
 pub use processor::{AsciiComposer, Editor, KeyBinder, Navigator, Selector, Speller};
-pub use presets::{PRESET_STELE, Preset};
-pub use punctuator::{PunctTranslator, Punctuator, literal_pending};
+pub use punctuator::{literal_pending, PunctTranslator, Punctuator};
 pub use regex::{Regex, RegexError};
-pub use registry::{Availability, CoverageReport, ExternalData, Slot, unmet_requirements};
+pub use registry::{unmet_requirements, Availability, CoverageReport, ExternalData, Slot};
 pub use scheme::{LoadedScheme, SchemeDef, TranslatorKind, SCHEME_FORMAT_VERSION};
 pub use segmentor::{
     AffixSegmentor, CodingSegmentor, InputScan, Matcher, Recognizer, RecognizerError,
     SymbolSegmentor,
 };
 pub use spec::{
-    AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, NavigatorSpec,
-    AutoCapSpec, CalcSpec, DateSpec, LongWordSpec, NotApplicableSpec, NumberSpec, PinCandSpec,
-    PinEntry,
-    ReduceEnglishSpec,
-    ReduceMode, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
-    TranslatorKindSpec, TranslatorSpec, UnicodeSpec, UuidSpec, WhenPredicate, split_alias,
+    split_alias, AffixSpec, At, AutoCapSpec, CalcSpec, DateSpec, EditorAction, EditorBinding,
+    EngineSpec, KeyBinding, LongWordSpec, NavigatorSpec, NotApplicableSpec, NumberSpec,
+    PinCandSpec, PinEntry, RecogPattern, RecognizerSpec, ReduceEnglishSpec, ReduceMode,
+    ReverseLookupSpec, SimplifierSpec, TipsMode, TranslatorKindSpec, TranslatorSpec, UnicodeSpec,
+    UuidSpec, WhenPredicate,
 };
 pub use spelling::{FormatRule, Rule, SpellingFormat, SpellingTable};
 pub use tag::TagTable;
 pub use translator::{
-    COMPLETION_COST, EchoTranslator, ExactCodeTranslator, SpellingGraphTranslator, TaggedFilter,
-    TaggedTranslator, TRANSLATE_CAP,
+    EchoTranslator, ExactCodeTranslator, SpellingGraphTranslator, TaggedFilter, TaggedTranslator,
+    COMPLETION_COST, TRANSLATE_CAP,
 };

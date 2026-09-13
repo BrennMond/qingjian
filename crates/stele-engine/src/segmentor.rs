@@ -268,7 +268,12 @@ impl Recognizer {
                 Some((len, tag)) => {
                     bytes_end > len
                         || (bytes_end == len
-                            && p.name < self.patterns.iter().find(|x| x.tag == tag).map_or(String::new(), |x| x.name.clone()))
+                            && p.name
+                                < self
+                                    .patterns
+                                    .iter()
+                                    .find(|x| x.tag == tag)
+                                    .map_or(String::new(), |x| x.name.clone()))
                 }
             };
             let _ = chars_end;
@@ -277,11 +282,7 @@ impl Recognizer {
             }
         }
         if let Some((end, tag)) = best {
-            scan.claims.push(stele_core::Claim {
-                start: 0,
-                end,
-                tag,
-            });
+            scan.claims.push(stele_core::Claim { start: 0, end, tag });
             scan.body_start.push(0);
         }
         scan
@@ -370,7 +371,10 @@ impl Segmentor for Matcher {
     }
 
     fn proceed(&self, _q: &Query<'_>, seg: &mut stele_core::Segmentation) -> bool {
-        let Some(claim) = self.scan.claim(seg.segments.last().map_or(0, |s| s.span.end)) else {
+        let Some(claim) = self
+            .scan
+            .claim(seg.segments.last().map_or(0, |s| s.span.end))
+        else {
             return false;
         };
         let claim = *claim;
@@ -795,7 +799,10 @@ mod tests {
         };
         let r = Recognizer::new(&spec, &mut tags).unwrap();
         assert_eq!(r.scan("v10").claims.len(), 1);
-        assert!(r.scan("v1a").claims.is_empty(), "^v([0-9]|10|[A-Za-z]+)$ 不吃 v1a");
+        assert!(
+            r.scan("v1a").claims.is_empty(),
+            "^v([0-9]|10|[A-Za-z]+)$ 不吃 v1a"
+        );
         assert_eq!(r.scan("vabc").claims.len(), 1);
         assert!(r.scan("v").claims.is_empty(), "v 之后还没有内容");
     }
@@ -870,14 +877,16 @@ mod tests {
         };
         let mut seg = stele_core::Segmentation::default();
         // 认领从 0 开始 —— 兜底切分器不该抢在它前面。
-        assert!(!abc.proceed(&q, &mut seg), "认领从 0 开始时兜底切分器不接手");
+        assert!(
+            !abc.proceed(&q, &mut seg),
+            "认领从 0 开始时兜底切分器不接手"
+        );
         assert!(seg.is_empty());
 
         // 认领**不在开头**时，兜底切分器只吃到认领的起点为止。
         let mut seg2 = stele_core::Segmentation::default();
-        seg2.segments.push(stele_core::Segment::new(stele_core::Span::new(
-            4, 6,
-        )));
+        seg2.segments
+            .push(stele_core::Segment::new(stele_core::Span::new(4, 6)));
         let q2 = Query {
             input: "ni hao uUni",
             caret: 11,

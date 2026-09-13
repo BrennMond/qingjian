@@ -425,9 +425,8 @@ pub fn unmet_requirements(
             Availability::NeedsData => {
                 // 数据到位了就不算缺 —— 判据只看"这个实例有没有数据"。
                 let (_, alias) = crate::spec::split_alias(n);
-                let present = alias.is_some_and(|a| {
-                    external.iter().any(|e| e.alias == a && e.present)
-                });
+                let present =
+                    alias.is_some_and(|a| external.iter().any(|e| e.alias == a && e.present));
                 if !present {
                     out.push((n.clone(), availability, note));
                 }
@@ -461,7 +460,8 @@ pub fn is_known(name: &str) -> bool {
 
 /// 已实现的零件名（有序、去重）。
 #[must_use]
-pub fn implemented_names() -> Vec<&'static str> {    let mut v: Vec<&'static str> = ENTRIES
+pub fn implemented_names() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = ENTRIES
         .iter()
         .filter(|e| e.availability == Availability::Implemented)
         .map(|e| e.name)
@@ -729,10 +729,9 @@ mod tests {
         assert!(r.implemented.contains(&"key_binder".to_owned()));
         assert!(r.implemented.contains(&"recognizer".to_owned()));
         assert!(r.implemented.contains(&"matcher".to_owned()));
-        assert!(
-            r.implemented
-                .contains(&"affix_segmentor@radical_lookup".to_owned())
-        );
+        assert!(r
+            .implemented
+            .contains(&"affix_segmentor@radical_lookup".to_owned()));
         // 缺口**逐个列出**（不是笼统一句"不支持"），且只剩"要数据"这一类。
         for n in ["simplifier@emoji", "simplifier@traditionalize"] {
             assert!(r.needs_data.contains(&n.to_owned()), "{n} 应当缺数据");

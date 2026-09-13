@@ -78,10 +78,7 @@ fn the_oracle_is_present_and_has_enough_cases() {
         "对照数据太少了（{} 条）——它是不是被截断了？",
         cases.len()
     );
-    assert!(
-        cases.iter().any(|c| c.ok),
-        "对照数据里没有任何成功用例"
-    );
+    assert!(cases.iter().any(|c| c.ok), "对照数据里没有任何成功用例");
     assert!(
         cases.iter().any(|c| !c.ok),
         "对照数据里没有任何失败用例 —— 失败路径也要比对"
@@ -104,8 +101,10 @@ fn evaluation_matches_the_upstream_converter() {
                 }
             }
             (true, Err(e)) => {
-                failures.push(format!("{}：上游成功（{:?}），我们失败（{e}）",
-                    case.input, case.value));
+                failures.push(format!(
+                    "{}：上游成功（{:?}），我们失败（{e}）",
+                    case.input, case.value
+                ));
             }
             (false, Ok((value, _))) => {
                 failures.push(format!("{}：上游失败，我们得到 {:?}", case.input, value));

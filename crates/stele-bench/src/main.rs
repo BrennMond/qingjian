@@ -114,8 +114,9 @@ fn main() {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
             "stele-bench — 称重台\n\n\
-             用法：stele-bench [--iterations=N] [--json]\n\n\
-             测量：空转（框架开销下限）/ 内核排序 / 真实按键路径。"
+             用法：stele-bench [--iterations=N] [--json] [--schema=<id>] [--scheme-dir=<目录>]\n\n\
+             测量：空转（框架开销下限）/ 内核排序 / 真实按键路径。\n\
+             `--scheme-dir` 用真实词库量（内嵌演示词库的量不出真实成本）。"
         );
         return;
     }
@@ -147,8 +148,24 @@ fn main() {
     // 装载一次引擎（这是"冷启动"的主要成本），然后反复敲键。
     // 每敲满一轮就 reset，使输入长度有界——否则测到的是"输入越来越长"的曲线，
     // 而不是单键成本。
+    // 方案来源：`--scheme-dir` 指定的目录（部署路径，词库走紧凑产物），
+    // 否则是内嵌的演示方案。
+    //
+    // **为什么称重台必须支持目录**：`schemes/stele-default` 的真实词库有
+    // 40 万条，而内嵌演示只有几十条——**用演示词库量出来的延迟不是延迟**
+    // （P1 的 241 ns 就是这么来的，见 PLAN §8）。真实数字只能在真实词库上量。
+    let scheme_dir = args
+        .iter()
+        .position(|a| a == "--scheme-dir")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from);
+
     let t_load = Instant::now();
-    let defs = stele_schemes::all().expect("内嵌方案必须能装载 —— 失败说明打包坏了");
+    let defs: Vec<stele_engine::scheme::SchemeDef> = match &scheme_dir {
+        Some(dir) => stele_schemes::load_dir_deployed(dir, &dir.join(".stele-cache"))
+            .expect("按 --scheme-dir 装载方案失败"),
+        None => stele_schemes::all().expect("内嵌方案必须能装载 —— 失败说明打包坏了"),
+    };
     let engine = stele_engine::EngineImpl::new(&defs).expect("默认方案应当能编译");
     let load_us = u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
 
@@ -224,10 +241,7 @@ fn main() {
 
     println!("Stele-IME 称重台");
     println!("========================================");
-    println!(
-        "被测方案：{}",
-        session.schema_id()
-    );
+    println!("被测方案：{}", session.schema_id());
     println!("自检：敲 nihao 后上屏 「{committed}」");
     println!();
     println!(
@@ -260,8 +274,7 @@ fn main() {
         pipeline.rss_kib,
         pipeline.rss_kib / 1024
     );
-    println!("引擎装载（含两方案）: {load_us} µs");
-    println!("进程启动到测量开始 : {startup_us} µs");
+    println!("引擎装载（含全部方案）: {load_us} µs");
     println!();
     println!("PLAN §0.2 的硬指标：");
     println!(

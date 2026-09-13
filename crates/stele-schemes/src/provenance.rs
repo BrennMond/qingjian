@@ -314,8 +314,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            stele_config::lookup(&r.root, "menu/page_size")
-                .and_then(stele_config::Node::as_int),
+            stele_config::lookup(&r.root, "menu/page_size").and_then(stele_config::Node::as_int),
             Some(9),
             "后一层的映射整体替换了前一层的标量"
         );

@@ -5,7 +5,8 @@
 > 新会话只要读 **这份文件 + `PLAN.md` + `docs/engine-design.md`**，
 > 就能接着干，不必回溯对话。
 >
-> 最后更新：**P3 完成 + 阶段 A 的内联零件 10/14**（rime-ice 的 Lua 插件重写）。
+> 最后更新：**P3.5 完成**——默认词库（41 万条）+ OpenCC 数据装载；
+> 顺带修掉四个"静默失效"的引擎/格式 bug（见 §5 的第 26–29 条）。
 
 ---
 
@@ -22,25 +23,31 @@
 
 | 指标 | 实测 | 目标 |
 | --- | --- | --- |
-| 按键路径 P50（拼音，零件齐全） | **601 ns** | < 1 ms ✅ |
-| 按键路径 P99 | **1.56 µs** | < 10 ms ✅ |
-| 按键路径 P50（字形码，零件少） | **180 ns** | — |
-| 常驻内存（演示词库） | **4 MiB** | < 30 MB ✅ |
-| 50 万词条：装载峰值 | **46 MiB**（内存实现是 245 MiB） | — |
-| 50 万词条：命中产物 | **23 MiB** | — |
+| 按键路径 P50（**真实词库 41 万条**，拼音） | **14.5–15.5 µs**（三次） | < 1 ms ✅ |
+| 按键路径 P99（同上） | **99–109 µs**（三次） | < 10 ms ✅ |
+| 常驻内存（真实词库） | **13.6 MiB** | < 30 MB ✅ |
+| 引擎装载（真实词库，产物命中） | **83 ms** | — |
+| 首次部署（编译 41 万条产物 + 装载） | **0.62 s**（峰值 **21 MiB**） | < 150 MB ✅ |
+| 词库产物 / 源 `.dict.yaml` | 14 MB / 11 MB ≈ **1.3×** | < 3× ✅ |
+| 按键路径 P50（字形码演示方案） | **180 ns** | — |
 
-**延迟数字必须注明方案**：`stele-bench --schema=<id>`。零件数差别很大，
-180 ns 与 601 ns 是同一套代码。
+**两套路经**：`stele` 在仓库根目录跑会**自动用 `schemes/stele-default`**
+（41 万条，部署路径）；换到别的目录跑则用**内嵌演示词库**（几十条）
+兜底——**生成词库不进二进制**（它 11 MB，见 `pinyin.embedded.schema.yaml`）。
 
-**进度**：P0 ✅ P1 ✅ P2 ✅ P2.5 ✅ **P3 ✅** → **阶段 A 10/14**（见 §4）
-→ 下一步 **P3.5 词库管线** / P4a
+**延迟数字必须注明方案与词库**：`stele-bench --schema=<id>`、
+量真实词库还要 `--scheme-dir`。演示词库（几十条）与真实词库（41 万条）
+是同一套代码，差 80 倍；零件数也不同。
+
+**进度**：P0 ✅ P1 ✅ P2 ✅ P2.5 ✅ P3 ✅ **P3.5 ✅** → 下一步 **P4a 用户记忆**
+（或 `recognizer` 的三处语义分叉）
 
 | | |
 | --- | --- |
-| 提交 | 19 个 |
-| 测试 | **334 个**（clippy 零警告，三条 CI 门禁全过） |
+| 测试 | **360 个**（clippy 零警告，三条 CI 门禁全过，`cargo fmt --check` 干净） |
 | crate | 8 个 |
-| Rust | 约 25700 行 |
+| Rust | 约 26500 行 |
+| 词条 | **414525 条**（414111 词 + 414 补录单字），399 个编码单元 |
 | 零件 | 注册表 40 项：已实现 32、需数据 2、需资源 2、不适用 1、未实现 3 |
 
 ---
@@ -54,8 +61,17 @@ stele/
 ├── docs/HANDOFF.md          ← 本文件
 ├── reference/               ← 调研资料（RIME 官方文档对比、librime 内部机制…）
 ├── schemes/stele-default/   ← 默认方案（数据文件）
+│   ├── pinyin.schema.yaml   ← 方案；`speller.alphabet` 由生成器维护
+│   ├── pinyin.dict.yaml     ← 主词典（导入清单）
+│   ├── pinyin.embedded.schema.yaml ← 内嵌演示版（词库指向 base，避免 11 MB 进二进制）
+│   ├── cn_dicts/generated.dict.yaml ← **41 万条**默认词库（生成产物，随仓库分发）
+│   ├── opencc.manifest.yaml ← OpenCC 数据清单（声明，不含数据）
+│   ├── opencc.patch.yaml    ← 可选叠加层：启用 emoji / 简繁转换
+│   └── build/               ← 取回的上游源数据（**不进仓库**）
 ├── scripts/verify-*.sh      ← 三条 CI 门禁
 ├── tools/                   ← 验证工装（**不进内核 crate、不进 CI**）
+│   ├── fetch-sources.sh     ← 取回干净来源的数据（带 sha256 校验）
+│   ├── wordlist-gen/        ← 源数据 → `.dict.yaml`（自写，含自检）
 │   ├── librime-probe/       ← 驱动真实 librime 的 C 探针（含抓取样本）
 │   ├── compare-librime.py   ← 对照实验：同一批按键喂两边，比对结构行为
 │   └── oracle/              ← 上游 Lua 的纯计算副本 + 它的输出存档
@@ -124,6 +140,14 @@ stele/
 - **"比上游更宽松"也是一种不一致**。`--3`、`1+2)`、`sin(1,2)`（Lua 忽略
   多余实参）我第一版都比 Lua 宽松，而后果是"上游说这个输入错了"
   变成"我们算了个数"。移植时要把**两侧的边界都对齐**，不只是"能跑"。
+- **"数据装进来了"与"功能生效了"是两件事**。P3.5 里连着踩了三次同一个形状：
+  `--dump-config` 说"已装载 6355 条转换"、而候选里一个 emoji 都没有。
+  三次的原因各不相同（裁剪在排序之前 / 表的两种语义 / 展开的名额分配），
+  但**症状完全一样**。所以：**配置类功能的验收必须是端到端断言**，
+  不能只看"装配报告"。
+- **"上限"是静默错误的温床**：`max_expansions`、`candidate_cap`、分页裁剪
+  都会**安静地丢东西**。丢的必须是"按正确顺序排在最后"的那些，
+  否则丢的是用户真正想要的那条。P3.5 的第 26、28 条坑都是这一条的具体形态。
 - **一半的修正比不修更糟**：`send` 的语义我改了 `KeyBinder` 却忘了改 `pipeline`，
   于是那个 `redirecting` 字段永远是 `false`——两半对不上，而测试当时是绿的
   （因为旧的"从中间派发"实现也能让空格到达选择器）。
@@ -207,35 +231,58 @@ python3 tools/compare-librime.py            # 6 条用例
 于是 `,` 什么都打不出来而 librime 出「，」。修法是给默认方案补上
 RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_preset`）。
 
+### P3.5 已完成（默认词库 + OpenCC 数据装载）
+
+**验收标准**（`PLAN.md` §3 的 P3.5 行）：**装上就能打字，体验对标雾凇；
+内核里没有任何它的痕迹。**
+
+| 交付 | 内容 | 实测 |
+| --- | --- | --- |
+| **干净来源的词表** | `tools/fetch-sources.sh` 取回 **9 份**上游数据（全部 MIT / Apache-2.0），带 sha256 清单校验 | 取回 3.9 MB 源数据 |
+| **词库生成器** | `tools/wordlist-gen/`（自写，零外部依赖；用真正的装载器**自检产物**） | 生成 **414525 条**，产物 11 MB |
+| **默认词库** | `schemes/stele-default/cn_dicts/generated.dict.yaml`：jieba 通用词表 + 8 份 THUOCL 分领域词表；简繁过滤（用 OpenCC 的 `TSCharacters` 滤掉繁体条目）。主词典 `pinyin.dict.yaml` 仍是**导入清单** | 音节表 **399 个**编码单元，由生成器反推并同步写回方案 |
+| **OpenCC 数据装载** | `stele-dict/src/opencc.rs`（含一个 300 行的极简 JSON 解析器）+ `opencc.manifest.yaml`（数据清单） | emoji 表 6355 条、简繁表 53250 条，**真的装进引擎** |
+| **`simplifier` 真的生效** | `stele --option=emoji weixiao` → 候选里有 `😊`；`--option=traditionalization zhongguo` → `中國` | 两条都有端到端断言 |
+
+**为什么源数据不进仓库**：那 9 份里有 8 份是 THUOCL / jieba / OpenCC，
+**都是可分发的**（MIT / Apache-2.0）——但我们仍然把它们放在 `build/`
+（`.gitignore`）里，因为「数据的来源与许可是使用者要能自己核对的东西」。
+**生成的 `.dict.yaml` 进仓库**：它是 MIT 数据的产物，且"克隆下来就能打字"
+需要它。两者相加仍然只有 13 MB。
+
+**多音字：说清假设**。`pinyin.txt` 给每个字一个有序读音表（按字典习惯），
+而**词级拼音不在任何一份可分发数据里**。生成器的策略是：主读音取首个，
+只在**同声母**的候选里按"单字表里出现更多的读音"微调。
+**它不会把「银行」读成 `yín háng`**（那是另一份数据的事），
+这一条写在词库头部与生成器的文档里，不藏在代码里。
+
+### 与 librime 的对照（P3 的验收线）
+
+```bash
+cd tools/librime-probe && ./build.sh        # 一次性
+python3 tools/compare-librime.py            # 6 条用例
+```
+报告在 `tools/librime-probe/samples/compare-report.md`，**6 条结构用例全过**。
+**报告只断言结构**（能否上屏、按键是否被处理、标点是不是全角），
+**不断言候选排序**——两边的词库与语言模型不同，比排序等于比词库。
+
 ### 下一步
 
-P3 的清单（1–6）**全部做完了**；阶段 A 的 10 个内联零件也做完了。
-剩下的是（**按建议顺序**）：
+按建议顺序：
 
-1. **P3.5 词库管线**（最该做的那个）——`schemes/stele-default` 现在只有
-   30 条演示词，而**其余一切的验收都卡在它上面**：没有真词库，
-   "装上就能打字"是空的，librime 对照也只能比结构、比不了排序。
-   两件事一起做：
-   - **干净来源的词表**（THUOCL / pinyin-data / Unihan / rime-melt /
-     rime-essay-simp——清单见 `reference/rime-ice-research.md` §6）；
-   - **OpenCC 数据装载**（`simplifier` 的最后一块，做完"需数据"归零）。
-
-   > 雾凇那 44 MB 词表**不进仓库**：授权状态混合，而最大的两块
-   > （腾讯词向量、`base` 里那几项）来源不明或明确限制。
-   > 用户部署时自取，我们只提供装载路径与校验。
-
-2. **阶段 C：会话语义改造**（解锁 `select_character` + 拆字辅码）。
-   需要让 `Session` 能表达"把第 N 个候选的第 M 个字放进输入串"——
-   这是唯一需要动接口的事，风险最大、收益也最大。
-3. **recognizer 的三处语义分叉**（记在
-   `reference/rime-recognizer-and-affix.md` 的差异表）：
-   我们锚死在位置 0、用"正则是否以 `$` 结尾"的启发式、
-   取最长认领而非名字典序第一条。前两处会影响真实方案。
-4. **`corrector` / `lunar`**：等有了数据来源再说——注册表里已经把
-   它们标成"缺表不是缺代码"，不必再查一遍。
-5. **`send_sequence` 的用例**与 **`select`**（切方案，需要
-   `SchemaCatalog` 进处理器）——数据结构已就位。
-6. **P4a 用户记忆**（`MemoryStore`，`Event::ForgetRequested` 已经发出来了）。
+1. **P4a 用户记忆**（`MemoryStore` 接口与 `Event::ForgetRequested` 早就位）。
+   红线是**按键时零磁盘 I/O**。**注意 G10**：落库前必须把编码规范化，
+   否则会得到"永远检索不到的无效数据"，症状是"学过的词有时出现有时不出现"。
+2. **`recognizer` 的三处语义分叉**（记在
+   `reference/rime-recognizer-and-affix.md` 的差异表）：我们锚死在位置 0、
+   用"正则是否以 `$` 结尾"的启发式、取最长认领而非名字典序第一条。
+   前两处会影响真实方案。
+3. **阶段 C：会话语义改造**（解锁 `select_character` + 拆字辅码）。
+4. **`corrector` / `lunar`**：等数据来源（注册表已标成"缺表不是缺代码"）。
+5. **`select`（切方案）** 与 **`send_sequence` 的用例**——数据结构已就位。
+6. **简拼的边界**：`nhao` → 你好，而 `nh` 打不出「你好」（见 §5 第 28 条与
+   `pinyin.schema.yaml` 里那段注释）。要支持 `nh` 需要在展开里保住
+   `[ni][hao]` 这条**完整**切分，属于拼写代数的下一步。
 
 ## 5. 踩过的坑（**每一条都是"写代码/量数字"才发现的**）
 
@@ -266,29 +313,55 @@ P3 的清单（1–6）**全部做完了**；阶段 A 的 10 个内联零件也�
 | 23 | **Lua 的 `gsub(p, r)` 默认只替换第一处** —— 我按"全局替换"实现了它，因为那是这个名字给我的印象；上游连写两遍同一个 `gsub` 恰好是在**依赖**这个性质（`R0001` 应为「〇一」） | **名字给的印象不能代替读语义**。对照测试把它从「一」纠正回「〇一」 |
 | 24 | **我比 Lua 更宽松**：`--3`（Lua 里 `--` 是注释）、`1+2)`、`sin(1,2)`（Lua 忽略多余实参） | **"更宽松"也是一种不一致**——它会把"上游说这个输入错了"变成"我们算了个数" |
 | 25 | **我给对照数据放进了内核 crate**（`crates/stele-engine/tests/oracle/`） | `verify-no-scheme-data.sh` 当场拦下：**内核不许有数据文件**（D24）。"只是测试用"不是理由——门禁第六次抓到我 |
+| 26 | **流水线把候选裁成"当前页"是在排序之前** —— 而 `simplifier`（emoji / 简繁）产出的候选**追加在末尾**，于是**永远被裁掉**。症状：`--dump-config` 说"已装载 6355 条转换"、候选里一个 emoji 都没有 | **裁剪/限流必须在排序之后**；"前 N 个"只在"已排序"时才是"前 N 名"。引擎给全量、翻页是前端的事 |
+| 27 | **OpenCC 的表有两种逐字节相同的形状**：`干<TAB>乾 幹`（多选一）与 `微笑<TAB>微笑 😊`（复合串）。我按"按空白切分+取第一个"实现，于是 emoji 表 4857 条一条都不生效 | 判据是**值是否以键自身开头**，而它只能在"同时握着键与值"的地方做——解析层整段保留，消费者才判 |
+| 28 | **拼写展开用的是深搜 + 硬上限**：`ni hao` 的规范切分**没被生成**，因为名额被 `niu hao` 这类缩写变体占满了。症状是"你好在 41 万词条的词库里打不出来"，而单字 `ni`/`hao` 都正常 | 展开必须**按代价排序**（best-first），而不是"先到先得"；上限截断的是**最差**的那些才安全 |
+| 29 | **YAML 子集解析器把裸 `nan` 当浮点 NaN**（Rust 的 `f64::from_str` 认识它）——于是音节表里的 `- nan` 变成 `Float(NaN)`，`as_str()` 返回 `None`，那一项被静默丢掉。装载器随后报"词条引用了字母表里没有的编码单元「nan」"，而**文件里明明写着它** | 语言的"特殊值"写法要按**规范**收（`.nan` / `.inf`）；歧义写法一律当字符串。**查了半天不在装载器上，在解析器的一行** |
 
 ---
 
 ## 6. 现在怎么跑
 
 ```bash
-cargo build --workspace && cargo test --workspace      # 334 个测试
+cargo build --workspace && cargo test --workspace      # 360 个测试
 cargo run -p stele-cli -- --check                      # 7 组内核不变式
-cargo run -p stele-cli -- nihao                        # → 你好
-cargo run -p stele-cli -- nh                           # → 你好（简拼）
+cargo run -p stele-cli -- nihao                        # → 你好（内嵌演示词库）
 cargo run -p stele-cli -- --schema shape ab            # → 十（同一个引擎）
 cargo run -p stele-cli -- --dump-config                # 合并后的方案（标来源）
 cargo run -p stele-cli -- --components                 # 零件注册表
-cargo run -p stele-bench --release -- --schema=shape   # 换方案称重
-python3 tools/compare-librime.py                       # 与 librime 对照（结构）
+
+# ── 真实词库（41 万条）── 在仓库根目录跑时会**自动发现** schemes/stele-default
+cargo run -p stele-cli --release -- nihao
+cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default nihao
+cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default nhao
+cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+    --candidates=all weixiao             # `--candidates=N|all` 看全量（默认只看当前页）
+
+# ── 重新生成默认词库（一次网络访问；源数据落在 .gitignore 的 build/）──
+bash tools/fetch-sources.sh              # 取回 9 份干净来源 + sha256 校验
+cargo run --release --manifest-path tools/wordlist-gen/Cargo.toml -- \
+    --sources schemes/stele-default/build --out schemes/stele-default
+
+# ── OpenCC 转换（emoji / 简繁）：可选叠加层 ─────────────────────────
+cp schemes/stele-default/opencc.patch.yaml schemes/stele-default/pinyin.custom.yaml
+cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+    --option=emoji --candidates=all weixiao      # 候选里有 😊
+cargo run -p stele-cli --release -- --scheme-dir schemes/stele-default \
+    --option=traditionalization zhongguo          # 候选里有 中國
+
+# ── 称重（真实词库）与门禁 ─────────────────────────────────────────
+cargo run -p stele-bench --release -- --scheme-dir schemes/stele-default --schema=pinyin
+cargo run -p stele-bench --release -- --schema=shape   # 演示方案（零件少）
+bash scripts/verify-*.sh                               # 三条门禁
+
+# ── 与 librime / 上游 Lua 对照 ─────────────────────────────────────
+python3 tools/compare-librime.py                       # 结构对照（6 条）
 cd tools/librime-probe && ./build.sh && ./probe --help  # 驱动真实 librime
 cargo test -p stele-engine --test number_oracle         # 与上游 Lua 逐字节对照
 cargo test -p stele-engine --test calc_oracle           #   （42 + 74 条）
 # 重新生成对照数据（需要 luajit；见 tools/oracle/README.md）：
 luajit tools/oracle/calc_translator/calc.lua > tools/oracle/calc_translator/calc.expected.txt
 cargo run -p stele-cli -- --scheme-dir <目录> --list    # 装载自建方案
-cargo run -p stele-bench --release -- --iterations=200000
-bash scripts/verify-*.sh                               # 三条门禁
 ```
 
 **环境事实**：WSL2，仓库在 ext4（`/home/brennmond/projects/stele`），
@@ -299,25 +372,18 @@ rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 
 ## 7. 下一步建议
 
-**优先做 P3.5（默认方案）**，因为其余一切的验收都卡在它上面：
+**P3.5 已完成**（见 §4）——默认词库 41 万条、OpenCC 数据装载、
+简繁/emoji 两条端到端断言。**下一步**：
 
-```
-P3.5  schemes/stele-default 是自有资产（现在只有 30 条演示词）
-      ├─ 装上就能打字 —— "体验对标雾凇"这句话才有内容
-      ├─ 有了真词库，对照实验才能比**排序**（现在只能比结构）
-      └─ OpenCC 数据装载顺带做完（simplifier 的最后一块）
-```
-
-**然后**：
-
-1. **recognizer 的三处语义分叉**——记在
+1. **P4a 用户记忆**：`MemoryStore` 接口早就定好了（`stele-core::service`），
+   `Event::ForgetRequested` 也已经发出来。红线是**按键时零磁盘 I/O**（全量放内存、
+   异步批量落盘）。**动手前先读 G10**：落库前必须把编码规范化。
+2. **recognizer 的三处语义分叉**——记在
    `reference/rime-recognizer-and-affix.md` 的差异表里。前两处
    （锚死位置 0、`$` 启发式）会影响真实方案，值得对齐。
-2. **P4a 用户记忆**：`MemoryStore` 接口早就定好了（`stele-core::service`），
-   `Event::ForgetRequested` 也已经发出来。红线是**按键时零磁盘 I/O**。
-3. **`select`（切方案）**：需要把 `SchemaCatalog` 送到处理器手里，
-   属会话语义；`key_binder` 的其余动作都齐了。
-4. 再往后是 P4b（本地下一词预测）、P5（向量重排，需过内存评审）、
+3. **阶段 C：会话语义改造**（解锁 `select_character` + 拆字辅码）。
+4. **`select`（切方案）**：需要把 `SchemaCatalog` 送到处理器手里。
+5. 再往后是 P4b（本地下一词预测）、P5（向量重排，需过内存评审）、
    P6/P7（Windows TSF / Android）。
 
 **一件不该忘的事**：`reference/` 下有两份**以 librime 源码为准**的调研

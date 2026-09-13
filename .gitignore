@@ -1,5 +1,8 @@
 # Rust
-/target
+# `/target` 只匹配仓库根目录；`tools/` 下的独立 crate 各有自己的 target，
+# 必须用 `**/target/` 才拦得住（第一次 `git add -A` 就把 1200 多个
+# 构建产物加进了暂存区——**门禁与 .gitignore 的价值都在第一次真正运行时兑现**）。
+**/target/
 **/*.rs.bk
 
 # 调研用的 RIME 官方文档快照（.rime-wiki/）——体积小但非本项目代码，
@@ -17,3 +20,12 @@
 # rime-ice 的调研副本（GPL 项目的数据，不入库；只作行为对照）
 /.rime-research/
 # 注意：tools/oracle/ 的对照数据**要入库**（它是实验记录）。
+
+# 方案目录里的词库产物缓存（`stele --scheme-dir <目录>` 建的）。
+/schemes/**/.stele-cache/
+
+# 部署期从上游取回的**源数据**（词表 / OpenCC），以及生成过程中的中间文件。
+# 它们不进仓库：最大几块的授权状态混合（PLAN §10），
+# 而"用户部署时自取"是那条策略的执行方式。
+/schemes/**/build/
+/.work/

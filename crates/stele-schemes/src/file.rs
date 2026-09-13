@@ -22,11 +22,11 @@
 //! 所以本模块**先收集全部诊断再返回**，而不是遇到第一个就 `return`。
 
 use crate::components;
-use stele_engine::keyspec::parse_key_name;
 use stele_config::{Node, Value};
 use stele_core::Score;
 use stele_core::{CodeAlphabet, Diagnostic, SchemaError, SchemaInfo, Switch};
 use stele_dict as dict;
+use stele_engine::keyspec::parse_key_name;
 use stele_engine::pipeline::CANDIDATE_CAP;
 use stele_engine::scheme::{entry, SchemeDef, TranslatorKind, SCHEME_FORMAT_VERSION};
 use stele_engine::spelling::Rule;
@@ -91,7 +91,7 @@ pub fn load_scheme_layered(
     user_patch: Option<(&str, &str)>,
     dicts: &dyn dict::Source,
 ) -> Result<Loaded, SchemaError> {
-    load_layered_with(text, path, user_patch, dicts, &DictMode::Inline)
+    load_layered_with(text, path, user_patch, dicts, &DictMode::Inline, None)
 }
 
 /// 由**方案文本 + 可选补丁文本**算出合并结果并编译。
@@ -113,6 +113,7 @@ fn load_layered_with(
     user_patch: Option<(&str, &str)>,
     dicts: &dyn dict::Source,
     mode: &DictMode<'_>,
+    base_dir: Option<&std::path::Path>,
 ) -> Result<Loaded, SchemaError> {
     let mut layers = vec![(
         crate::provenance::Layer::new("方案", path, "方案文件本身（基础层）"),
@@ -120,30 +121,23 @@ fn load_layered_with(
     )];
     if let Some((patch_text, patch_name)) = user_patch {
         layers.push((
-            crate::provenance::Layer::new(
-                "用户补丁",
-                patch_name,
-                "你的改动层：它覆盖上面任何一层",
-            ),
+            crate::provenance::Layer::new("用户补丁", patch_name, "你的改动层：它覆盖上面任何一层"),
             parse_or_diag(patch_text, patch_name)?,
         ));
     }
-    let resolution = crate::provenance::Resolution::of(layers).map_err(|msg| {
-        SchemaError::Invalid {
+    let resolution =
+        crate::provenance::Resolution::of(layers).map_err(|msg| SchemaError::Invalid {
             schema_id: path.to_owned(),
-            diagnostics: vec![Diagnostic::new(path, msg)
-                .with_field("layers")
-                .with_entry(
-                    "检查补丁里同一个键的类型是否与方案一致（映射可以合并，列表整体替换）",
-                )],
-        }
-    })?;
+            diagnostics: vec![Diagnostic::new(path, msg).with_field("layers").with_entry(
+                "检查补丁里同一个键的类型是否与方案一致（映射可以合并，列表整体替换）",
+            )],
+        })?;
     // **编译的是合并结果**，不是原始方案文件。
     //
     // 这一行是 P2 欠下的接线：`stele-config` 里的分层补丁早就实现并测过，
     // 但装载路径一直只读方案文件本身——于是"用户补丁能覆盖一切"这句话
     // 在 P2 是**假的**。
-    let mut loaded = load_from_root(&resolution.root, path, dicts, mode)?;
+    let mut loaded = load_from_root(&resolution.root, path, dicts, mode, base_dir)?;
     loaded.resolution = resolution;
     Ok(loaded)
 }
@@ -159,8 +153,16 @@ fn load_layered_inner_deployed(
     user_patch: Option<(&str, &str)>,
     dicts: &dyn dict::Source,
     cache_dir: &std::path::Path,
+    base_dir: Option<&std::path::Path>,
 ) -> Result<Loaded, SchemaError> {
-    load_layered_with(text, path, user_patch, dicts, &DictMode::Deployed(cache_dir))
+    load_layered_with(
+        text,
+        path,
+        user_patch,
+        dicts,
+        &DictMode::Deployed(cache_dir),
+        base_dir,
+    )
 }
 
 /// 找一份方案的用户补丁：`<schema_id>.custom.yaml`（RIME 的约定）。
@@ -168,11 +170,7 @@ fn load_layered_inner_deployed(
 /// `schema_id` 以**文件里写的**为准（不假定它等于文件名）——因此要先
 /// 轻量解析一次方案文本。解析失败时返回 `None`：那条错误会在真正的
 /// 装载里以更完整的诊断报出来，这里不必抢着报。
-fn find_patch(
-    dir: &std::path::Path,
-    text: &str,
-    file_name: &str,
-) -> Option<(String, String)> {
+fn find_patch(dir: &std::path::Path, text: &str, file_name: &str) -> Option<(String, String)> {
     let id = stele_config::parse(text)
         .ok()
         .and_then(|root| {
@@ -192,9 +190,7 @@ fn find_patch(
         .and_then(|n| n.to_str())
         .unwrap_or("custom.yaml")
         .to_owned();
-    std::fs::read_to_string(&path)
-        .ok()
-        .map(|t| (t, patch_name))
+    std::fs::read_to_string(&path).ok().map(|t| (t, patch_name))
 }
 
 fn parse_or_diag(text: &str, path: &str) -> Result<Node, SchemaError> {
@@ -231,7 +227,34 @@ fn load_scheme_with(
     })?;
     // `patch` = 已经与方案合并好的配置（由 [`load_scheme_layered`] 给出）。
     // 为 `None` 时就是方案文件本身。
-    load_from_root(&root, path, dicts, mode)
+    load_from_root(&root, path, dicts, mode, None)
+}
+
+/// 找到方案的**辅助数据目录**——`opencc_config` 这类相对路径的解析基准。
+///
+/// 两个来源，**都要**：
+///
+/// 1. 方案文件本身所在目录（`path` 是真实路径时）。这是 RIME 的约定：
+///    `opencc_config: emoji.json` 相对于方案文件。
+/// 2. 装载器给出的根目录。目录装载时 `path` 只是**文件名**（诊断里用），
+///    真正的基准目录是装载器的 `root`。
+///
+/// 两条都试是为了让"单文件装载 + 目录装载"行为一致——只认其中一条，
+/// 就会出现"测试里能读到、真跑起来读不到"这类接线 bug（P2.5 与 P3
+/// 各踩过一次，见 HANDOFF §5 第 8、21 条）。
+fn schema_aux_dir<'a>(
+    schema_path: &'a str,
+    base_dir: Option<&'a std::path::Path>,
+) -> Option<&'a std::path::Path> {
+    // **装载器给的目录优先**。它在目录装载时是方案的根目录，而
+    // `opencc_config` 是相对**根**写的（RIME 的约定，`emoji.json` 与
+    // `.schema.yaml` 同级）。反过来优先"文件名的父目录"，会在
+    // `name = "cn_dicts/x.schema.yaml"` 时解析成 `cn_dicts/emoji.json`——错。
+    base_dir.or_else(|| {
+        std::path::Path::new(schema_path)
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+    })
 }
 
 /// 从**已经合并好的**配置树编译方案。
@@ -244,15 +267,19 @@ fn load_from_root(
     path: &str,
     dicts: &dyn dict::Source,
     mode: &DictMode<'_>,
+    base_dir: Option<&std::path::Path>,
 ) -> Result<Loaded, SchemaError> {
-
-
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut schema_id = String::new();
     // 装载期发现的**提示**（不是错误）。它们会进 `custom`，由
     // `--dump-config` 打印——"我配的东西为什么没生效"这类问题，
     // 答案常常就在这些提示里。
-    let mut load_notes: Option<String> = None;
+    //
+    // 用 `Vec<(键, 值)>` 而不是一个字符串：**一条提示一个键**。
+    // 上一版是一个 `Option<String>`，于是第二个想写提示的人要么覆盖
+    // 第一个（`OpenCC` 的重复行警告会吃掉"翻译器族是推断出来的"），
+    // 要么把两件不相干的事拼进同一个键里。两种都不对。
+    let mut load_notes: Vec<(&'static str, String)> = Vec::new();
 
     // ── schema 段 ──
     let mut info = SchemaInfo {
@@ -421,8 +448,9 @@ fn load_from_root(
             // 这是**提示**而不是错误：RIME 的方案本来就只列零件名。
             // `Diagnostic` 目前只有"错误"一种语义，所以提示走 `custom`，
             // 由 `--dump-config` 打印出来。
-            load_notes = Some(format!(
-                "`engine.translator` 未给出，已从 `engine.translators` 列表推断为 `{k:?}`"
+            load_notes.push((
+                "translator_kind_inferred",
+                format!("`engine.translator` 未给出，已从 `engine.translators` 列表推断为 `{k:?}`"),
             ));
         }
     }
@@ -552,7 +580,9 @@ fn load_from_root(
     // 否则 `,` 只会出一个半角逗号（或者什么都没有）。
     // 这份默认来自**引擎自带的预设**（见 `stele_engine::presets`），
     // 而不是某个具体输入法的数据。
-    let punctuator = if let Some(n) = root.get("punctuator") { components::read_punctuator(n, &mut diags, path) } else {
+    let punctuator = if let Some(n) = root.get("punctuator") {
+        components::read_punctuator(n, &mut diags, path)
+    } else {
         let p = stele_engine::presets::stele();
         stele_engine::spec::PunctuatorSpec {
             half_shape: p.half_shape.into_iter().collect(),
@@ -571,16 +601,22 @@ fn load_from_root(
         .map(|n| components::read_key_bindings(n, &mut diags, path))
         .unwrap_or_default();
 
-    let navigator = root
-        .get("navigator").map_or_else(|| {
+    let navigator = root.get("navigator").map_or_else(
+        || {
             // 没写 `navigator` 段时用预设的翻页键（RIME 的默认）。
             let p = stele_engine::presets::stele();
             stele_engine::spec::NavigatorSpec {
                 page_up: p.page_up.iter().filter_map(|s| parse_key_name(s)).collect(),
-                page_down: p.page_down.iter().filter_map(|s| parse_key_name(s)).collect(),
+                page_down: p
+                    .page_down
+                    .iter()
+                    .filter_map(|s| parse_key_name(s))
+                    .collect(),
                 ..Default::default()
             }
-        }, |n| components::read_navigator(n, &mut diags, path));
+        },
+        |n| components::read_navigator(n, &mut diags, path),
+    );
 
     // 带词缀的切分器 / 反查滤镜 / 转换滤镜：**按 `engine:` 里出现的别名**
     // 去找对应的顶层段。找不到就是"声明了却没人配"——`compile` 会报。
@@ -591,6 +627,11 @@ fn load_from_root(
         std::collections::BTreeMap<String, Vec<String>>,
         stele_engine::spec::SimplifierSpec,
     )> = Vec::new();
+    // 每个 `simplifier@别名` 的**外部数据事实**：它的转换表到底装到了没有、
+    // 从哪个文件装的。由装载器填（只有它知道文件在不在），最后交给
+    // `stele_engine::registry::unmet_requirements` 决定要不要出声。
+    let mut convert_facts: std::collections::BTreeMap<String, ConvertFact> =
+        std::collections::BTreeMap::new();
     for name in engine_spec
         .segmentors
         .iter()
@@ -613,17 +654,73 @@ fn load_from_root(
             "simplifier" => {
                 let mut spec = components::read_simplifier(block, &mut tags, &mut diags, path);
                 spec.tags = components::read_tags(block, &mut tags);
-                // 转换表：RIME 指 OpenCC 的 json。**我们不解析 OpenCC 格式**
-                // ——那是它自己的数据格式，属于"外部数据"。方案若想要
-                // 转换，就在这里直接给一张 `from: to` 表。
+                let aux = schema_aux_dir(path, base_dir);
+
+                // 转换表的来源，**按顺序**：
+                //
+                // 1. 方案声明的 `opencc_config:`（RIME 的真实写法）。
+                // 2. `opencc.manifest.yaml` 里按**别名**声明的 `config:`
+                //    ——方案里只写 `option_name: emoji` 时靠它找到数据。
+                // 3. 内联 `table:` —— 我们的扩展，给"只想改几个词"的方案用。
+                //
+                // 上一版的接线状态是：`opencc_config` **只被记下来、从未被读**，
+                // 于是"配置合法、没有报错、emoji 就是不生效"（HANDOFF §3
+                // 点名的那类 bug）。所以这一处必须真的走装载。
+                let manifest = opencc_manifest(aux);
+                let cfg_from_manifest = manifest
+                    .iter()
+                    .find(|(alias, _)| alias == a)
+                    .map(|(_, entry)| entry.config.clone());
+                let cfg = spec.opencc_config.clone().or(cfg_from_manifest);
+                let cfg_path = cfg
+                    .as_ref()
+                    .map(|c| aux.map_or_else(|| std::path::PathBuf::from(c), |d| d.join(c)));
+                // 文件不存在时**不把它当错误**：数据本来就不在仓库里
+                // （`build/` 是 .gitignore 的）。这一条事实由
+                // `external_data_facts` 转成"这份方案缺不缺数据"。
+                let file_present = cfg_path.as_ref().is_some_and(|p| p.is_file());
+
                 let mut table: std::collections::BTreeMap<String, Vec<String>> =
                     std::collections::BTreeMap::new();
+                let mut loaded_from: Option<String> = None;
+                if file_present {
+                    let cfg = cfg.clone().unwrap_or_default();
+                    match load_opencc_table(aux, &cfg) {
+                        Ok((t, warns)) => {
+                            if !t.is_empty() {
+                                loaded_from = Some(cfg);
+                            }
+                            merge_convert_table(&mut table, t);
+                            for w in warns {
+                                load_notes.push(("opencc_notes", w));
+                            }
+                        }
+                        Err(msg) => diags.push(
+                            Diagnostic::new(path, msg)
+                                .with_field(format!("{a}.opencc_config"))
+                                .with_entry(format!("第 {} 行", block.line)),
+                        ),
+                    }
+                }
                 if let Some(t) = block.get("table").and_then(stele_config::Node::as_map) {
                     for (k, v) in t {
                         let to = v.as_str().unwrap_or_default();
+                        // 内联表**覆盖** `OpenCC` 表：用户写的比上游的优先，
+                        // 这样"只改几个词"才可能（否则内联表永远被压掉）。
                         table.insert(k.clone(), vec![to]);
                     }
                 }
+                let entries = table.len();
+                convert_facts.insert(
+                    a.to_owned(),
+                    ConvertFact {
+                        present: loaded_from.is_some() || block.get("table").is_some(),
+                        source: loaded_from,
+                        declared: cfg,
+                        file_present,
+                        entries,
+                    },
+                );
                 converters.push((a.to_owned(), table, spec));
             }
             _ => {}
@@ -688,41 +785,46 @@ fn load_from_root(
 
     Ok(Loaded {
         def: SchemeDef {
-        info,
-        switches,
-        tag,
-        alphabet,
-        rules,
-        dictionary: match external {
-            Some(l) => stele_engine::scheme::DictSource::External(l),
-            None => stele_engine::scheme::DictSource::Inline(entries),
-        },
-        translator: translator.expect("已在上面校验过"),
-        candidate_cap,
-        preedit_delimiter,
-        engine: engine_spec.clone(),
-        recognizer,
-        punctuator,
-        editor_bindings,
-        key_bindings,
-        navigator,
-        affixes,
-        reverse_lookups,
-        converters,
-        translator_specs,
-        input_alphabet,
-        page_size,
-        external_data: external_data_facts(root, path, &engine_spec),
-        custom: {
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(s) = custom_summary {
-                m.insert("component_coverage".to_owned(), s);
-            }
-            if let Some(n) = load_notes {
-                m.insert("translator_kind_inferred".to_owned(), n);
-            }
-            m
-        },
+            info,
+            switches,
+            tag,
+            alphabet,
+            rules,
+            dictionary: match external {
+                Some(l) => stele_engine::scheme::DictSource::External(l),
+                None => stele_engine::scheme::DictSource::Inline(entries),
+            },
+            translator: translator.expect("已在上面校验过"),
+            candidate_cap,
+            preedit_delimiter,
+            engine: engine_spec.clone(),
+            recognizer,
+            punctuator,
+            editor_bindings,
+            key_bindings,
+            navigator,
+            affixes,
+            reverse_lookups,
+            converters,
+            translator_specs,
+            input_alphabet,
+            page_size,
+            external_data: external_data_facts(root, &engine_spec, &convert_facts),
+            custom: {
+                let mut m = std::collections::BTreeMap::new();
+                if let Some(s) = custom_summary {
+                    m.insert("component_coverage".to_owned(), s);
+                }
+                // 每个 `simplifier@别名` 的数据状态——"我配了 emoji，到底有没有
+                // 生效"这类问题的答案就在这里（与 `--dump-config` 一起看）。
+                for (alias, f) in &convert_facts {
+                    m.insert(format!("simplifier_data.{alias}"), f.describe());
+                }
+                for (k, v) in load_notes {
+                    m.insert(k.to_owned(), v);
+                }
+                m
+            },
         },
         // 逐条装载路径（`load_scheme` 等）只知道方案文件这一层；
         // 用户补丁层由 `load_scheme_layered` 补上。
@@ -732,6 +834,148 @@ fn load_from_root(
         )])
         .expect("单层合并不可能失败"),
     })
+}
+
+/// 一个 `simplifier@别名` 的外部数据事实。
+#[derive(Clone, Debug, Default)]
+struct ConvertFact {
+    /// 数据是否**真的装到了引擎里**（有 `OpenCC` 表，或有内联 `table:`）。
+    present: bool,
+    /// 实际装载成功的 `OpenCC` 配置（相对路径）。
+    source: Option<String>,
+    /// 方案或清单声明的配置路径（无论是否装载成功）。
+    declared: Option<String>,
+    /// 声明指向的文件在不在。
+    file_present: bool,
+    /// 装进来的表有多少条。
+    entries: usize,
+}
+
+impl ConvertFact {
+    /// 给 `--dump-config` 看的一句人话。
+    fn describe(&self) -> String {
+        match (&self.source, self.file_present) {
+            (Some(s), _) => format!("已装载 `{s}`（{} 条转换）", self.entries),
+            (None, false) => match &self.declared {
+                Some(c) => {
+                    format!("**数据缺失**：`{c}` 不存在。先跑 `bash tools/fetch-sources.sh`。")
+                }
+                None => "**数据缺失**：既没有 `opencc_config`，也没有内联 `table:`".to_owned(),
+            },
+            (None, true) => match &self.declared {
+                Some(c) => format!("`{c}` 存在但一条转换也没读出来（检查它的 `conversion_chain`）"),
+                None => "**数据缺失**".to_owned(),
+            },
+        }
+    }
+}
+
+/// 读 `opencc.manifest.yaml`，返回 `别名 → 清单条目`。
+///
+/// **清单是可选的**：没有它（或格式不对）就返回空，装载照旧——
+/// 因为"数据不在"是正常状态（`build/` 不进仓库），而**配置文件坏了
+/// 不该阻止启动**（D26：输入法的失败是自锁的）。
+fn opencc_manifest(dir: Option<&std::path::Path>) -> Vec<(String, ManifestEntry)> {
+    #[derive(Clone, Debug, Default)]
+    struct _Unused;
+    let Some(dir) = dir else { return Vec::new() };
+    let Some(text) = std::fs::read_to_string(dir.join("opencc.manifest.yaml")).ok() else {
+        return Vec::new();
+    };
+    let Ok(root) = stele_config::parse(&text) else {
+        return Vec::new();
+    };
+    let Some(items) = root.get("converters").and_then(Node::as_seq) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for it in items {
+        let (Some(name), Some(config)) = (
+            it.get("name").and_then(Node::as_str),
+            it.get("config").and_then(Node::as_str),
+        ) else {
+            continue;
+        };
+        out.push((
+            name,
+            ManifestEntry {
+                config,
+                source: it.get("source").and_then(Node::as_str),
+                license: it.get("license").and_then(Node::as_str),
+                purpose: it.get("purpose").and_then(Node::as_str),
+            },
+        ));
+    }
+    out
+}
+
+/// 清单的一条。
+#[derive(Clone, Debug, Default)]
+pub struct ManifestEntry {
+    /// `OpenCC` 配置的相对路径。
+    pub config: String,
+    /// 上游来源（人话）。
+    pub source: Option<String>,
+    /// 上游许可。
+    pub license: Option<String>,
+    /// 这个转换是干什么的。
+    pub purpose: Option<String>,
+}
+
+/// 装载 `simplifier` 的 `opencc_config`，把错误翻成一句人话。
+///
+/// 真正的解析在 `stele-dict`（它是纯函数、可脱离文件系统测试）；
+/// 这里只负责**把"相对路径"变成"能读到的字节"**——也就是装载器
+/// 唯一有资格做的那件事：知道文件在哪。
+///
+/// `aux` 是方案文件所在目录（`None` = 方案不是从文件装载的，
+/// 例如内嵌方案）。此时不报错而是返回一句解释：内嵌方案里写
+/// `opencc_config` 本来就无处可读，说出来比静默空表好。
+fn load_opencc_table(
+    aux: Option<&std::path::Path>,
+    cfg: &str,
+) -> Result<(dict::opencc::ConvertTable, Vec<String>), String> {
+    let Some(dir) = aux else {
+        return Err(format!(
+            "`opencc_config: {cfg}` 需要一个方案文件所在目录来解析相对路径，\
+             但这份方案不是从文件装载的（内嵌方案）。\
+             请用 `--scheme-dir` 从目录装载，或改用内联 `table:`。"
+        ));
+    };
+    // `opencc_config` 可能写成 `emoji.json`（OpenCC 的约定，相对方案文件），
+    // 也可能写成 `opencc/emoji.json`。两种情况都按"相对方案目录"解析。
+    let abs = dir.join(cfg);
+    let display = abs.display().to_string();
+    let store = FsSource;
+    dict::opencc::load(&store, &display, &display).map_err(|e| e.to_string())
+}
+
+/// 把 `OpenCC` 的配置与它引用的词典**直接从文件系统读**。
+///
+/// 为什么不复用方案的 `dict::Source`：那一套的路径解析约定是"相对词典目录"
+/// （`DirSource` 还会自动补 `.dict.yaml` 后缀），而 `OpenCC` 的文件名是**写死的**
+/// （`emoji.txt`）。两个约定混用会让"文件明明在、就是读不到"再次发生。
+/// 所以这里给出一份**只要绝对路径**的最小实现。
+struct FsSource;
+
+impl dict::Source for FsSource {
+    fn read(&self, rel_path: &str) -> Option<String> {
+        std::fs::read_to_string(rel_path).ok()
+    }
+}
+
+/// 把一张转换表并进另一张：**逐键覆盖**。
+///
+/// 用于"`OpenCC` 的链"（后面的词典赢）——`stele-dict` 内部已经按链的
+/// 顺序覆盖过一次，这里是把**多段配置**（一个方案里可以有好几个
+/// `simplifier@x`）分开保存，所以不复用。
+fn merge_convert_table(
+    into: &mut std::collections::BTreeMap<String, Vec<String>>,
+    from: std::collections::BTreeMap<String, Vec<String>>,
+) {
+    for (k, v) in from {
+        into.insert(k, v);
+    }
 }
 
 /// 算出"每个实例的外部数据到底在不在"。
@@ -751,34 +995,22 @@ fn load_from_root(
 /// | `reverse_lookup_filter@x` | 一本反查词库 | 同上 |
 fn external_data_facts(
     root: &Node,
-    path: &str,
     engine: &stele_engine::spec::EngineSpec,
+    convert_facts: &std::collections::BTreeMap<String, ConvertFact>,
 ) -> Vec<stele_engine::registry::ExternalData<'static>> {
-    let dir = std::path::Path::new(path)
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty());
     let mut out = Vec::new();
-    for name in engine
-        .translators
-        .iter()
-        .chain(engine.filters.iter())
-    {
+    for name in engine.translators.iter().chain(engine.filters.iter()) {
         let (component, alias) = stele_engine::spec::split_alias(name);
         let Some(a) = alias else { continue };
         let present = match root.get(a) {
             None => false,
             Some(block) => match component {
-                "simplifier" => {
-                    block.get("table").is_some()
-                        || block
-                            .get("opencc_config")
-                            .and_then(Node::as_str)
-                            .is_some_and(|cfg| {
-                                dir.is_some_and(|d| d.join(&cfg).is_file())
-                            })
+                // **以"表真的装到了"为准**，而不是"文件在不在"。
+                // 前者才是引擎能不能工作的判据。
+                "simplifier" => convert_facts.get(a).is_some_and(|f| f.present),
+                "table_translator" | "reverse_lookup_translator" | "reverse_lookup_filter" => {
+                    block.get("dictionary").is_some()
                 }
-                "table_translator" | "reverse_lookup_translator"
-                | "reverse_lookup_filter" => block.get("dictionary").is_some(),
                 _ => false,
             },
         };
@@ -1058,10 +1290,17 @@ pub fn load_dir_layered(root: &std::path::Path) -> Result<Vec<Loaded>, SchemaErr
         // **补丁必须真的进编译**——只把它记进来源表是不够的（那正是
         // 上一轮的 bug：报告说改了、行为没变）。
         let patch = find_patch(root, &text, name);
-        let patch_ref = patch
-            .as_ref()
-            .map(|(t, n)| (t.as_str(), n.as_str()));
-        out.push(load_layered_with(&text, name, patch_ref, &src, &DictMode::Inline)?);
+        let patch_ref = patch.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
+        out.push(load_layered_with(
+            &text,
+            name,
+            patch_ref,
+            &src,
+            &DictMode::Inline,
+            // 目录装载：辅助数据（`opencc_config`）相对于**这个目录**解析，
+            // 而不是相对于 `name`（那只是文件名，诊断里用）。
+            Some(root),
+        )?);
     }
     Ok(out)
 }
@@ -1154,15 +1393,14 @@ pub fn load_dir_deployed_layered(
             diagnostics: vec![Diagnostic::new(&name, format!("读不了文件：{e}"))],
         })?;
         let patch = find_patch(root, &text, &name);
-        let patch_ref = patch
-            .as_ref()
-            .map(|(t, n)| (t.as_str(), n.as_str()));
+        let patch_ref = patch.as_ref().map(|(t, n)| (t.as_str(), n.as_str()));
         out.push(load_layered_inner_deployed(
             &text,
             &name,
             patch_ref,
             &src,
             cache_dir,
+            Some(root),
         )?);
     }
     Ok(out)

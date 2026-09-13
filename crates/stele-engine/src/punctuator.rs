@@ -73,11 +73,8 @@ impl Punctuator {
         for (k, v) in &spec.full_shape {
             collect(&mut full, k, v);
         }
-        let mut punct_chars: Vec<char> = half
-            .keys()
-            .chain(full.keys())
-            .copied()
-            .collect::<Vec<_>>();
+        let mut punct_chars: Vec<char> =
+            half.keys().chain(full.keys()).copied().collect::<Vec<_>>();
         punct_chars.sort_unstable();
         punct_chars.dedup();
         Self {
@@ -138,9 +135,7 @@ impl stele_core::Processor for Punctuator {
         if let Some(p) = self.symbol_prefix {
             if c == p {
                 // 输入串为空，或本来就以这个前缀开头时才接管。
-                if state.composition.input.is_empty()
-                    || state.composition.input.starts_with(p)
-                {
+                if state.composition.input.is_empty() || state.composition.input.starts_with(p) {
                     state.composition.input.push(c);
                     state.composition.caret = state.composition.input.len();
                     return ProcessResult::Accepted;
@@ -351,7 +346,10 @@ mod tests {
                 (".".into(), "。".into()),
                 ("!".into(), "！".into()),
             ],
-            full_shape: vec![",".into()].into_iter().map(|k| (k, "，".into())).collect(),
+            full_shape: vec![",".into()]
+                .into_iter()
+                .map(|k| (k, "，".into()))
+                .collect(),
             symbols: vec![
                 ("1".into(), "①".into()),
                 ("2".into(), "②".into()),
@@ -374,10 +372,7 @@ mod tests {
     fn punctuation_enters_the_input_when_nothing_is_composing() {
         let mut p = Punctuator::new(&spec(), None);
         let mut s = state_with(None);
-        assert_eq!(
-            p.process(&mut s, &Key::ch(',')),
-            ProcessResult::Accepted
-        );
+        assert_eq!(p.process(&mut s, &Key::ch(',')), ProcessResult::Accepted);
         assert_eq!(s.composition.input, "，");
     }
 

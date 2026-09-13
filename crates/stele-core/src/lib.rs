@@ -44,8 +44,8 @@ pub mod error;
 pub mod key;
 pub mod option;
 pub mod score;
-pub mod segmentor;
 pub mod segment;
+pub mod segmentor;
 pub mod service;
 pub mod session;
 pub mod sort;
@@ -67,9 +67,8 @@ pub use segment::{Composition, Segment, SegmentStatus, Segmentation, Tag};
 pub use segmentor::{Claim, InputScanView};
 pub use service::{
     Clock, CodeAlphabet, CodeUnitId, DeterministicRandom, EmptyLexicon, Expansion, ExpansionSink,
-    FrozenClock, Lexicon,
-    LiteralSpelling, MemoryEntry, MemoryStore, NoMemory, Prediction, PredictionOrigin, QueryView,
-    RandomSource, Ranker, Spelling,
+    FrozenClock, Lexicon, LiteralSpelling, MemoryEntry, MemoryStore, NoMemory, Prediction,
+    PredictionOrigin, QueryView, RandomSource, Ranker, Spelling,
 };
 pub use session::{
     Engine, LoadedSchema, Pipeline, SchemaCatalog, SchemaInfo, Session, SessionState,

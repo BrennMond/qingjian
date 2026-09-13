@@ -39,13 +39,13 @@ use stele_engine::scheme::{SchemeDef, TranslatorKind};
 /// `include_str!` 让它们在编译期被读进来——**单一数据来源**：
 /// 文件是真身，这里只是把它搬进二进制。
 pub const EMBEDDED: &[(&str, &str)] = &[
+    // **内嵌的是"演示孪生体"，不是 `pinyin.schema.yaml` 本身**：
+    // 后者的词库是 41 万条的生成词库（11 MB），`include_str!` 会把它
+    // 整个搬进二进制。孪生体的字段完全一样，只把 `dictionary` 指向
+    // 手写的 `base`。真实词库走 `--scheme-dir` 的部署路径。
     (
         "pinyin.schema.yaml",
-        include_str!("../../../schemes/stele-default/pinyin.schema.yaml"),
-    ),
-    (
-        "pinyin.dict.yaml",
-        include_str!("../../../schemes/stele-default/pinyin.dict.yaml"),
+        include_str!("../../../schemes/stele-default/pinyin.embedded.schema.yaml"),
     ),
     (
         "cn_dicts/base.dict.yaml",
@@ -198,20 +198,24 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_imports_are_expanded() {
+    fn embedded_demo_dictionary_is_loaded() {
         let defs = all().unwrap();
         let p = defs.iter().find(|d| d.info.schema_id == "pinyin").unwrap();
         let stele_engine::scheme::DictSource::Inline(entries) = &p.dictionary else {
             panic!("内嵌方案应当用内联词条");
         };
-        // 主词典自己 2 条 + 导入的 base 若干条。
         assert!(
             entries.len() > 10,
-            "导入应当被展开，实得 {} 条",
+            "演示词库应当有几十条词，实得 {} 条",
             entries.len()
         );
-        // 根词典的词条在**前** —— 于是"先出现者优先"这条规则可以直接照做。
-        assert_eq!(entries[0].1, "你");
+        // 词条按 base 文件里的顺序进来——`先出现者优先` 这条规则
+        // 靠的就是"文件顺序即优先级"，所以这里钉住头两条。
+        assert_eq!(entries[0].1, "你好");
+        assert_eq!(entries[1].1, "中国");
+        // 真实词库（41 万条）不在内嵌集合里：它 11 MB，走 `--scheme-dir`
+        // 的部署路径（见 `tools/README.md` 与 `stele-cli` 的自动发现）。
+        assert!(entries.len() < 1000, "内嵌演示词库不应当包含那份生成词库");
     }
 
     #[test]
@@ -224,7 +228,12 @@ mod tests {
     #[test]
     fn scheme_data_is_simplified_only() {
         // PLAN D32：随项目提供的方案数据只做简体。
-        let traditional = ['這', '國', '學', '體', '經', '門', '個', '們', '繁'];
+        //
+        // 这张表要挑**只有繁体写法**的字：`繁` 曾被误列进来，而它是
+        // 规范简体字（`繁华`）——**测试写错会把正确数据判成错的**。
+        // 现在的这八个都能在 OpenCC 的 `TSCharacters.txt` 里查到
+        // "映射到另一个字"（`這→这`），因此是真正的繁体字形。
+        let traditional = ['這', '國', '學', '體', '經', '門', '個', '們'];
         for d in all().unwrap() {
             let stele_engine::scheme::DictSource::Inline(entries) = &d.dictionary else {
                 continue;

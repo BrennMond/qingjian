@@ -105,7 +105,11 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let mp = (5 * doy + 2) / 153; // [0, 11]
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, u32::try_from(m).unwrap_or(1), u32::try_from(d).unwrap_or(1))
+    (
+        if m <= 2 { y + 1 } else { y },
+        u32::try_from(m).unwrap_or(1),
+        u32::try_from(d).unwrap_or(1),
+    )
 }
 
 /// 中文星期名。
@@ -140,7 +144,18 @@ const DIGITS_ZH: [&str; 10] = ["〇", "一", "二", "三", "四", "五", "六", 
 
 /// 中文月份名。
 const MONTHS_ZH: [&str; 13] = [
-    "", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月",
+    "",
+    "一月",
+    "二月",
+    "三月",
+    "四月",
+    "五月",
+    "六月",
+    "七月",
+    "八月",
+    "九月",
+    "十月",
+    "十一月",
     "十二月",
 ];
 
@@ -228,7 +243,10 @@ impl DateTranslator {
     #[must_use]
     pub fn render(&self, input: &str) -> Vec<(String, Option<String>)> {
         let now = self.clock.now_secs();
-        let t = civil_from_unix(i64::try_from(now).unwrap_or(0), self.clock.utc_offset_secs());
+        let t = civil_from_unix(
+            i64::try_from(now).unwrap_or(0),
+            self.clock.utc_offset_secs(),
+        );
         let mut out: Vec<(String, Option<String>)> = Vec::new();
 
         if input == self.spec.date {
@@ -245,11 +263,7 @@ impl DateTranslator {
             out.push((now.to_string(), None));
         } else if input == self.spec.date_zh {
             out.push((
-                format!(
-                    "{}年{}",
-                    year_zh(t.year),
-                    month_day_zh(t.month, t.day)
-                ),
+                format!("{}年{}", year_zh(t.year), month_day_zh(t.month, t.day)),
                 None,
             ));
         } else if input == self.spec.date_en {
@@ -384,7 +398,9 @@ impl UnicodeTranslator {
                 let Some(n) = code.checked_mul(16).and_then(|v| v.checked_add(i)) else {
                     break;
                 };
-                let Some(nc) = char::from_u32(n) else { continue };
+                let Some(nc) = char::from_u32(n) else {
+                    continue;
+                };
                 // 控制字符与代理区不该出现在候选里（RIME 那边会产出，
                 // 但那是它的疏漏——用户拿到一个不可见的候选只会困惑）。
                 if n < 0x20 || (0xD800..0xE000).contains(&n) {
@@ -492,7 +508,10 @@ impl UuidTranslator {
     pub fn generate(&self) -> String {
         let mut bytes = [0u8; 16];
         {
-            let mut rng = self.random.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut rng = self
+                .random
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let a = rng.next_u64().to_le_bytes();
             let b = rng.next_u64().to_le_bytes();
             bytes[..8].copy_from_slice(&a);
@@ -690,32 +709,30 @@ impl ReduceEnglishFilter {
     pub const BUILTIN: &'static [&'static str] = &[
         "aid", "aim", "air", "and", "ant", "any", "bad", "bag", "ban", "band", "bang", "bank",
         "bar", "bat", "bay", "bed", "ben", "bend", "bent", "bet", "bib", "bid", "big", "bin",
-        "bit", "bob", "bog", "bop", "bow", "box", "boy", "bud", "bug", "bus", "but", "buy",
-        "cab", "cad", "cam", "can", "cap", "car", "cat", "ceo", "chi", "cod", "cop", "cry",
-        "cum", "cup", "cur", "cut", "dam", "day", "den", "dew", "did", "dig", "dim", "din",
-        "dip", "dog", "dot", "dry", "dub", "dun", "duo", "ear", "eat", "egg", "end", "era",
-        "err", "eye", "fad", "fan", "far", "fat", "fax", "fee", "few", "fig", "fin", "fit",
-        "fix", "flu", "fly", "fog", "for", "fox", "fry", "fun", "fur", "gag", "gap", "gas",
-        "gay", "gel", "gem", "get", "gin", "god", "got", "gum", "gun", "gut", "guy", "gym",
-        "had", "ham", "has", "hat", "hay", "hen", "her", "hey", "hid", "him", "hip", "his",
-        "hit", "hop", "hot", "how", "hub", "hug", "hum", "hut", "ice", "ill", "ink", "ion",
-        "jar", "jaw", "jazz", "jet", "jog", "joy", "jug", "key", "kid", "kin", "kit", "lab",
-        "lad", "lag", "lap", "law", "lay", "led", "leg", "let", "lid", "lie", "lip", "lit",
-        "log", "lot", "low", "mad", "man", "map", "mat", "max", "may", "men", "met", "mix",
-        "mob", "mom", "mop", "mud", "mug", "nap", "net", "new", "nil", "nip", "nod", "nor",
-        "not", "now", "nun", "nut", "oak", "odd", "off", "oil", "old", "one", "our", "out",
-        "owe", "owl", "own", "pad", "pal", "pan", "par", "pat", "paw", "pay", "pea", "peg",
-        "pen", "per", "pet", "pie", "pig", "pin", "pit", "pod", "pop", "pot", "pro", "pub",
-        "pup", "put", "ram", "ran", "rap", "rat", "raw", "ray", "red", "rib", "rid", "rig",
-        "rim", "rip", "rob", "rod", "rot", "row", "rub", "rug", "rum", "run", "rut", "sad",
-        "sag", "sail", "sam", "sap", "sat", "saw", "say", "sea", "see", "set", "sew", "she",
-        "shy", "sin", "sip", "sir", "sis", "sit", "six", "ski", "sky", "sly", "sob", "sod",
-        "son", "sow", "soy", "spa", "spy", "sub", "sue", "sum", "sun", "sup", "tab", "tag",
-        "tan", "tap", "tar", "tax", "tea", "ten", "the", "tie", "tin", "tip", "toe", "ton",
-        "too", "top", "toy", "try", "tub", "tug", "two", "ugh", "van", "vat", "vet", "via",
-        "vow", "wag", "war", "was", "wax", "way", "web", "wed", "wet", "who", "why", "wig",
-        "win", "wit", "woe", "wok", "won", "wow", "yak", "yam", "yap", "yes", "yet", "you",
-        "zap", "zen", "zip", "zoo",
+        "bit", "bob", "bog", "bop", "bow", "box", "boy", "bud", "bug", "bus", "but", "buy", "cab",
+        "cad", "cam", "can", "cap", "car", "cat", "ceo", "chi", "cod", "cop", "cry", "cum", "cup",
+        "cur", "cut", "dam", "day", "den", "dew", "did", "dig", "dim", "din", "dip", "dog", "dot",
+        "dry", "dub", "dun", "duo", "ear", "eat", "egg", "end", "era", "err", "eye", "fad", "fan",
+        "far", "fat", "fax", "fee", "few", "fig", "fin", "fit", "fix", "flu", "fly", "fog", "for",
+        "fox", "fry", "fun", "fur", "gag", "gap", "gas", "gay", "gel", "gem", "get", "gin", "god",
+        "got", "gum", "gun", "gut", "guy", "gym", "had", "ham", "has", "hat", "hay", "hen", "her",
+        "hey", "hid", "him", "hip", "his", "hit", "hop", "hot", "how", "hub", "hug", "hum", "hut",
+        "ice", "ill", "ink", "ion", "jar", "jaw", "jazz", "jet", "jog", "joy", "jug", "key", "kid",
+        "kin", "kit", "lab", "lad", "lag", "lap", "law", "lay", "led", "leg", "let", "lid", "lie",
+        "lip", "lit", "log", "lot", "low", "mad", "man", "map", "mat", "max", "may", "men", "met",
+        "mix", "mob", "mom", "mop", "mud", "mug", "nap", "net", "new", "nil", "nip", "nod", "nor",
+        "not", "now", "nun", "nut", "oak", "odd", "off", "oil", "old", "one", "our", "out", "owe",
+        "owl", "own", "pad", "pal", "pan", "par", "pat", "paw", "pay", "pea", "peg", "pen", "per",
+        "pet", "pie", "pig", "pin", "pit", "pod", "pop", "pot", "pro", "pub", "pup", "put", "ram",
+        "ran", "rap", "rat", "raw", "ray", "red", "rib", "rid", "rig", "rim", "rip", "rob", "rod",
+        "rot", "row", "rub", "rug", "rum", "run", "rut", "sad", "sag", "sail", "sam", "sap", "sat",
+        "saw", "say", "sea", "see", "set", "sew", "she", "shy", "sin", "sip", "sir", "sis", "sit",
+        "six", "ski", "sky", "sly", "sob", "sod", "son", "sow", "soy", "spa", "spy", "sub", "sue",
+        "sum", "sun", "sup", "tab", "tag", "tan", "tap", "tar", "tax", "tea", "ten", "the", "tie",
+        "tin", "tip", "toe", "ton", "too", "top", "toy", "try", "tub", "tug", "two", "ugh", "van",
+        "vat", "vet", "via", "vow", "wag", "war", "was", "wax", "way", "web", "wed", "wet", "who",
+        "why", "wig", "win", "wit", "woe", "wok", "won", "wow", "yak", "yam", "yap", "yes", "yet",
+        "you", "zap", "zen", "zip", "zoo",
         // 缩写形状的编码（rime-ice 的表里也有一批）。
         "cd", "cn", "hk", "js", "ml", "mt", "ps", "pk", "as", "ak", "dj",
     ];
@@ -774,7 +791,6 @@ pub fn is_english_word(text: &str) -> bool {
     }
     text.chars().any(|c| c.is_ascii_alphabetic())
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // number_translator
@@ -853,7 +869,6 @@ impl NumberStyle {
     fn zero(self) -> &'static str {
         self.figures()[0]
     }
-
 }
 
 /// 数字串转中文读法（`formatNum` 的上位函数）。
@@ -1536,9 +1551,7 @@ impl Filter for LongWordFilter {
         if cands.len() <= self.idx {
             return;
         }
-        let base_len = cands
-            .first()
-            .map_or(0, |c| c.text.chars().count());
+        let base_len = cands.first().map_or(0, |c| c.text.chars().count());
         // 前 `idx - 1` 个原样保留。
         let mut promoted: Vec<Candidate> = Vec::new();
         let mut rest: Vec<Candidate> = Vec::new();
@@ -1730,7 +1743,11 @@ mod tests {
         let utc = civil_from_unix(secs, 0);
         let cst = civil_from_unix(secs, 8 * 3600);
         assert_eq!((utc.month, utc.day), (11, 29));
-        assert_eq!((cst.month, cst.day, cst.hour), (11, 30, 7), "+08:00 下已经是第二天");
+        assert_eq!(
+            (cst.month, cst.day, cst.hour),
+            (11, 30, 7),
+            "+08:00 下已经是第二天"
+        );
     }
 
     #[test]
@@ -1751,11 +1768,7 @@ mod tests {
             offset_secs: 8 * 3600,
         });
         let mut tags = crate::tag::TagTable::new();
-        DateTranslator::new(
-            clock,
-            DateSpec::default(),
-            vec![tags.intern("date")],
-        )
+        DateTranslator::new(clock, DateSpec::default(), vec![tags.intern("date")])
     }
 
     #[test]

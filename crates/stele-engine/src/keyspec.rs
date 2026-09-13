@@ -157,20 +157,20 @@ pub fn key_code_name(code: KeyCode) -> String {
         // 而不是让 `--dump-config` 崩掉。
         _ => match code {
             KeyCode::Named(n) => match n {
-            NamedKey::Space => "space".into(),
-            NamedKey::Enter => "Return".into(),
-            NamedKey::Backspace => "BackSpace".into(),
-            NamedKey::Delete => "Delete".into(),
-            NamedKey::Escape => "Escape".into(),
-            NamedKey::Tab => "Tab".into(),
-            NamedKey::Left => "Left".into(),
-            NamedKey::Right => "Right".into(),
-            NamedKey::Up => "Up".into(),
-            NamedKey::Down => "Down".into(),
-            NamedKey::Home => "Home".into(),
-            NamedKey::End => "End".into(),
-            NamedKey::PageUp => "Page_Up".into(),
-            NamedKey::PageDown => "Page_Down".into(),
+                NamedKey::Space => "space".into(),
+                NamedKey::Enter => "Return".into(),
+                NamedKey::Backspace => "BackSpace".into(),
+                NamedKey::Delete => "Delete".into(),
+                NamedKey::Escape => "Escape".into(),
+                NamedKey::Tab => "Tab".into(),
+                NamedKey::Left => "Left".into(),
+                NamedKey::Right => "Right".into(),
+                NamedKey::Up => "Up".into(),
+                NamedKey::Down => "Down".into(),
+                NamedKey::Home => "Home".into(),
+                NamedKey::End => "End".into(),
+                NamedKey::PageUp => "Page_Up".into(),
+                NamedKey::PageDown => "Page_Down".into(),
                 NamedKey::Digit(d) => d.to_string(),
                 NamedKey::Shift => "Shift".into(),
                 NamedKey::CapsLock => "Caps_Lock".into(),
@@ -220,7 +220,10 @@ mod tests {
         );
         assert_eq!(
             parse_key_name("shift+tab"),
-            Some(KeyChord::new(KeyCode::Named(NamedKey::Tab), Modifiers::SHIFT))
+            Some(KeyChord::new(
+                KeyCode::Named(NamedKey::Tab),
+                Modifiers::SHIFT
+            ))
         );
         assert_eq!(
             parse_key_name(","),

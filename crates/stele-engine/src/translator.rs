@@ -20,8 +20,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use stele_core::{
-    Candidate, CandidateSink, CodeAlphabet, CodeUnitId, Filter, Lane, Lexicon, Origin, Query, Score,
-    Span, Spelling, SpellingAttr, Tag, Translator,
+    Candidate, CandidateSink, CodeAlphabet, CodeUnitId, Filter, Lane, Lexicon, Origin, Query,
+    Score, Span, Spelling, SpellingAttr, Tag, Translator,
 };
 
 /// 一次翻译最多产出多少候选（防止病态输入撑爆内存）。
@@ -164,13 +164,16 @@ impl Translator for SpellingGraphTranslator {
         for exp in expansions {
             let mut raw: Vec<Candidate> = Vec::new();
             {
-                let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
-                self.lexicon.lookup(&exp.code, &mut sink);
+                {
+                    let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
+                    self.lexicon.lookup(&exp.code, &mut sink);
+                }
                 if completion {
                     // 补全只对**规范拼写**那条边做：简拼/纠错的边上再补全
                     // 会让候选数量乘起来，而收益极小（用户敲简拼时本来就
                     // 不指望看到完整词的补全）。
                     if exp.attr == stele_core::SpellingAttr::NORMAL {
+                        let mut sink = CandidateSink::new(&mut raw, TRANSLATE_CAP);
                         self.lexicon.prefix_lookup(&exp.code, true, &mut sink);
                     }
                 }
@@ -387,7 +390,7 @@ mod tests {
 
         let opts = Options::new();
         let ctx = Context::default();
-                let mut buf = Vec::new();
+        let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
         t.translate(&query("ab", &opts, &ctx), Span::new(0, 2), &mut sink);
         assert_eq!(buf.len(), 1);
@@ -409,15 +412,11 @@ mod tests {
 
         let opts = Options::new();
         let ctx = Context::default();
-        
+
         // 规范拼写：属性为 NORMAL，分数就是词条分数。
         let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
-        t.translate(
-            &query("nihao", &opts, &ctx),
-            Span::new(0, 5),
-            &mut sink,
-        );
+        t.translate(&query("nihao", &opts, &ctx), Span::new(0, 5), &mut sink);
         assert_eq!(buf[0].text, "你好");
         assert_eq!(buf[0].attr, SpellingAttr::NORMAL);
         let canonical_score = buf[0].score;
@@ -425,11 +424,7 @@ mod tests {
         // 简拼：同一个词，但带 ABBREV 属性且分数更低。
         let mut buf2 = Vec::new();
         let mut sink2 = CandidateSink::new(&mut buf2, 16);
-        t.translate(
-            &query("nh", &opts, &ctx),
-            Span::new(0, 2),
-            &mut sink2,
-        );
+        t.translate(&query("nh", &opts, &ctx), Span::new(0, 2), &mut sink2);
         assert_eq!(buf2[0].text, "你好");
         assert!(buf2[0].attr.contains(SpellingAttr::ABBREV));
         assert!(
@@ -443,14 +438,10 @@ mod tests {
         let t = EchoTranslator::new();
         let opts = Options::new();
         let ctx = Context::default();
-        
+
         let mut buf = Vec::new();
         let mut sink = CandidateSink::new(&mut buf, 16);
-        t.translate(
-            &query("zzz", &opts, &ctx),
-            Span::new(0, 3),
-            &mut sink,
-        );
+        t.translate(&query("zzz", &opts, &ctx), Span::new(0, 3), &mut sink);
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].text, "zzz");
         assert_eq!(buf[0].origin, Origin::Literal);

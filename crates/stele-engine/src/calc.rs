@@ -607,9 +607,7 @@ pub fn replace_percent(s: &str) -> String {
             if let Some(close) = matched {
                 // `%` 后面必须跟非数字（尾字符已由那个空格保证）。
                 let pct = close + 1;
-                let tail_ok = chars
-                    .get(pct)
-                    .is_some_and(|c| *c == '%')
+                let tail_ok = chars.get(pct).is_some_and(|c| *c == '%')
                     && chars.get(pct + 1).is_some_and(|c| !c.is_ascii_digit());
                 if tail_ok {
                     out.push('(');
@@ -645,9 +643,7 @@ pub fn replace_percent(s: &str) -> String {
                 }
             }
             let num: String = out[start..i].iter().collect();
-            if out.get(i) == Some(&'%')
-                && out.get(i + 1).is_some_and(|c| !c.is_ascii_digit())
-            {
+            if out.get(i) == Some(&'%') && out.get(i + 1).is_some_and(|c| !c.is_ascii_digit()) {
                 out2.push('(');
                 out2.push_str(&num);
                 out2.push_str("/100)");
@@ -813,26 +809,26 @@ impl Translator for CalcTranslator {
             expr.to_owned()
         };
         if let Ok((result, _code)) = self.evaluate(expr) {
-                out.push(Candidate {
-                    text: result.clone(),
-                    comment: None,
-                    score: Score::from_weight(50_000.0),
-                    origin: Origin::Literal,
-                    attr: stele_core::SpellingAttr::NORMAL,
-                    span,
-                    lane: stele_core::Lane::Input,
-                    kind: CandidateKind::Inline,
-                });
-                out.push(Candidate {
-                    text: format!("{shown}={result}"),
-                    comment: None,
-                    score: Score::from_weight(49_990.0),
-                    origin: Origin::Literal,
-                    attr: stele_core::SpellingAttr::NORMAL,
-                    span,
-                    lane: stele_core::Lane::Input,
-                    kind: CandidateKind::Inline,
-                });
+            out.push(Candidate {
+                text: result.clone(),
+                comment: None,
+                score: Score::from_weight(50_000.0),
+                origin: Origin::Literal,
+                attr: stele_core::SpellingAttr::NORMAL,
+                span,
+                lane: stele_core::Lane::Input,
+                kind: CandidateKind::Inline,
+            });
+            out.push(Candidate {
+                text: format!("{shown}={result}"),
+                comment: None,
+                score: Score::from_weight(49_990.0),
+                origin: Origin::Literal,
+                attr: stele_core::SpellingAttr::NORMAL,
+                span,
+                lane: stele_core::Lane::Input,
+                kind: CandidateKind::Inline,
+            });
         } else {
             // 失败路径也是**两条候选**，注释不同（照上游）。
             out.push(Candidate {
@@ -897,7 +893,10 @@ mod tests {
     fn regex_operators_follow_lua() {
         let t = {
             let mut tags = crate::tag::TagTable::new();
-            CalcTranslator::new(&crate::spec::CalcSpec::default(), vec![tags.intern("calculator")])
+            CalcTranslator::new(
+                &crate::spec::CalcSpec::default(),
+                vec![tags.intern("calculator")],
+            )
         };
         let ok = |e: &str| t.evaluate(e).ok().map(|(v, _)| v);
         // `^` 右结合。
@@ -921,7 +920,10 @@ mod tests {
     fn we_are_not_more_permissive_than_lua() {
         let t = {
             let mut tags = crate::tag::TagTable::new();
-            CalcTranslator::new(&crate::spec::CalcSpec::default(), vec![tags.intern("calculator")])
+            CalcTranslator::new(
+                &crate::spec::CalcSpec::default(),
+                vec![tags.intern("calculator")],
+            )
         };
         // 这几条 Lua 都会失败，我们也必须失败——
         // **比上游更宽松也是一种不一致**（它会让"上游说错了"变成"我们算了个数"）。
@@ -929,17 +931,17 @@ mod tests {
             assert!(t.evaluate(bad).is_err(), "{bad} 应当失败");
         }
         // 逗号是例外：Lua 里 `1,2` 合法（返回第一个值）。
-        assert_eq!(
-            t.evaluate("1,2").ok().map(|(v, _)| v).as_deref(),
-            Some("1")
-        );
+        assert_eq!(t.evaluate("1,2").ok().map(|(v, _)| v).as_deref(), Some("1"));
     }
 
     #[test]
     fn extra_function_arguments_are_ignored_like_lua() {
         let t = {
             let mut tags = crate::tag::TagTable::new();
-            CalcTranslator::new(&crate::spec::CalcSpec::default(), vec![tags.intern("calculator")])
+            CalcTranslator::new(
+                &crate::spec::CalcSpec::default(),
+                vec![tags.intern("calculator")],
+            )
         };
         // `sin(1,2)` 在 Lua 里就是 `sin(1)`。
         assert_eq!(

@@ -177,21 +177,26 @@ impl Editor {
                 C::new(KeyCode::Named(NamedKey::Backspace), ctrl),
                 A::BackUnit,
             ),
-            (C::new(KeyCode::Named(NamedKey::Delete), none), A::DeleteForward),
+            (
+                C::new(KeyCode::Named(NamedKey::Delete), none),
+                A::DeleteForward,
+            ),
             (C::new(KeyCode::Named(NamedKey::Escape), none), A::Cancel),
-            (C::new(KeyCode::Named(NamedKey::Enter), none), A::CommitRawInput),
+            (
+                C::new(KeyCode::Named(NamedKey::Enter), none),
+                A::CommitRawInput,
+            ),
         ]
     }
 
     /// 这个按键对应的动作。
     fn action_for(&self, key: &Key) -> Option<crate::spec::EditorAction> {
-        let table: Vec<(crate::spec::KeyChord, crate::spec::EditorAction)> = if self.bindings
-            .is_empty()
-        {
-            Self::default_bindings()
-        } else {
-            self.bindings.clone()
-        };
+        let table: Vec<(crate::spec::KeyChord, crate::spec::EditorAction)> =
+            if self.bindings.is_empty() {
+                Self::default_bindings()
+            } else {
+                self.bindings.clone()
+            };
         // **精确修饰键优先**：`Control+BackSpace` 与 `BackSpace` 都绑了动作时，
         // 按了 Ctrl 的那一下不该命中不要求 Ctrl 的那条。
         // 顺序表里先精确匹配，再退到"修饰键更少"的。
@@ -338,8 +343,7 @@ impl stele_core::Processor for Editor {
                 // 学习型删除：真正"从记忆里删掉"是 P4a 的事
                 // （`MemoryStore::forget`）。这里把意图交出去。
                 if state.composition.is_active() {
-                    state.pending_commit =
-                        Some(PendingCommit::DeleteCandidate { index: 0 });
+                    state.pending_commit = Some(PendingCommit::DeleteCandidate { index: 0 });
                     ProcessResult::Accepted
                 } else {
                     ProcessResult::Noop
@@ -385,9 +389,7 @@ impl AsciiComposer {
     }
 
     fn ascii_on(&self, state: &SessionState) -> bool {
-        self.option
-            .as_deref()
-            .is_some_and(|n| state.options.get(n))
+        self.option.as_deref().is_some_and(|n| state.options.get(n))
     }
 }
 
@@ -720,9 +722,9 @@ impl stele_core::Processor for Selector {
         let pending = match key.code {
             KeyCode::Named(NamedKey::Space) => Some(PendingCommit::keyboard(0, Trigger::Space)),
             KeyCode::Named(NamedKey::Enter) => Some(PendingCommit::keyboard(0, Trigger::Enter)),
-            KeyCode::Named(NamedKey::Digit(d)) if (1..=9).contains(&d) => {
-                Some(PendingCommit::keyboard(usize::from(d - 1), Trigger::Explicit))
-            }
+            KeyCode::Named(NamedKey::Digit(d)) if (1..=9).contains(&d) => Some(
+                PendingCommit::keyboard(usize::from(d - 1), Trigger::Explicit),
+            ),
             _ => None,
         };
 
@@ -735,7 +737,6 @@ impl stele_core::Processor for Selector {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -787,7 +788,8 @@ mod tests {
     #[test]
     fn speller_can_be_suppressed_by_a_switch() {
         let mut s = state();
-        s.options.declare(stele_core::Switch::new("ascii_mode", true));
+        s.options
+            .declare(stele_core::Switch::new("ascii_mode", true));
         let p = Speller::new(vec![])
             .with_alphabet(vec!['n'])
             .blocked_by("ascii_mode");
@@ -818,7 +820,10 @@ mod tests {
         }
 
         let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
-        assert_eq!(Editor::default().process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(
+            Editor::default().process(&mut s, &bs),
+            ProcessResult::Accepted
+        );
         assert_eq!(s.composition.input, "ni");
     }
 
@@ -827,7 +832,10 @@ mod tests {
         let mut s = state();
         s.composition.input = "nihao".into();
         let bs = Key::press(KeyCode::Named(NamedKey::Backspace), Modifiers::NONE);
-        assert_eq!(Editor::default().process(&mut s, &bs), ProcessResult::Accepted);
+        assert_eq!(
+            Editor::default().process(&mut s, &bs),
+            ProcessResult::Accepted
+        );
         assert_eq!(s.composition.input, "niha");
     }
 
@@ -960,7 +968,8 @@ mod tests {
     #[test]
     fn ascii_composer_toggles_and_then_rejects_printable_keys() {
         let mut s = state();
-        s.options.declare(stele_core::Switch::new("ascii_mode", false));
+        s.options
+            .declare(stele_core::Switch::new("ascii_mode", false));
         let mut c = AsciiComposer::new(Some("ascii_mode".into()));
 
         // Shift 单独按下 → 进英文模式，并**记下这次改动**（状态栏要变）。
@@ -992,10 +1001,7 @@ mod tests {
     fn navigator_flips_pages_within_bounds() {
         use crate::spec::{KeyChord as C, NavigatorSpec};
         let spec = NavigatorSpec {
-            page_down: vec![C::new(
-                KeyCode::Named(NamedKey::PageDown),
-                Modifiers::NONE,
-            )],
+            page_down: vec![C::new(KeyCode::Named(NamedKey::PageDown), Modifiers::NONE)],
             page_up: vec![C::new(KeyCode::Named(NamedKey::PageUp), Modifiers::NONE)],
             ..Default::default()
         };
@@ -1021,10 +1027,7 @@ mod tests {
         let bindings = vec![
             KeyBinding {
                 when: WhenPredicate::Always,
-                accept: vec![C::new(
-                    KeyCode::Named(NamedKey::Space),
-                    Modifiers::SHIFT,
-                )],
+                accept: vec![C::new(KeyCode::Named(NamedKey::Space), Modifiers::SHIFT)],
                 send_keys: Some(vec!["space".into()]),
                 toggle: None,
                 set_option: None,
@@ -1043,7 +1046,8 @@ mod tests {
         ];
         let mut kb = KeyBinder::new(bindings);
         let mut s = state();
-        s.options.declare(stele_core::Switch::new("ascii_mode", false));
+        s.options
+            .declare(stele_core::Switch::new("ascii_mode", false));
 
         // Shift+空格 → 换成普通空格重新派发。
         let shift_space = Key::press(KeyCode::Named(NamedKey::Space), Modifiers::SHIFT);
@@ -1055,10 +1059,7 @@ mod tests {
         assert!(s.sent_keys[0].mods.is_empty());
 
         // 反引号 → 切开关。
-        assert_eq!(
-            kb.process(&mut s, &Key::ch('`')),
-            ProcessResult::Accepted
-        );
+        assert_eq!(kb.process(&mut s, &Key::ch('`')), ProcessResult::Accepted);
         assert!(s.options.get("ascii_mode"));
     }
 }

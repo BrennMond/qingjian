@@ -14,22 +14,20 @@
 
 use stele_config::Node;
 use stele_core::Diagnostic;
+use stele_core::Tag;
+use stele_engine::keyspec::{parse_key_name, KeyChord};
 use stele_engine::spec::{
     AffixSpec, At, EditorAction, EngineSpec, KeyBinding, NavigatorSpec, PunctuatorSpec,
     RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TranslatorSpec, WhenPredicate,
 };
-use stele_engine::keyspec::{KeyChord, parse_key_name};
 use stele_engine::tag::TagTable;
-use stele_core::Tag;
 
 /// `engine:` 段：零件名字列表。
 pub fn read_engine(node: &Node) -> EngineSpec {
     let names = |key: &str| -> Vec<String> {
         node.get(key)
             .and_then(Node::as_seq)
-            .map(|seq| {
-                seq.iter().filter_map(stele_config::Node::as_str).collect()
-            })
+            .map(|seq| seq.iter().filter_map(stele_config::Node::as_str).collect())
             .unwrap_or_default()
     };
     EngineSpec {
@@ -147,11 +145,7 @@ fn trailing_literal(regex: &str) -> Option<String> {
 }
 
 /// `punctuator:` 段。
-pub fn read_punctuator(
-    node: &Node,
-    diags: &mut Vec<Diagnostic>,
-    path: &str,
-) -> PunctuatorSpec {
+pub fn read_punctuator(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> PunctuatorSpec {
     let table = |key: &str| -> Vec<(String, String)> {
         node.get(key)
             .and_then(Node::as_map)
@@ -167,7 +161,10 @@ pub fn read_punctuator(
     // `import_preset`：**把预设叠在我写的东西底下**（RIME 的语义）。
     // 方案写了的键以方案为准，没写的由预设补上——于是方案只需要写
     // 自己**特有**的那几条。
-    if let Some(name) = node.get("import_preset").and_then(stele_config::Node::as_str) {
+    if let Some(name) = node
+        .get("import_preset")
+        .and_then(stele_config::Node::as_str)
+    {
         match stele_engine::presets::get(&name) {
             Some(p) => {
                 for (k, v) in &p.half_shape {
@@ -284,11 +281,7 @@ pub fn read_editor(
 }
 
 /// `key_binder:` 段。
-pub fn read_key_bindings(
-    node: &Node,
-    diags: &mut Vec<Diagnostic>,
-    path: &str,
-) -> Vec<KeyBinding> {
+pub fn read_key_bindings(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> Vec<KeyBinding> {
     let mut out = Vec::new();
     let Some(seq) = node.get("bindings").and_then(Node::as_seq) else {
         return out;
@@ -349,7 +342,10 @@ pub fn read_key_bindings(
         if let Some(seq_node) = item.get("send_sequence") {
             match seq_node.as_seq() {
                 Some(items) => {
-                    let names: Vec<String> = items.iter().filter_map(stele_config::Node::as_str).collect();
+                    let names: Vec<String> = items
+                        .iter()
+                        .filter_map(stele_config::Node::as_str)
+                        .collect();
                     if names.is_empty() {
                         diags.push(
                             Diagnostic::new(path, "`send_sequence` 是空的，它什么都不会做")
@@ -392,7 +388,9 @@ pub fn read_key_bindings(
         // 而方案作者的预期（照 RIME 的文档）只有一件。
         let mut toggle = item.get("toggle").and_then(stele_config::Node::as_str);
         let mut set_option = item.get("set_option").and_then(stele_config::Node::as_str);
-        let mut unset_option = item.get("unset_option").and_then(stele_config::Node::as_str);
+        let mut unset_option = item
+            .get("unset_option")
+            .and_then(stele_config::Node::as_str);
 
         if let Some(name) = item.get("select").and_then(stele_config::Node::as_str) {
             diags.push(
@@ -501,7 +499,10 @@ pub fn read_navigator(node: &Node, diags: &mut Vec<Diagnostic>, path: &str) -> N
     };
     let mut page_up = keys("page_up");
     let mut page_down = keys("page_down");
-    if let Some(name) = node.get("import_preset").and_then(stele_config::Node::as_str) {
+    if let Some(name) = node
+        .get("import_preset")
+        .and_then(stele_config::Node::as_str)
+    {
         match stele_engine::presets::get(&name) {
             Some(p) => {
                 if page_up.is_empty() {
@@ -655,6 +656,14 @@ pub fn read_simplifier(
         inherit_comment: node
             .get("inherit_comment")
             .is_none_or(|n| matches!(n.value, stele_config::Value::Bool(true))),
+        // 方案里写 `weight: 0.7`（线性比）。缺省 0.95 —— 见 `SimplifierSpec::weight`
+        // 为什么"越小越看不见"。
+        weight: node.get("weight").map_or(0.95, |n| match &n.value {
+            stele_config::Value::Float(f) => *f,
+            #[allow(clippy::cast_precision_loss)]
+            stele_config::Value::Int(i) => *i as f64,
+            _ => 0.95,
+        }),
         tags: Vec::new(),
         at: At::new(node.line as usize),
     }
@@ -674,11 +683,7 @@ pub fn read_tags(node: &Node, tags: &mut TagTable) -> Vec<Tag> {
 }
 
 /// 一个翻译器实例的配置。
-pub fn read_translator(
-    node: &Node,
-    component: &str,
-    alias: Option<&str>,
-) -> TranslatorSpec {
+pub fn read_translator(node: &Node, component: &str, alias: Option<&str>) -> TranslatorSpec {
     let bool_of = |key: &str| -> Option<bool> {
         node.get(key).map(|n| match &n.value {
             stele_config::Value::Bool(b) => *b,
@@ -731,14 +736,15 @@ mod tests {
     #[test]
     fn one_binding_produces_exactly_one_effect() {
         // librime 的选择链：`send` 在前，`toggle` 在后，**只有第一个生效**。
-        let (bindings, diags) = key_binder_of(
-            "key_binder:\n  bindings:\n    - {accept: a, send: space, toggle: x}\n",
-        );
+        let (bindings, diags) =
+            key_binder_of("key_binder:\n  bindings:\n    - {accept: a, send: space, toggle: x}\n");
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].effect(), "send");
         assert!(bindings[0].toggle.is_none(), "被忽略的动作不该留在数据里");
         assert!(
-            diags.iter().any(|d| d.message.contains("只有 `send` 会生效")),
+            diags
+                .iter()
+                .any(|d| d.message.contains("只有 `send` 会生效")),
             "丢了一个动作必须报出来：{diags:?}"
         );
     }
@@ -757,9 +763,8 @@ mod tests {
 
     #[test]
     fn select_is_reported_as_unsupported_not_silently_dropped() {
-        let (b, d) = key_binder_of(
-            "key_binder:\n  bindings:\n    - {accept: d, select: luna_pinyin}\n",
-        );
+        let (b, d) =
+            key_binder_of("key_binder:\n  bindings:\n    - {accept: d, select: luna_pinyin}\n");
         assert!(b.is_empty());
         assert!(
             d.iter().any(|x| x.message.contains("尚未支持")),
@@ -788,9 +793,15 @@ mod tests {
         );
         assert_eq!(
             parse_key_name("shift+tab"),
-            Some(KeyChord::new(KeyCode::Named(NamedKey::Tab), Modifiers::SHIFT))
+            Some(KeyChord::new(
+                KeyCode::Named(NamedKey::Tab),
+                Modifiers::SHIFT
+            ))
         );
-        assert_eq!(parse_key_name(","), Some(KeyChord::new(KeyCode::Char(','), Modifiers::NONE)));
+        assert_eq!(
+            parse_key_name(","),
+            Some(KeyChord::new(KeyCode::Char(','), Modifiers::NONE))
+        );
         assert_eq!(parse_key_name("nonsense_key"), None);
     }
 

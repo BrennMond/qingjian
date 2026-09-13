@@ -82,7 +82,9 @@ fn the_rime_style_engine_list_is_assembled_in_order() {
         ]
     );
     assert!(
-        def.engine.translators.contains(&"table_translator@chaizi".to_owned()),
+        def.engine
+            .translators
+            .contains(&"table_translator@chaizi".to_owned()),
         "带别名的零件名必须原样保留：{:?}",
         def.engine.translators
     );
@@ -196,18 +198,10 @@ fn the_reverse_lookup_filter_annotates_the_chaizi_segment() {
     let mut s = session();
     type_text(&mut s, "uUni");
     // 反查滤镜的 tags 只含 `chaizi` —— 因此它不该动普通编码段的候选。
-    let before: Vec<bool> = s
-        .candidates()
-        .iter()
-        .map(|c| c.comment.is_some())
-        .collect();
+    let before: Vec<bool> = s.candidates().iter().map(|c| c.comment.is_some()).collect();
     s.reset();
     type_text(&mut s, "ni");
-    let after: Vec<bool> = s
-        .candidates()
-        .iter()
-        .map(|c| c.comment.is_some())
-        .collect();
+    let after: Vec<bool> = s.candidates().iter().map(|c| c.comment.is_some()).collect();
     assert!(
         !after.iter().any(|x| *x),
         "反查滤镜只对 `chaizi` 段生效，不该给普通编码段的候选加注释"
@@ -381,10 +375,7 @@ fn a_rebound_key_is_seen_by_processors_before_the_binder() {
     // 那种实现下这条绑定什么都不做，而**没有任何报错**。
     let mut s = session();
     assert!(!s.option("ascii_mode"));
-    let chord = Key::press(
-        KeyCode::Char('2'),
-        Modifiers::CTRL | Modifiers::SHIFT,
-    );
+    let chord = Key::press(KeyCode::Char('2'), Modifiers::CTRL | Modifiers::SHIFT);
     s.process_key(chord);
     assert!(
         s.option("ascii_mode"),
