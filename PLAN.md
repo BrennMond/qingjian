@@ -597,6 +597,7 @@ speller:
 | **`--dump-config` 完整版** | 分层（内置/方案/用户补丁）+ 每个值的**来源**（层、文件、行号）+ 可粘贴的覆盖片段 | `switches` 逐项标到第 17/20/24 行 |
 | **分层补丁接线** | 用户补丁**真的进装载路径**了（`<schema_id>.custom.yaml`） | 端到端测试断言"补丁改的值真的进了引擎" |
 | **与 librime 的对照** | `tools/compare-librime.py` + `tools/librime-probe/`（无 `librime-dev` 时用 `rime_get_api()` 函数表驱动） | **6 条结构用例全过**，报告见 `tools/librime-probe/samples/compare-report.md` |
+| **按键语义对齐** | `send` 从链头重派发 + 重入标志、动作选择链、`set_option`/`unset_option`、12 个编辑器动作 + `noop`、`when: predicting` | 每条都有"只在正确实现下才通过"的测试 |
 
 **零件覆盖报告的读法**（`stele --components`）：剩下的 2 个是
 `simplifier@emoji` 与 `simplifier@traditionalize`，缺的是 **OpenCC 的数据文件**
@@ -639,8 +640,8 @@ speller:
 
 | 指标 | P1 基线 | P3 之后 | 目标 |
 | --- | --- | --- | --- |
-| 按键路径 P50（拼音，零件齐全） | — | **542 ns** | < 1 ms ✅ |
-| 按键路径 P99 | — | **851 ns** | < 10 ms ✅ |
+| 按键路径 P50（拼音，零件齐全） | — | **531 ns** | < 1 ms ✅ |
+| 按键路径 P99 | — | **852 ns** | < 10 ms ✅ |
 | 按键路径 P50（字形码，零件少） | 301 ns | **180 ns** | — |
 | 常驻内存 | 3 MiB | **4 MiB** | < 30 MB ✅ |
 

@@ -36,10 +36,10 @@
 
 | | |
 | --- | --- |
-| 提交 | 9 个 |
-| 测试 | **273 个**（clippy 零警告，三条 CI 门禁全过） |
+| 提交 | 11 个 |
+| 测试 | **281 个**（clippy 零警告，三条 CI 门禁全过） |
 | crate | 8 个 |
-| Rust | 约 15000 行 |
+| Rust | 约 16000 行 |
 
 ---
 
@@ -108,6 +108,10 @@ stele/
   不能让两个组件各自以为对方知道。`Segmentor::rescan` 就是这么补上的。
 - **症状为"配置看起来正常、功能就是不生效"的 bug，只有端到端测试抓得到**。
   P3 抓到的四个全是这一类。
+- **一半的修正比不修更糟**：`send` 的语义我改了 `KeyBinder` 却忘了改 `pipeline`，
+  于是那个 `redirecting` 字段永远是 `false`——两半对不上，而测试当时是绿的
+  （因为旧的"从中间派发"实现也能让空格到达选择器）。
+  **跨两处的语义改动，要有一条只在正确实现下才通过的测试。**
 
 ---
 
@@ -121,26 +125,51 @@ stele/
 | **P1** | 拼写层、词库、两族翻译器、处理器、过滤器、流水线、会话；`nihao`→你好、`nh`→你好、`shape ab`→十 |
 | **P2** | `stele-config`（YAML 子集 + `$ref` + 分层补丁）、`stele-dict`、目录装载、`--scheme-dir` |
 | **P2.5** | `stele-table`：紧凑二进制 + 流式编译器 + 按需分页（500k 词条 245→46 MiB） |
-| **P3（部分）** | **完整拼写代数**（`xlit/xform/erase/derive/fuzz/abbrev` + 自写正则）、**零件注册表**、`Formatter`（预编辑串音节分隔）、**按音节退格**、`--dump-config`（最小版） |
+| **P3** | **完整拼写代数**（含自写正则）、**零件集**（24 个名字里 22 个已实现）、**词条补全**、**分层 `--dump-config`**（每个值标来源）、**与 librime 的对照工装** |
 
-### P3 剩余（按建议顺序）
+### P3 的零件覆盖（`stele --components`）
 
-1. **词条补全**（`enable_word_completion`）：`InMemoryLexicon` 可用 `BTreeMap::range`；
-   `TableLexicon` 需要**前缀区间扫描**（编码已排序，前缀是连续区间）。
-2. **`no_lua_schema` 的缺口**：注册表现在能精确报告。24 个零件里我们**已实现 8 个**，
-   需外部数据 5 个，尚未实现 11 个。缺的主要是
-   `ascii_composer`（中英切换）、`punctuator`、`key_binder`、`recognizer`（前缀模式）、
-   `navigator`、`matcher`、`affix_segmentor`、`punct_translator` 等。
-   **每个都不大，但没有一个是"顺手就能做完"的。**
-3. **`--dump-config` 的完整版**：现在只打印单层。要加用户补丁层并**标注每个值来自哪一层**
-   （D25 的核心承诺）。
-4. **与 librime 的对照测试**：`librime-bin 1.16.1` **已安装**，`rime_deployer` 可用，
-   但 **`rime_api_console` 未随包发布**（它不在 PATH）。要驱动 librime 按键行为需要：
-   - `sudo apt install librime-dev` 然后写一个极小的 C 驱动，或
-   - 从源码构建 `rime_api_console`。
-   **当前状态：工装未写。这是 P3 验收线唯一没兑现的部分。**
+`no_lua_schema` 引用的 24 个名字：
 
----
+| 状态 | 个数 | 是哪些 |
+| --- | --- | --- |
+| **已实现** | 22 | `speller` `selector` `express_editor` `ascii_composer` `navigator` `punctuator` `key_binder` `recognizer` `ascii_segmentor` `matcher` `abc_segmentor` `affix_segmentor` `punct_segmentor` `fallback_segmentor` `script_translator` `table_translator` `punct_translator` `echo_translator` `reverse_lookup_filter` `simplifier` `uniquifier` `select_character` |
+| **缺数据**（机制有） | 2 | `simplifier@emoji`、`simplifier@traditionalize`（要 OpenCC 的 `emoji.json` / `s2t.json`） |
+| **缺代码** | **0** | — |
+
+**"跑通 `no_lua_schema`"的准确状态**：零件与配置读法都齐了
+（`crates/stele-schemes/tests/schemes/p3features.schema.yaml` 是一份
+**RIME 原生写法**的等价方案，19+ 条端到端断言守着它），
+但我们**没有真的把那份文件跑起来**——拿不到它的词库与 OpenCC 数据。
+
+### 与 librime 的对照（P3 的验收线）
+
+```bash
+cd tools/librime-probe && ./build.sh        # 一次性
+python3 tools/compare-librime.py            # 6 条用例
+```
+
+报告在 `tools/librime-probe/samples/compare-report.md`，**6 条结构用例全过**。
+
+**报告只断言结构**（能否上屏、按键是否被处理、标点是不是全角），
+**不断言候选排序**——两边的词库与语言模型不同，比排序等于比词库。
+
+它跑第一次就抓到一处真问题：默认拼音方案没声明 `punctuator`，
+于是 `,` 什么都打不出来而 librime 出「，」。修法是给默认方案补上
+RIME 形状的 `engine:` 清单，并给引擎加**预设**机制（`import_preset`）。
+
+### 下一步
+
+1. **OpenCC 数据装载**（`simplifier` 的最后一块），做完注册表归零。
+2. **P3.5 默认方案**：`schemes/stele-default` 只有 30 条演示词，
+   它才是"装上就能打字"的载体。
+3. **recognizer 的三处语义分叉**（记在
+   `reference/rime-recognizer-and-affix.md` 的差异表）：
+   我们锚死在位置 0、用"正则是否以 `$` 结尾"的启发式、
+   取最长认领而非名字典序第一条。
+4. **`send_sequence` 的用例**与 **`select`**（切方案，需要
+   `SchemaCatalog` 进处理器）——数据结构已就位。
+5. **P4a 用户记忆**（`MemoryStore`，`Event::ForgetRequested` 已经发出来了）。
 
 ## 5. 踩过的坑（**每一条都是"写代码/量数字"才发现的**）
 
@@ -160,18 +189,28 @@ stele/
 | 12 | **流式序列解析器按字节切片，中文被切坏**（`--dump-config` 打出乱码） | 处理文本一律按 `char`，不按 `u8` |
 | 13 | **流水线只产出"整串一段"，按音节退格会一次清空** | 分段要真的按音节切 |
 | 14 | **我自己的测试名里用了 "syllable"，被 D20 门禁抓住** | 门禁第二次抓住我了 |
+| 15 | **流水线每轮重算识别结果却没告诉切分器** —— 整条"识别→切分→绑定"链静默断掉 | 跨组件的"每轮同步"必须是一条**显式调用**（`Segmentor::rescan`） |
+| 16 | **同一个标签名有两处来源**，一处没走 intern 表 —— `contains` 失效，标点整条链断 | `Tag` 只准从 `TagTable` 拿（D34） |
+| 17 | **`cost` 一个字段两种单位**：写 `-3000` 被当成"权重为负"→ 掉到下界 → 切分退化成"谁先找到算谁" | 单位写进字段名（D35） |
+| 18 | **`Query::composition` 让流水线每键克隆三份会话状态**，而全项目零个使用者 —— P50 301ns→1.55µs | 加字段前先问"谁读它"，实测会告诉你 |
+| 19 | **我把猜出来的约定写进文档并称之为"RIME 约定"**（`prefix: uU` / "RIME 也做 leading 缓存"） | 不确定就写"这是我们的选择"，或引源码；猜的约定写进文档比写进代码更危险 |
+| 20 | **语义改了 `KeyBinder` 却忘了改 `pipeline`** —— `redirecting` 永远是 false，而测试当时是绿的 | 跨两处的语义改动，要有一条**只在正确实现下**才过的测试 |
 
 ---
 
 ## 6. 现在怎么跑
 
 ```bash
-cargo build --workspace && cargo test --workspace      # 208 个测试
+cargo build --workspace && cargo test --workspace      # 281 个测试
 cargo run -p stele-cli -- --check                      # 7 组内核不变式
 cargo run -p stele-cli -- nihao                        # → 你好
 cargo run -p stele-cli -- nh                           # → 你好（简拼）
 cargo run -p stele-cli -- --schema shape ab            # → 十（同一个引擎）
-cargo run -p stele-cli -- --dump-config                # 合并后的方案
+cargo run -p stele-cli -- --dump-config                # 合并后的方案（标来源）
+cargo run -p stele-cli -- --components                 # 零件注册表
+cargo run -p stele-bench --release -- --schema=shape   # 换方案称重
+python3 tools/compare-librime.py                       # 与 librime 对照
+cd tools/librime-probe && ./build.sh && ./probe --help  # 驱动真实 librime
 cargo run -p stele-cli -- --scheme-dir <目录> --list    # 装载自建方案
 cargo run -p stele-bench --release -- --iterations=200000
 bash scripts/verify-*.sh                               # 三条门禁
@@ -185,19 +224,31 @@ rustup 已装、toolchain 1.98 由 `rust-toolchain.toml` 固定。
 
 ## 7. 下一步建议
 
-**优先做"词条补全 + `no_lua_schema` 缺口"**，因为它们是 P3 验收线
-（「跑通 `others/no_lua_schema`」）剩下的部分。缺的零件按依赖排序大致是：
+**优先做 P3.5（默认方案）**，因为其余一切的验收都卡在它上面：
 
 ```
-recognizer  →  matcher / affix_segmentor     （前缀模式与前缀切分，拆字反查要用）
-ascii_composer                                （中英切换，最影响日常使用）
-key_binder / navigator / punctuator            （按键与标点，彼此独立，都不大）
+P3.5  schemes/stele-default 是自有资产（现在只有 30 条演示词）
+      ├─ 装上就能打字 —— "体验对标雾凇"这句话才有内容
+      ├─ 有了真词库，对照实验才能比**排序**（现在只能比结构）
+      └─ OpenCC 数据装载顺带做完（simplifier 的最后一块）
 ```
 
-**然后**：`--dump-config` 的完整版（多层 + 来源标注），以及 librime 差分工装。
+**然后**：
 
-**再往后**是 P4a（用户记忆：频率 + 时间衰减）、P4b（本地下一词预测）、
-P5（向量重排，需过内存评审）、P6/P7（Windows TSF / Android）。
+1. **recognizer 的三处语义分叉**——记在
+   `reference/rime-recognizer-and-affix.md` 的差异表里。前两处
+   （锚死位置 0、`$` 启发式）会影响真实方案，值得对齐。
+2. **P4a 用户记忆**：`MemoryStore` 接口早就定好了（`stele-core::service`），
+   `Event::ForgetRequested` 也已经发出来。红线是**按键时零磁盘 I/O**。
+3. **`select`（切方案）**：需要把 `SchemaCatalog` 送到处理器手里，
+   属会话语义；`key_binder` 的其余动作都齐了。
+4. 再往后是 P4b（本地下一词预测）、P5（向量重排，需过内存评审）、
+   P6/P7（Windows TSF / Android）。
+
+**一件不该忘的事**：`reference/` 下有两份**以 librime 源码为准**的调研
+（`rime-key-binding-actions.md` 1084 行、`rime-recognizer-and-affix.md` 573 行），
+每份文末都有「与 stele 实现的差异」表。**动手改这些零件之前先读它们**——
+P3 里有四个 bug 是"我猜了一个约定"造成的，而它们全都写在里面。
 
 ---
 
@@ -208,4 +259,10 @@ P5（向量重排，需过内存评审）、P6/P7（Windows TSF / Android）。
 - 他**明确表示过**：对外只维护**简体**形态；繁体留接口不维护（D32）。
 - 他**授权过**：装 rustup。**没有授权**其它工作区外的操作
   （sudo 需密码，不能代劳）。
-- **每次动手前后都要实测**：这个项目里"以为对"的记录见 §5。
+- **每次动手前后都要实测**：这个项目里"以为对"的记录见 §5（现在有 20 条）。
+- **门禁与对照工装都在**：改动内核后跑 `bash scripts/verify-*.sh`；
+  改动零件行为后跑 `python3 tools/compare-librime.py`。
+- **不要相信"配置看起来正常"**：P3 抓到的四个 bug 症状完全一样——
+  配置合法、没有报错、某个功能就是不生效。只有端到端测试抓得到。
+- **不确定的约定，别写成"RIME 约定"**：要么引 librime 源码
+  （`reference/` 里有两份现成的），要么写"这是我们的选择"。
