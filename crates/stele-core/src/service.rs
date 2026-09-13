@@ -237,6 +237,25 @@ pub trait Clock: Send + Sync {
     fn now_secs(&self) -> u64;
     /// 单调毫秒计时（用于 `Session::tick` 的时序判定）。
     fn now_ms(&self) -> u64;
+
+    /// 本地时区相对 UTC 的偏移（**秒**，东八区是 `+28800`）。
+    ///
+    /// # 为什么它在 trait 上（一个"时区是平台知识"的边界）
+    ///
+    /// "日期/时间/星期"这类候选需要**本地日历日**，而本地日历日 = UTC 时刻
+    /// ＋时区偏移。时区规则是平台与系统的知识（`TZ` 环境变量、注册表、
+    /// `zoneinfo`），而**引擎不许读平台**——它只认识 trait。
+    ///
+    /// 默认实现返回 `0`（即"按 UTC 报时"）：这是一个**诚实的缺省**，
+    /// 而不是伪装成"本地时间"。实现了它的时钟（真实前端）给出正确偏移；
+    /// 没实现的（测试）得到确定性的结果——**这正是可复现所需的**。
+    ///
+    /// 注意它**不含夏令时**：偏移是"此刻"的，不是"任意时刻"的。
+    /// 对"现在几点"够用；要算历史日期的时区得引入真正的时区库，
+    /// 而那会撞内存红线（`tzdata` 是几 MB 的表），故不做。
+    fn utc_offset_secs(&self) -> i64 {
+        0
+    }
 }
 
 /// 一条已学记录。`(输入, 词)` 是主键。
@@ -348,6 +367,8 @@ pub struct FrozenClock {
     pub secs: u64,
     /// 固定的毫秒。
     pub ms: u64,
+    /// 固定的时区偏移（秒）。默认 0 = 按 UTC 报时。
+    pub offset_secs: i64,
 }
 
 impl Clock for FrozenClock {
@@ -357,6 +378,10 @@ impl Clock for FrozenClock {
 
     fn now_ms(&self) -> u64 {
         self.ms
+    }
+
+    fn utc_offset_secs(&self) -> i64 {
+        self.offset_secs
     }
 }
 

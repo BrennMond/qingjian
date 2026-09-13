@@ -585,6 +585,224 @@ impl TranslatorSpec {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 内联插件（引擎直接生成候选的那些）
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// RIME 里这一类全部住在 Lua 插件里（`lua_translator@*date_translator` 等）。
+// 它们与"查词库"的翻译器有本质区别：**候选文本是代码算出来的，不在任何词库里**。
+//
+// 因此它们共用一个特征：**触发词**。用户敲一个别人不可能当作拼音的短串
+// （`rq`、`uuid`、`U62fc`），插件就产出与当下时间/环境有关的候选。
+//
+// 下面每个 spec 都显式带触发词，**且触发词的默认值与 rime-ice 一致**——
+// 这样一份从那边抄来的方案不写配置也能得到同样的行为。
+
+/// `date_translator` 的配置。
+///
+/// 七个触发词各管一种格式，默认值与 rime-ice 相同（`rq` / `sj` / `xq` /
+/// `dt` / `ts` / `rqzh` / `rqen`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DateSpec {
+    /// 日期（`2026-11-29`）。
+    pub date: String,
+    /// 时间（`18:13`）。
+    pub time: String,
+    /// 星期（`星期二`）。
+    pub week: String,
+    /// ISO 8601（`2026-11-29T18:13:11+08:00`）。
+    pub datetime: String,
+    /// Unix 时间戳。
+    pub timestamp: String,
+    /// 中文日期（`二〇二六年十一月二十九日`）。
+    pub date_zh: String,
+    /// 英文日期（`November 29, 2026`）。
+    pub date_en: String,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for DateSpec {
+    fn default() -> Self {
+        Self {
+            date: "rq".into(),
+            time: "sj".into(),
+            week: "xq".into(),
+            datetime: "dt".into(),
+            timestamp: "ts".into(),
+            date_zh: "rqzh".into(),
+            date_en: "rqen".into(),
+            at: At::default(),
+        }
+    }
+}
+
+/// `unicode` 的配置：一个**前缀字符**。
+///
+/// 敲 `U62fc` 出「拼」。前缀默认 `U`（rime-ice 的
+/// `recognizer/patterns/unicode: "^U[a-f0-9]+"` 里的第二个字符）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnicodeSpec {
+    /// 前缀字符。
+    pub prefix: char,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for UnicodeSpec {
+    fn default() -> Self {
+        Self {
+            prefix: 'U',
+            at: At::default(),
+        }
+    }
+}
+
+/// `uuid` 的配置：一个**触发词**。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UuidSpec {
+    /// 触发词（RIME 的 `uuid: uuid`）。
+    pub trigger: String,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for UuidSpec {
+    fn default() -> Self {
+        Self {
+            trigger: "uuid".into(),
+            at: At::default(),
+        }
+    }
+}
+
+/// `long_word_filter` 的配置。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LongWordSpec {
+    /// 提升几个词。
+    pub count: usize,
+    /// 提升到第几个位置（1 起）。
+    pub idx: usize,
+    /// 来源行号。
+    pub at: At,
+}
+
+impl Default for LongWordSpec {
+    fn default() -> Self {
+        Self {
+            count: 2,
+            idx: 4,
+            at: At::default(),
+        }
+    }
+}
+
+/// `reduce_english_filter` 的工作模式。
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ReduceMode {
+    /// 内置表 + `words` 里的自定义项。
+    #[default]
+    All,
+    /// 只用 `words` 里的。
+    Custom,
+    /// 什么都不降（等于没启用）。
+    None,
+}
+
+impl ReduceMode {
+    /// 解析。
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "all" => Self::All,
+            "custom" => Self::Custom,
+            "none" => Self::None,
+            _ => return None,
+        })
+    }
+
+    /// 全部取值（供诊断列出）。
+    #[must_use]
+    pub fn all_names() -> &'static [&'static str] {
+        &["all", "custom", "none"]
+    }
+}
+
+/// `reduce_english_filter` 的配置。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReduceEnglishSpec {
+    /// 模式。
+    pub mode: ReduceMode,
+    /// 降低到第几个位置（1 起）。
+    pub idx: usize,
+    /// 触发降权的**编码**（不是单词！）。
+    ///
+    /// 这一点很容易读错：Lua 的注释专门写了「匹配的是编码，不是单词」——
+    /// 表里的 `rug` 指的是"用户敲 `rug` 时把候选里的英文单词往后放"。
+    pub words: Vec<String>,
+    /// 来源行号。
+    pub at: At,
+}
+
+/// `pin_cand_filter` 的一条：某个编码下要置顶哪些词。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinEntry {
+    /// 触发编码（`preedit`，可能带空格，如 `ni hao`）。
+    pub preedit: String,
+    /// 要置顶的词，按顺序。
+    pub texts: Vec<String>,
+    /// 来源行号。
+    pub at: At,
+}
+
+/// `pin_cand_filter` 的配置。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PinCandSpec {
+    /// 各条置顶规则（**按声明顺序**：先写的排前面）。
+    pub entries: Vec<PinEntry>,
+    /// 来源行号。
+    pub at: At,
+}
+
+/// `autocap_filter` 的配置。
+///
+/// 它**没有配置项**（行为完全由输入码的大小写决定），但它有两条
+/// 内建的保护规则，值得在文档里说清而不是藏在代码里：
+///
+/// - 码长为 1 不转换（`a` 不该变成 `A`）
+/// - 输入码首位是小写或标点时不转换（`abc` 不该变成 `Abc`）
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AutoCapSpec {
+    /// 来源行号。
+    pub at: At,
+}
+
+/// `force_gc` —— **有意不实现的那些零件**的说明位。
+///
+/// # 为什么它需要一个类型
+///
+/// `force_gc` 在 Lua 里做的事是 `collectgarbage("step")`：每敲一键手动
+/// 推一把 Lua 的 GC，因为 librime-lua 的插件会积压大量 Lua 对象。
+///
+/// **Rust 没有这件事**：我们没有解释器、没有插件运行时的堆，
+/// 候选的生命周期由作用域决定。把这行"翻译"成 Rust 只会得到一句
+/// `let _ = ();`——一个**什么都不做但看起来像实现了**的零件。
+///
+/// 那种零件比"缺失"更糟：注册表会把它报成"已实现"，而用户永远
+/// 看不出来它没作用。所以我们**明确不实现它**，并在注册表里
+/// 说清理由（`Availability::NotApplicable`）。
+///
+/// 这个类型的唯一用途就是承载那条说明，让"我们决定不做"是一个
+/// **有位置的记录**，而不是一句散落在文档里的话。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotApplicableSpec {
+    /// 为什么它在我们这个架构里不适用。
+    pub reason: String,
+    /// 来源行号。
+    pub at: At,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 引擎声明（`engine:` 段）
 // ─────────────────────────────────────────────────────────────────────────────
 

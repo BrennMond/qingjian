@@ -13,3 +13,6 @@
 
 # 编译产物（stele 自己的）
 /schemes/**/build/
+
+# rime-ice 的调研副本（GPL 项目的数据，不入库；只作行为对照）
+/.rime-research/

@@ -285,6 +285,7 @@ impl Lexicon for TableLexicon {
                 attr: SpellingAttr::NORMAL,
                 span,
                 lane: Lane::Input,
+                kind: stele_core::CandidateKind::Normal,
             });
         }
     }

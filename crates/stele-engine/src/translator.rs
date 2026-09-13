@@ -252,6 +252,7 @@ impl Translator for EchoTranslator {
             attr: SpellingAttr::NORMAL,
             span,
             lane: Lane::Input,
+            kind: stele_core::CandidateKind::Normal,
         });
     }
 }

@@ -249,6 +249,7 @@ impl PunctTranslator {
             attr: SpellingAttr::NORMAL,
             span,
             lane: Lane::Input,
+            kind: stele_core::CandidateKind::Punct,
         });
     }
 }
@@ -297,6 +298,7 @@ impl Translator for PunctTranslator {
                         attr: SpellingAttr::NORMAL,
                         span,
                         lane: Lane::Input,
+                        kind: stele_core::CandidateKind::Punct,
                     });
                 }
                 return;

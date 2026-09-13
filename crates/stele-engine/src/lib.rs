@@ -21,6 +21,7 @@
 
 pub mod engine;
 pub mod filter;
+pub mod inline;
 pub mod keyspec;
 pub mod lexicon;
 pub mod pipeline;
@@ -38,6 +39,10 @@ pub mod translator;
 
 pub use engine::{EngineImpl, SessionImpl};
 pub use filter::{Converter, ReverseLexicon, ReverseLookupFilter, Uniquifier};
+pub use inline::{
+    AutoCapFilter, CivilTime, DateTranslator, LongWordFilter, UnicodeTranslator, civil_from_days,
+    civil_from_unix, month_day_zh, strip_punct, year_zh,
+};
 pub use keyspec::{KeyChord, key_code_name, key_for_char, parse_key_name};
 pub use lexicon::{Entry, InMemoryLexicon, LexiconError, TextIndex};
 pub use pipeline::{PipelineImpl, CANDIDATE_CAP, DEFAULT_PAGE_SIZE};
@@ -53,8 +58,9 @@ pub use segmentor::{
 };
 pub use spec::{
     AffixSpec, At, EditorAction, EditorBinding, EngineSpec, KeyBinding, NavigatorSpec,
-    PunctuatorSpec, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
-    TranslatorKindSpec, TranslatorSpec, WhenPredicate, split_alias,
+    AutoCapSpec, DateSpec, LongWordSpec, NotApplicableSpec, PinCandSpec, PinEntry, ReduceEnglishSpec,
+    ReduceMode, RecogPattern, RecognizerSpec, ReverseLookupSpec, SimplifierSpec, TipsMode,
+    TranslatorKindSpec, TranslatorSpec, UnicodeSpec, UuidSpec, WhenPredicate, split_alias,
 };
 pub use spelling::{FormatRule, Rule, SpellingFormat, SpellingTable};
 pub use tag::TagTable;

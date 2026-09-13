@@ -135,6 +135,7 @@ fn main() {
             attr: stele_core::SpellingAttr::NORMAL,
             span: stele_core::Span::new(0, 1),
             lane: stele_core::Lane::Input,
+            kind: stele_core::CandidateKind::Normal,
         })
         .collect();
     let sort_report = measure(iterations.min(20_000), || {

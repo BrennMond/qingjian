@@ -148,6 +148,7 @@ impl Lexicon for InMemoryLexicon {
                 attr: SpellingAttr::NORMAL,
                 span,
                 lane: stele_core::Lane::Input,
+                kind: stele_core::CandidateKind::Normal,
             });
         }
     }
@@ -209,6 +210,7 @@ impl Lexicon for InMemoryLexicon {
                     attr: SpellingAttr::COMPLETION,
                     span,
                     lane: stele_core::Lane::Input,
+                    kind: stele_core::CandidateKind::Completion,
                 });
             }
         }

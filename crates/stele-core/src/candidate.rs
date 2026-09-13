@@ -158,6 +158,49 @@ pub enum Lane {
     Predict,
 }
 
+/// 候选的**生成方式**——第三个轴。
+///
+/// # 为什么需要它（这个轴是后补的，不是设计出来的）
+///
+/// 早先只有两个轴：[`Origin`]（从哪来）与 [`SpellingAttr`]（编码怎么拼的）。
+/// 在做 rime-ice 的等价零件时发现不够——有两个滤镜明确按"候选类型"分支：
+///
+/// | 零件 | 它要区分什么 |
+/// | --- | --- |
+/// | `autocap_filter` | 自动大写的候选**不能**是补全来的（`cand.type ~= "completion"`） |
+/// | `reduce_english_filter` | 用户词库的词**不降权**（`cand.type == "user_table"`） |
+///
+/// 这两条用 `Origin` 表达不了：`Origin` 说的是"词条从哪个库来"，
+/// 而这里要的是"这一条是**怎么被找出来的**"——同一个系统词条，
+/// 精确匹配出来与补全出来是两种 `kind`。
+///
+/// **判据不是"RIME 有这么个字段"，而是"有没有零件真的按它分支"。**
+/// 现在有，所以它进内核；将来再多一个分支理由，就往这里加一个变体。
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+pub enum CandidateKind {
+    /// 词库的常规命中。
+    #[default]
+    Normal,
+    /// **补全**：只打了编码的一部分，词条比输入更长。
+    Completion,
+    /// **用户词典**里的词。
+    ///
+    /// 与 [`Origin::UserWord`] 的关系：那个是"来源"，这个是"生成方式"。
+    /// 目前两者总是一致（用户词只从用户词典出），但**不是同一个概念**——
+    /// 排序看 `Origin`，滤镜看 `kind`。
+    UserTable,
+    /// 造句拼出来的。
+    Sentence,
+    /// 标点 / 符号表。
+    Punct,
+    /// 引擎**直接生成**的（日期、UUID、Unicode、计算结果……）。
+    ///
+    /// 这些候选的文本不在任何词库里，是代码算出来的——RIME 里
+    /// 这类东西全部躺在 Lua 插件里。
+    Inline,
+}
+
 /// 一个候选。
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -181,6 +224,8 @@ pub struct Candidate {
     pub span: Span,
     /// 所属通道。
     pub lane: Lane,
+    /// 这一条是**怎么被找出来的**——决定滤镜怎么对待它。
+    pub kind: CandidateKind,
 }
 
 /// 这个候选是不是"输入本身就是答案"，而不是引擎猜的。
@@ -254,6 +299,7 @@ mod tests {
             attr,
             span: Span::new(0, 1),
             lane: Lane::Input,
+            kind: CandidateKind::Normal,
         }
     }
 

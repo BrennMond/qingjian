@@ -9,6 +9,8 @@ use stele_core::{
     Candidate, Lane, Origin, Score, Span, SpellingAttr,
 };
 
+use stele_core::CandidateKind;
+
 fn cand(text: &str, milli_log: i32, origin: Origin, lane: Lane) -> Candidate {
     Candidate {
         text: text.to_owned(),
@@ -18,6 +20,7 @@ fn cand(text: &str, milli_log: i32, origin: Origin, lane: Lane) -> Candidate {
         attr: SpellingAttr::NORMAL,
         span: Span::new(0, 1),
         lane,
+        kind: CandidateKind::Normal,
     }
 }
 

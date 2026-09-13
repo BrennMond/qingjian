@@ -447,6 +447,7 @@ fn self_check() -> ExitCode {
         attr: SpellingAttr::NORMAL,
         span: Span::new(0, 1),
         lane: Lane::Input,
+        kind: stele_core::CandidateKind::Normal,
     };
     // 输入顺序特意打乱，让平局规则必须真的起作用。
     let build = || {

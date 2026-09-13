@@ -168,6 +168,7 @@ mod tests {
             attr: SpellingAttr::NORMAL,
             span: Span::new(0, 1),
             lane,
+            kind: crate::candidate::CandidateKind::Normal,
         }
     }
 

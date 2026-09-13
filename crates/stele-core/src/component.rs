@@ -19,7 +19,7 @@
 //! "拼音 / 英文 / 自定义短语 / 拆字反查"四个翻译器的机制——
 //! 它们不靠位置区分，靠 tag 区分。
 
-use crate::candidate::{Candidate, CandidateSink, Lane, Origin, Span, SpellingAttr};
+use crate::candidate::{Candidate, CandidateKind, CandidateSink, Lane, Origin, Span, SpellingAttr};
 use crate::commit::ProcessResult;
 use crate::context::Context;
 use crate::key::Key;
@@ -287,5 +287,6 @@ pub fn literal_candidate(text: impl Into<String>, span: Span) -> Candidate {
         attr: SpellingAttr::NORMAL,
         span,
         lane: Lane::Input,
+        kind: CandidateKind::Normal,
     }
 }

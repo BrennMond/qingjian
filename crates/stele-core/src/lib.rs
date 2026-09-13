@@ -50,7 +50,9 @@ pub mod service;
 pub mod session;
 pub mod sort;
 
-pub use candidate::{is_exact, Candidate, CandidateSink, Lane, Origin, Span, SpellingAttr};
+pub use candidate::{
+    is_exact, Candidate, CandidateKind, CandidateSink, Lane, Origin, Span, SpellingAttr,
+};
 pub use commit::{Commit, Event, Outcome, PendingCommit, ProcessResult, SelectionSource, Trigger};
 pub use component::{
     literal_candidate, Fallback, Filter, Formatter, Processor, Query, Segmentor, Translator,
