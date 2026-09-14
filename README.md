@@ -1,6 +1,9 @@
 # 青简输入法 / Qingjian IME
 
-一个**从原理出发、用 Rust 重写**的跨平台输入法引擎。
+一个**独立的、从原理出发、用 Rust 实现**的输入法引擎——借鉴 Rime 的设计思想，
+但不是 librime 的移植，也不以加载全部 Rime 方案为目标；当前范围收敛为
+**作者本人的 Windows 全键盘自用闭环**（见 `PLAN.md` D47 与
+[`docs/SELF_USE_WINDOWS_SCOPE.md`](docs/SELF_USE_WINDOWS_SCOPE.md)）。
 
 > **名称**：中文正式名 **青简输入法**；英文正式名 **Qingjian IME**；简称 **青简** / **Qingjian**。
 > 「青简」本身即完整、统一的专有名词，**不意译**为 Bamboo Slips 一类的英文词——
@@ -202,8 +205,9 @@ my-schemes/
 - `schemes/qingjian-default/cn_dicts/generated.dict.yaml` 是 pinyin-data /
   THUOCL / jieba（MIT）与 OpenCC（Apache-2.0）的**派生产物**；
 - `tools/librime-probe/probe.c` 含逐字段抄自 librime（BSD-3-Clause）的 ABI 声明；
-- `reference/wiki-*.md` 是 Rime 官方 wiki 两页的**逐字副本**
-  （许可状态未确定，见 `THIRD_PARTY_NOTICES.md` §5.3）。
+- ~~`reference/wiki-*.md`——Rime 官方 wiki 两页的逐字副本~~：因子项许可
+  **UNVERIFIED**，已于 2026-09-14 从工作区与全部 git 历史中移除
+  （见 `THIRD_PARTY_NOTICES.md` §1.4 / §5.3）。
 
 **本仓库不分发** rime-ice 的词典（GPL-3.0-only，且内部词源含限制性许可）、
 librime 与 Rime wiki 的源码副本。运行时源数据由使用者用

@@ -3,7 +3,9 @@
 > **这份文件回答一个问题**：本仓库里，哪些内容不是我们写的、它从哪来、
 > 固定在哪一个 revision、谁拥有版权、适用什么许可、有没有被改过。
 >
-> **核对日期**：2026-09-13。**核对方法**：不靠记忆，用 `git ls-files` 枚举
+> **核对日期**：2026-09-13。**公开仓库整改日期**：2026-09-14（移除 wiki 逐字
+> 副本、清除历史中的 GPL Lua 副本，见 §5.1 / §5.3）。
+> **核对方法**：不靠记忆，用 `git ls-files` 枚举
 > 已跟踪文件，逐条下载上游文件比对 sha256（命令与结果见 §6）。
 >
 > **结论先行**：
@@ -13,12 +15,12 @@
 >    它派生自 pinyin-data / THUOCL / jieba（MIT）与 OpenCC（Apache-2.0）。
 > 2. 本仓库**分发** `tools/librime-probe/probe.c`，其中逐字段抄写了
 >    librime `rime_api.h`（BSD-3-Clause）的结构体与宏声明。
-> 3. 本仓库**分发**两份 Rime 官方 wiki 页面的**逐字副本**
->    （`reference/wiki-*.md`）。**这两份的许可状态未确定**（§5.3）——
->    这是本文件当前唯一没有结论的项，已明确标出，不做粉饰。
+> 3. ~~本仓库**分发**两份 Rime 官方 wiki 页面的**逐字副本**
+>    （`reference/wiki-*.md`）~~ —— **已处置（2026-09-14）**：这两份的许可状态
+>    为 **UNVERIFIED**，已从工作区**与全部 git 历史**中移除（§1.4 / §5.3）。
 > 4. 本仓库**不分发** rime-ice 的词典（GPL-3.0-only），
 >    也不分发任何 GPL 代码：旧版 `tools/oracle/*.lua`（从 rime-ice 复制/改写）
->    已在本次整改中**移除**（§5.1）。
+>    已从工作区**与全部 git 历史**中移除（§5.1）。
 > 5. **运行时源数据**（词表、OpenCC 表、emoji 表）由使用者在本地取回，
 >    落在 `.gitignore` 的 `schemes/qingjian-default/build/`，**不随仓库分发**；
 >    其固定 revision 与 sha256 记录在已跟踪的 [`tools/sources.lock`](tools/sources.lock)。
@@ -37,7 +39,8 @@
 | 本项目代码（`crates/`、`tools/` 下的 Rust） | 是 | 仓库 |
 | 本项目自撰的方案与演示词库 | 是 | `schemes/qingjian-default/*.dict.yaml`（`base` / `shape`） |
 | **由第三方数据派生的生成词库** | **是** | `schemes/qingjian-default/cn_dicts/generated.dict.yaml`（§1.1） |
-| 从上游复制的 ABI 声明 / wiki 页面 | **是** | `tools/librime-probe/probe.c`（§1.3）、`reference/wiki-*.md`（§1.4） |
+| 从上游复制的 ABI 声明 | **是** | `tools/librime-probe/probe.c`（§1.3） |
+| ~~从上游复制的 wiki 页面~~ | **否**（已移除） | `reference/wiki-*.md` 曾入库，2026-09-14 已从工作区与历史移除（§1.4） |
 | 原始第三方数据文件（词表 / OpenCC / emoji） | **否**（`.gitignore`） | `schemes/qingjian-default/build/`（§2） |
 | 上游源码副本（librime、rime-ice、Rime wiki） | 否 | `.rime-wiki/`、`.rime-research/`（研究用，不入库） |
 | registry 第三方依赖 | **无** | `Cargo.lock` 只含 workspace 成员；见 §4 |
@@ -117,17 +120,22 @@ BSD-3-Clause 第 1 条要求源码再分发保留版权声明、条件列表与�
 **该要求当前只在本文件中被满足，`probe.c` 文件头尚未带这段声明**——
 建议在文件头补一行指向本文件（见 §5.4）。
 
-### 1.4 `reference/wiki-RimeWithTheDesign.md`、`reference/wiki-SharedData.md`（**逐字副本**）
+### 1.4 ~~`reference/wiki-RimeWithTheDesign.md`、`reference/wiki-SharedData.md`~~（**已于 2026-09-14 移除**）
 
-**是什么**：Rime 官方 wiki 两页的**逐字节副本**（繁体中文）。
+**曾经是什么**：Rime 官方 wiki 两页的**逐字节副本**（繁体中文），随仓库分发。
 
-**核实**：与 `rime/home.wiki` 上对应页面逐字节相同（`diff` 无输出，见 §6.3）。
-wiki 仓库当时的 HEAD 是 `5bfcf14a7ae127635dff9da1f133cae9a5319607`，
-与 `reference/rime-key-binding-actions.md` 记录的本地存档 revision 一致。
+**为什么移除**：核实结果是**许可状态 UNVERIFIED**——`rime/home` 仓库根目录没有
+通用 `LICENSE`/`COPYING`，两个 wiki 页面本身也没有署名与许可声明（详见 §5.3）。
+仓库公开后，"随仓库分发"这一动作已经发生，故按 §5.3 的处置③执行：
+**从工作区与全部 git 历史中移除**。
 
-| 上游 | URL | 固定 revision | 版权 | 许可 | 是否修改 |
+**移除前的核实记录**（保留以便回溯）：当时与 `rime/home.wiki` 上对应页面逐字节
+相同（`diff` 无输出，见 §6.3）。wiki 仓库当时的 HEAD 是
+`5bfcf14a7ae127635dff9da1f133cae9a5319607`。
+
+| 上游 | URL | 固定 revision | 版权 | 许可 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
-| rime/home wiki（`RimeWithTheDesign`、`SharedData`） | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607` | **未在页面或仓库中声明** | **未找到明确许可（UNVERIFIED，见 §5.3）** | 否（逐字） |
+| rime/home wiki（`RimeWithTheDesign`、`SharedData`） | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607` | **未在页面或仓库中声明** | **未找到明确许可** | **本次不分发**；如需查阅请直接访问上游 URL |
 
 ### 1.5 `reference/` 下其余文档（**本项目自撰，含上游引文**）
 
@@ -207,7 +215,7 @@ wiki 仓库当时的 HEAD 是 `5bfcf14a7ae127635dff9da1f133cae9a5319607`，
 | 对象 | URL | 固定 revision | 许可 | 在本仓库里的角色 |
 | --- | --- | --- | --- | --- |
 | librime 源码 | <https://github.com/rime/librime> | `2479df58cb51480299f94afe53d7b1790ecf0eb1` | BSD-3-Clause | `reference/*.md` 逐行引用；`tools/rime-compare/` 通过 `dlopen` 调用**系统已安装**的 librime 1.16.1；**源码未入库** |
-| Rime 官方 wiki | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607` | 未声明（UNVERIFIED） | `reference/*.md` 引用；两份逐字存档见 §1.4 |
+| Rime 官方 wiki | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607` | 未声明（UNVERIFIED） | `reference/*.md` 引用；曾有两份逐字存档，**已于 2026-09-14 移除**（§1.4） |
 | rime-ice 仓库与词典 | <https://github.com/iDvel/rime-ice> | `859e3b5300e0ea01334a627b15db101e94312a75` | GPL-3.0-only | 只作**行为对照**；词典（含来源不明的 tencent/base）**未取回、未分发**；`opencc/emoji.*` 见 §2 |
 | `/usr/share/rime-data` 的上游 preset 方案 | 本机安装 | 不适用 | 各方案不同 | `tools/librime-probe/samples/` 记录了它们的运行结果；**数据文件未分发** |
 | rime-prelude（`default.yaml` / `symbols.yaml`） | <https://github.com/rime/rime-prelude> | 未在本仓库固定 | 各文件不同（多为 BSD-3-Clause） | `tools/rime-compare/fixtures/rime/default.yaml` 是**本项目自撰的最小版本**，明确不用 `/usr/share/rime-data/default.yaml` |
@@ -263,8 +271,9 @@ revision（`859e3b53…`），需要时可在本地取回同一条源码做复�
 `.expected.txt`，测试不受影响（`cargo test -p qingjian-engine --test
 calc_oracle --test number_oracle` 验证）。
 
-**残留**：git **历史**里仍有这三个文件的旧版本。历史清理（`filter-repo` 等）
-不在本次范围；如需彻底移除需另做一次带备份的历史改写。
+**残留（已清除）**：git **历史**里曾有三个文件的旧版本。**2026-09-14 已用
+`git filter-repo --invert-paths` 从全部历史中清除**，并已强制推送到公开仓库；
+清除前做了完整备份（`git bundle --all`）。**该残留不再是待办项。**
 
 ### 5.2 已修：`opencc.manifest.yaml` 的 emoji 许可曾标成 Apache-2.0
 
@@ -276,10 +285,10 @@ calc_oracle --test number_oracle` 验证）。
 本条保留记录，是为了让"这里曾经标错"可被回溯——先前的记录是
 「本次整改未改 `schemes/`，在此登记」，那已经过时。
 
-### 5.3 未解决：Rime wiki 两份逐字副本的许可
+### 5.3 已解决：Rime wiki 两份逐字副本的许可（2026-09-14 移除）
 
-`reference/wiki-RimeWithTheDesign.md` 与 `reference/wiki-SharedData.md` 是
-`rime/home.wiki` 的逐字副本（§1.4）。核实结果：
+**曾经的疑义**：`reference/wiki-RimeWithTheDesign.md` 与
+`reference/wiki-SharedData.md` 是 `rime/home.wiki` 的逐字副本（§1.4）。核实结果：
 
 - `rime/home` 仓库根目录**没有**通用 `LICENSE` 文件（`LICENSE.txt` /
   `LICENSE.md` / `COPYING` 均为 404）；
@@ -287,10 +296,14 @@ calc_oracle --test number_oracle` 验证）。
   其适用范围未在任何地方说明，**不能据此断定覆盖 wiki 内容**；
 - 两个 wiki 页面本身**没有署名、没有许可声明**。
 
-**因此：许可状态 UNVERIFIED。** 在取得明确许可之前，这两份文件的分发
-状态是**有疑义的**。可选处置（需项目所有者决定）：
-① 向 Rime 项目取得书面许可；② 改为本项目自行撰写的摘要/转述，
-只保留必要的短引用；③ 从仓库移除这两份文件。
+**处置**：许可状态为 **UNVERIFIED**，无法在"取得明确许可"与"自撰转述"之间
+迅速收口，故采用三种处置里最干净、可逆性最好的一种——**从工作区与全部 git
+历史中移除**（`git filter-repo --invert-paths`，随后强制推送）。
+上游 URL 与 revision 仍记录在 §1.4 与 §7，需要查阅时直接访问上游。
+
+**代价（如实记录）**：`reference/` 下自撰调研报告中**指向这两份副本的
+"见 wiki-*.md"式交叉引用**失去了本地落点；相关结论仍在报告中，但复核时需要
+按 §1.4 的 URL 自行取回上游页面。
 
 ### 5.4 待补：`probe.c` 文件头缺少 BSD-3-Clause 声明
 
@@ -352,13 +365,15 @@ emoji/others.txt           SAME   9595273a49139e1184bca0f1923660793b3873d7b4996d
 一个假值后运行，脚本以 **exit 1** 报"内容与锁文件不一致"并列出期望/实得值；
 恢复后 `bash tools/fetch-sources.sh` 以 **exit 0** 通过。
 
-### 6.3 核对两份 wiki 副本
+### 6.3 核对两份 wiki 副本（**副本已移除，方法保留**）
+
+这两份文件已于 2026-09-14 移除（§1.4 / §5.3），因此下面的 `diff` **现在没有
+本地对照物**。命令保留在此，是为了让"移除前它们确实与上游逐字节相同"这句话
+可以被重新走一遍——把左侧的 `curl` 结果存成本地文件即可：
 
 ```bash
-diff <(curl -fsSL https://raw.githubusercontent.com/wiki/rime/home/RimeWithTheDesign.md) \
-     reference/wiki-RimeWithTheDesign.md   # → 无输出（逐字节相同）
-diff <(curl -fsSL https://raw.githubusercontent.com/wiki/rime/home/SharedData.md) \
-     reference/wiki-SharedData.md          # → 无输出
+curl -fsSL https://raw.githubusercontent.com/wiki/rime/home/RimeWithTheDesign.md
+curl -fsSL https://raw.githubusercontent.com/wiki/rime/home/SharedData.md
 git ls-remote https://github.com/rime/home.wiki.git HEAD
 # → 5bfcf14a7ae127635dff9da1f133cae9a5319607
 ```
@@ -405,7 +420,7 @@ bash scripts/verify-deps.sh        # → 0 个 registry 依赖，全部有受审
 | OpenCC | <https://github.com/BYVoid/OpenCC> | `c363a7ba51d487950982bd8a589211ffbfd95ba1` |
 | rime-ice | <https://github.com/iDvel/rime-ice> | `859e3b5300e0ea01334a627b15db101e94312a75` |
 | librime | <https://github.com/rime/librime> | `2479df58cb51480299f94afe53d7b1790ecf0eb1` |
-| Rime 官方 wiki | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607` |
+| Rime 官方 wiki | <https://github.com/rime/home/wiki> | `5bfcf14a7ae127635dff9da1f133cae9a5319607`（仅上游引用；副本已移除，§1.4） |
 
 ---
 

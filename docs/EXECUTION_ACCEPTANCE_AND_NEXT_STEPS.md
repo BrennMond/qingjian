@@ -199,8 +199,11 @@ cargo test -p qingjian-schemes --test session_state_machine \
 
 ### 3.6 P2：许可待决项
 
-`reference/wiki-*.md` 的许可状态仍是 `UNVERIFIED`。不可把该项表述为已完成的
-许可证闭环。处置选择应是：取得许可、改为自撰摘要，或移除逐字副本。
+**✅ 已处置（2026-09-14）**：`reference/wiki-*.md` 的许可状态是 `UNVERIFIED`
+——**不得**把该项表述为已完成的许可证闭环。本项目选择了三种处置里的第三项：
+**移除逐字副本**。这两份文件已从工作区**与全部 git 历史**中删除，
+移除前的核实结果、代价与回溯用的上游 URL 记在
+`THIRD_PARTY_NOTICES.md` §1.4 / §5.3。
 
 ---
 
@@ -277,7 +280,7 @@ cargo test -p qingjian-schemes --test instance_dictionaries --offline --locked
 2. 正则 Pike VM / 自动机替换；
 3. arena 节点携带词典前缀状态的约束搜索；
 4. 全量词级读音数据源、许可证审查和质量评测；
-5. `reference/wiki-*.md` 的许可处置；
+5. ~~`reference/wiki-*.md` 的许可处置；~~ **已处置（2026-09-14）**：移除逐字副本（工作区与全部历史），见 `THIRD_PARTY_NOTICES.md` §1.4 / §5.3；
 6. recognizer 的三处与 librime 的语义分叉；
 7. `select` 切方案与 `send_sequence`；
 8. P5 更大、由所有者手写的收益对比集。

@@ -843,7 +843,7 @@ tools/oracle/<零件>/
 | --- | --- | --- |
 | **librime** | BSD-3-Clause | 引擎可放心参考（D4）；`tools/librime-probe/probe.c` 逐字段抄了其 ABI 声明，按 BSD-3-Clause 保留声明（见 `licenses/BSD-3-Clause-librime.txt`） |
 | **rime-ice 仓库** | **GPL-3.0-only** | 随项目分发其数据会触发传染。其 `opencc/emoji.*` 也在 GPL 之下（旧脚本误标为 Apache-2.0，已纠正）——本仓库**不分发**它们 |
-| **Rime 官方 wiki** | **未声明**（UNVERIFIED） | `reference/wiki-*.md` 是逐字副本；许可状态未确定，见 `THIRD_PARTY_NOTICES.md` §5.3 |
+| **Rime 官方 wiki** | **未声明**（UNVERIFIED） | 曾以逐字副本形式入库（`reference/wiki-*.md`）；因许可 UNVERIFIED，已于 2026-09-14 从工作区与历史移除，见 `THIRD_PARTY_NOTICES.md` §1.4 / §5.3 |
 | radical_pinyin（拆字） | GPL-3.0 | 不可随 MIT / Apache 项目分发 |
 | THUOCL、pinyin-data | MIT | 可分发（需署名） |
 | jieba（`extra_dict/dict.txt.big`） | MIT | 可分发（需署名） |
@@ -869,8 +869,10 @@ tools/oracle/<零件>/
    （Apache-2.0）生成；`pinyin.schema.yaml` 的 `speller.alphabet` 段同源。
 2. `tools/librime-probe/probe.c` —— 含逐字段抄自 librime（BSD-3-Clause）的
    结构体 / 宏声明。
-3. `reference/wiki-*.md` —— Rime 官方 wiki 两页的**逐字副本**，
-   **许可状态未确定**（`THIRD_PARTY_NOTICES.md` §5.3 已标为待决）。
+3. ~~`reference/wiki-*.md` —— Rime 官方 wiki 两页的**逐字副本**，
+   **许可状态未确定**（`THIRD_PARTY_NOTICES.md` §5.3 已标为待决）。~~
+   **已移除（2026-09-14）**：仓库公开后该项不能再挂起，已从工作区与全部
+   git 历史中删除（`THIRD_PARTY_NOTICES.md` §1.4 / §5.3）。
 4. `tools/oracle/*/*.expected.txt`、`tools/librime-probe/samples/*` ——
    上游程序跑出来的**输出记录**（数据 / 事实，不是上游源代码）。
 
