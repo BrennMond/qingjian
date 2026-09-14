@@ -275,6 +275,26 @@ calc_oracle --test number_oracle` 验证）。
 `git filter-repo --invert-paths` 从全部历史中清除**，并已强制推送到公开仓库；
 清除前做了完整备份（`git bundle --all`）。**该残留不再是待办项。**
 
+**该次整改漏掉了两个同族文件（2026-09-14 第二遍发现并处置）**：
+
+上面这句"整改完成"当时是**不完整**的。同一批上游 Lua 副本还有两个，
+住在 `crates/qingjian-engine/tests/oracle/`，**既被跟踪、也被分发**：
+`trace.lua`（1,605 B）与 `trace2.lua`（1,127 B）——它们是上游
+`lua/number_translator.lua` 里 `formatNum` / `number2cnChar` 的逐步跟踪副本，
+用途是"定位差异在哪一步"。它们**不被任何测试或脚本引用**，
+耐久的证据早已由 `tools/oracle/*/*.expected.txt` 与 `*_oracle.rs` 承担。
+
+**为什么第一遍漏了**：那次整改只扫了 `tools/oracle/`，而
+`verify-no-scheme-data.sh` 当时用的是**扩展名黑名单**
+（`*.yaml *.yml *.dict *.txt *.json`）——**里面没有 `.lua`**。于是同一门禁
+在另一处把 `.txt` 对照数据抓走（HANDOFF §5 第 25 条）却没有碰这两个文件，
+缝就留在这里。
+
+**第二遍处置**：① 移除这两个文件（工作区与全部 git 历史）；
+② 把该门禁从黑名单改成**白名单**——内核 crate 里只允许
+`*.rs` / `Cargo.toml` / `README.md`，其它一律报红，且已**双向反向验证**
+（放进 `.lua` 报红、放进 `.json` 报红、清掉后转绿）。
+
 ### 5.2 已修：`opencc.manifest.yaml` 的 emoji 许可曾标成 Apache-2.0
 
 位置：`schemes/qingjian-default/opencc.manifest.yaml`，

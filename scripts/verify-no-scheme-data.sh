@@ -10,15 +10,23 @@ status=0
 
 CORE_DIRS=("$ROOT/crates/qingjian-core" "$ROOT/crates/qingjian-engine")
 
-# ── 1) 内核 crate 的源码目录下不得有数据文件 ──────────────────────────
+# ── 1) 内核 crate 里只允许"源码 + 它的元数据"，其它一律拒绝 ──────────
+#
+# **为什么用白名单而不是黑名单**（2026-09-14 修正）：第一版列的是
+# yaml/yml/dict/txt/json 五种扩展名，于是
+# `crates/qingjian-engine/tests/oracle/*.lua`——上游 GPL-3.0 代码的副本，
+# 正是本门禁要拦的那类东西——从扩展名缝里漏了过去，一直存活到仓库公开
+# 之后才在别处被发现。**黑名单的失效方式是"漏"，白名单的失效方式是"吵"。**
+# 对一个"不许出错"的检查，只有后者是可接受的方向。
+ALLOWED_RE='(\.rs|/Cargo\.toml|/README\.md)$'
 for dir in "${CORE_DIRS[@]}"; do
   [ -d "$dir" ] || continue
-  hits="$(find "$dir" -type f \
-    \( -name '*.yaml' -o -name '*.yml' -o -name '*.dict' -o -name '*.txt' -o -name '*.json' \) \
-    2>/dev/null || true)"
+  hits="$(find "$dir" -type f -not -path '*/target/*' 2>/dev/null \
+    | grep -Ev "$ALLOWED_RE" || true)"
   if [ -n "$hits" ]; then
-    echo "✗ 内核 crate 里出现了数据文件："
+    echo "✗ 内核 crate 里出现了源码与元数据之外的文件（数据 / 脚本 / 上游副本）："
     echo "$hits"
+    echo "  处理：测试对照数据移到 tools/oracle/；方案数据放进 schemes/。"
     status=1
   fi
 done
