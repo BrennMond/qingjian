@@ -30,7 +30,7 @@ edition = "2021"
 # 用 std 的现成实现、把 MSRV 提上去，是这里代价最小的一步。
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/qingjian-ime"
+repository = "https://github.com/BrennMond/qingjian"
 authors = ["Qingjian contributors"]
 
 [workspace.lints.rust]
