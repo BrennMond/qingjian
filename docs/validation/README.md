@@ -76,7 +76,7 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | 1 | README 状态、测试数、功能边界更新 | `README.md` 已按阶段 1–4 的事实校正（删掉"不含第三方词典数据"、"完全兼容 Rime"等） | ✅ |
 | 2 | 删除或改正对 Rime 隐私/现代性的无证据推论 | `README.md` / `PLAN.md` / `docs/HANDOFF.md` 已删；改为审计 §3.1 的口径 | ✅ |
 | 3 | 默认词库明示实验性质和已知词级读音限制 | `schemes/qingjian-default/pinyin.dict.yaml` 与 `cn_dicts/word_pinyin.override.dict.yaml` 文件头，以及生成词库头部（写明"单字取首选读音、不做覆盖、落盘前自检"）都明示了；**覆盖表只修了枚举到的词**，表外的多音字词只能按单字首选读音拼——没有可分发的词级读音数据源（`phase-3-4.md` §5.4.2） | ⚠️ |
-| 4 | 第三方 notices、固定版本、哈希、许可证齐全 | `THIRD_PARTY_NOTICES.md`（400 行）、`tools/sources.lock`（16 条固定 revision + SHA-256）、`licenses/`；**`reference/wiki-*.md` 的许可 UNVERIFIED**（rime/home 无通用 LICENSE） | ⚠️ |
+| 4 | 第三方 notices、固定版本、哈希、许可证齐全 | `THIRD_PARTY_NOTICES.md`、`tools/sources.lock`（16 条固定 revision + SHA-256）、`licenses/`；~~`reference/wiki-*.md` 的许可 UNVERIFIED~~ **已处置（2026-09-14）**：逐字副本已从工作区与全部 git 历史移除（notices §1.4 / §5.3）——本行原来不能给 ✅ 的唯一原因就是这一项 | ✅ |
 | 5 | 隐私模型不把"没有联网代码"简化成完整隐私证明 | `docs/privacy-model.md` 专门分节区分"代码已核实"与"依赖前端/OS"；禁学 API 明确标注**尚未实现** | ✅ |
 
 ---
@@ -88,9 +88,16 @@ bash tools/fetch-sources.sh                        # 源数据固定 revision + 
 | 6.2 #3 会话状态机的**边界** | 阶段 2 任务包 F | 重开只有一条记录（无提交历史栈）、无"确认段"标记、候选只能覆盖"从头消费到 consumed"的 span |
 
 | 6.4 #3 | 词库质量 | 没有可分发的**词级拼音数据集**；覆盖表是人工枚举 |
-| 6.4 #4 | 许可 | `reference/wiki-*.md` 许可未定（三种处置待决） |
 
 **已消除项**（含本轮验收反馈的两处精度问题）：
+
+- **`reference/wiki-*.md` 的许可**（原 6.4 #4 / `phase-3-4.md` §5.5）——
+  **已处置（2026-09-14，仓库公开后）**：两份 Rime wiki 逐字副本的许可为
+  UNVERIFIED，按"移除逐字副本"处置，并**从全部 git 历史**中清除。
+  同一轮收尾复核又发现并清除了**两个此前漏检的上游 GPL Lua 副本**
+  （`crates/qingjian-engine/tests/oracle/trace{,2}.lua`，当时仍在分发），
+  漏检根因（门禁用扩展名黑名单、不含 `.lua`）与修补（改白名单 + 双向
+  反向验证）记在 `THIRD_PARTY_NOTICES.md` §5.1。原 ⚠️ 已不再成立。
 
 - `家 → jie`：生成器改为只取 `pinyin.txt` 的首选读音，并加落盘前
   「码 = 首选读音」自检；原先 `#[ignore]` 的集成验收测试已转正，
