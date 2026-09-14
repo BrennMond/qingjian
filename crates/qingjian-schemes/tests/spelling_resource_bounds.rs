@@ -28,10 +28,10 @@ use qingjian_engine::spelling::{ExpansionLimits, ExpansionStats, SpellingTable};
 /// 手写的小词典（见 `minimal.rs` 的模块文档）。因此这里测的是
 /// **真实的字母表规模**，却不必在测试里编译 41 万词条。
 ///
-/// "完全一致"不是注释里的自我声明：`the_embedded_demo_alphabet_matches_the_real_scheme`
-/// 会拿磁盘上的真实方案逐项对照。这条断言是必要的——真实方案的
-/// `speller.alphabet` 由 `tools/wordlist-gen` **整段重写**，一次重新生成
-/// （399 → 405 个音节）就足以让上面这句话变成假话。
+/// "完全一致"不是注释里的自我声明：`the_embedded_demo_speller_matches_the_real_scheme`
+/// 会拿磁盘上的真实方案逐项对照（**含顺序**，并比较 `rules`）。这条断言是必要的——
+/// 真实方案的 `speller.alphabet` 由 `tools/wordlist-gen` **整段重写**，一次重新
+/// 生成（399 → 405 个音节）就足以让上面这句话变成假话。
 fn real_pinyin_table() -> SpellingTable {
     let defs = qingjian_schemes::all().expect("内嵌方案必须能装载");
     let p = defs
@@ -285,67 +285,118 @@ fn release_single_key_expansion_is_under_ten_milliseconds() {
     }
 }
 
-/// 读出方案文件里 `speller.alphabet` 那一段的列表项。
+/// 取出 `speller:` 段里某个键（`alphabet:` / `rules:`）下面的正文，
+/// **保持文件顺序、不去重**，并去掉注释行与空行。
 ///
-/// 与 `tools/wordlist-gen::rewrite_alphabet` 认的是同一段结构：
-/// 一行 `  alphabet:`，后面跟着缩进更深的 `- 项`。
-fn alphabet_block(text: &str) -> Vec<String> {
+/// 返回的是**配置内容**：注释不参与比较（两份文件的注释可以各自演化），
+/// 但顺序、重复项、以及规则的写法都是配置的一部分，必须原样带出来。
+fn speller_block(text: &str, key: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
-    let start = lines
+    let speller = lines
         .iter()
-        .position(|l| l.trim_end() == "  alphabet:")
-        .expect("真实方案的 speller 段里必须有 `  alphabet:`");
+        .position(|l| l.trim_end() == "speller:")
+        .unwrap_or_else(|| panic!("方案里必须有 `speller:`"));
+    let key_line = format!("  {key}");
+    let at = lines[speller..]
+        .iter()
+        .position(|l| l.trim_end() == key_line)
+        .map_or_else(
+            || panic!("speller 段里必须有 `{key_line}`"),
+            |i| speller + i,
+        );
     let mut out = Vec::new();
-    for l in &lines[start + 1..] {
-        let indent = l.len() - l.trim_start().len();
-        let item = l.trim_start();
-        if item.starts_with("- ") && indent > 2 {
-            out.push(item[2..].trim().to_owned());
-        } else {
+    for l in &lines[at + 1..] {
+        let t = l.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // 缩进回到 speller 的子键层级（2 格）就说明这一段结束了。
+        if l.len() - l.trim_start().len() <= 2 {
             break;
         }
+        if t.starts_with('#') {
+            continue;
+        }
+        out.push(t.to_owned());
     }
     out
 }
 
-/// **内嵌演示孪生体的字母表必须与磁盘上的真实方案逐项一致。**
+/// **内嵌演示孪生体的 `speller` 段必须与磁盘上的真实方案完全一致。**
 ///
-/// 上面 [`real_pinyin_table`] 的整个前提就是这一条：它拿演示体测
-/// "真实规模"。而真实方案的 `speller.alphabet` 是 `tools/wordlist-gen`
-/// 生成并**整段重写**的——重新生成一次词库（本轮：399 → 405 个音节）
-/// 就会让演示体过期，症状是"测试还绿，但它测的已经不是真实规模了"。
-/// 所以这里把它变成一条会红的断言，而不是一句注释。
+/// 上面 [`real_pinyin_table`] 的整个前提就是这一条：它拿演示体测"真实规模"。
+/// 而真实方案的 `speller.alphabet` 是 `tools/wordlist-gen` 生成并**整段重写**
+/// 的——重新生成一次词库（本轮：399 → 405 个音节）就会让演示体过期，症状是
+/// "测试还绿，但测的已经不是真实规模了"。
+///
+/// # 为什么**不排序、不去重**
+///
+/// 这条测试的第一版对两边都做了 `sort()` + `dedup()`，于是它验证的只是
+/// **音节集合**相等：顺序不同、字母表里有重复项，它都看不出来——而注释里
+/// 写的是"逐项一致"。收窄承诺或加强检查，只能选一个；这里选后者：
+///
+/// 1. 有序比较两边的 `alphabet`（顺序是配置的一部分：单元的编号由它决定）；
+/// 2. 显式断言真实方案的字母表**没有重复项**（`dedup` 会把重复吃掉）；
+/// 3. **比较 `rules`**——原先只断言"非空"，那是"规则相同"最弱的替代品；
+/// 4. 再拿**解析出来的**演示体字母表与磁盘上的有序列表对照，确认
+///    [`real_pinyin_table`] 编译进拼写表的确实是这一份。
 #[test]
-fn the_embedded_demo_alphabet_matches_the_real_scheme() {
+fn the_embedded_demo_speller_matches_the_real_scheme() {
     let schemes_dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemes/qingjian-default");
     let real_text = std::fs::read_to_string(schemes_dir.join("pinyin.schema.yaml"))
         .expect("真实方案 pinyin.schema.yaml 必须在仓库里");
-    let mut real_units = alphabet_block(&real_text);
-    assert!(
-        real_units.len() >= 300,
-        "真实方案的字母表应当有几百个音节，实得 {}",
-        real_units.len()
-    );
-    real_units.sort();
-    real_units.dedup();
+    let demo_text = std::fs::read_to_string(schemes_dir.join("z-pinyin-demo.schema.yaml"))
+        .expect("内嵌孪生体 z-pinyin-demo.schema.yaml 必须在仓库里");
 
+    // ① 有序字母表，逐项比较。
+    let real_alphabet = speller_block(&real_text, "alphabet:");
+    let demo_alphabet = speller_block(&demo_text, "alphabet:");
+    assert!(
+        real_alphabet.len() >= 300,
+        "真实方案的字母表应当有几百个音节，实得 {}",
+        real_alphabet.len()
+    );
+    // ② 重复项：`dedup` 掉的正是这一类，所以单独断言。
+    let mut unique = real_alphabet.clone();
+    unique.sort();
+    let before = unique.len();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        before,
+        "真实方案的 `speller.alphabet` 里有重复项：同一个音节出现两次，会被编成两个编号。"
+    );
+    assert_eq!(
+        demo_alphabet, real_alphabet,
+        "内嵌 `z-pinyin-demo` 的 alphabet 与真实方案分叉（含顺序）；重新生成后必须同步 z-pinyin-demo.schema.yaml。"
+    );
+
+    // ③ 规则也必须一致：只查"非空"等于没查。
+    assert_eq!(
+        speller_block(&demo_text, "rules:"),
+        speller_block(&real_text, "rules:"),
+        "内嵌 `z-pinyin-demo` 的 rules 与真实方案分叉；两份是孪生体，规则必须一致。"
+    );
+
+    // ④ 演示体**编译进拼写表的**字母表就是上面那一份。
     let defs = qingjian_schemes::all().expect("内嵌方案必须能装载");
     let demo = defs
         .iter()
         .find(|d| d.translator == qingjian_engine::scheme::TranslatorKind::SpellingGraph)
         .expect("必须存在拼写图族方案（拼音）");
-    let mut demo_units = demo.alphabet.clone();
-    demo_units.sort();
-    demo_units.dedup();
-
+    // `speller_block` 带的是 YAML 列表项的原文（`- ai`），解析出来的是裸音节。
+    let real_items: Vec<String> = real_alphabet
+        .iter()
+        .map(|l| l.strip_prefix("- ").unwrap_or(l).trim().to_owned())
+        .collect();
     assert_eq!(
-        demo_units, real_units,
-        "内嵌的 `z-pinyin-demo` 与真实方案的字母表已经分叉。\
-         重新生成词库后必须同步 `schemes/qingjian-default/z-pinyin-demo.schema.yaml` \
-         的 `speller.alphabet`（两份必须逐项相同，见该文件头部的 ⚠️）。"
+        demo.alphabet, real_items,
+        "内嵌演示体解析出来的字母表与磁盘上的真实方案不一致——`real_pinyin_table()` 测的就不是真实规模了。"
     );
-
-    // 演示体自己也要能编译成拼写表——避免"字母表对但规则坏"。
-    assert!(!demo.rules.is_empty(), "拼音方案必须有拼写规则（缩写）");
+    // 演示体的规则同样要**真的编译出来**，而不只是文件里有那一行。
+    assert!(
+        !demo.rules.is_empty(),
+        "拼音方案必须有拼写规则（缩写）——文件里有、装配后为空也算坏"
+    );
 }

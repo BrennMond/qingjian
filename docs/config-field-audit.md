@@ -33,8 +33,8 @@
 
 | 字段 | 解析 | 装配 | 消费 | 端到端测试 | 不支持时 |
 | --- | --- | --- | --- | --- | --- |
-| `dictionary`（主实例） | `components.rs:715`（`read_translator` 读 `dictionary`） | `file.rs:511`（内联 / 部署）→ `SchemeDef.dictionary` | `scheme.rs:295` 造词库；`translator.rs` 查询 | 全部集成测试 | — |
-| `dictionary`（`@别名` 实例） | `components.rs:715`（`read_translator` 读实例块的 `dictionary`） | `file.rs:793-847`：按**与主词库完全相同**的策略造词库——内联 `load_with_imports`、部署 `deploy_dict`——存进 `SchemeDef.extra_lexicons`；`scheme.rs:311-328` 编译成 `LoadedScheme.extra_lexicons` | `scheme.rs:712` `lexicon_for(alias)` 按别名选词库；装配点在 `scheme.rs:1044`。别名没有独立词库时**落回主词库**（RIME 的默认行为） | `crates/qingjian-schemes/tests/instance_dictionaries.rs`（5 条：script / table 两族各用各的词库、无独立词库时回退主词库、声明了不再报"不支持"、装载失败被逐条报告） | ✅ 仅在**实例词库真的没造出来**时才出声：装载期 `file.rs:841-844` 收集诊断；`scheme.rs:403-411` 的 `check_translator_specs` 只在 `extra_lexicons` 里找不到该别名时报"会退回主词库" |
+| `dictionary`（主实例） | `components.rs:715`（`read_translator` 读 `dictionary`） | `file.rs:511`（内联 / 部署）→ `SchemeDef.dictionary` | `scheme.rs:303` 造词库；`translator.rs` 查询 | 全部集成测试 | — |
+| `dictionary`（`@别名` 实例） | `components.rs:715`（`read_translator` 读实例块的 `dictionary`） | `file.rs:793-847`：按**与主词库完全相同**的策略造词库——内联 `load_with_imports`、部署 `deploy_dict`——存进 `SchemeDef.extra_lexicons`；`scheme.rs:319-337` 编译成 `LoadedScheme.extra_lexicons` | `scheme.rs:720` `lexicon_for(alias)` 按别名选词库；装配点在 `scheme.rs:1052`。别名没有独立词库时**落回主词库**（RIME 的默认行为） | `crates/qingjian-schemes/tests/instance_dictionaries.rs`（5 条：script / table 两族各用各的词库、无独立词库时回退主词库、声明了不再报"不支持"、装载失败被逐条报告） | ✅ 仅在**实例词库真的没造出来**时才出声：装载期 `file.rs:841-844` 收集诊断；`scheme.rs:411-419` 的 `check_translator_specs` 只在 `extra_lexicons` 里找不到该别名时报"会退回主词库" |
 | `enable_completion` / `enable_word_completion` | `components.rs:719-720` | `scheme.rs` 两条装配路径都读 | `translator.rs` 的 `completion` 分支 | `config_field_audit.rs::completion_reaches_both_translator_families` | — |
 | `enable_sentence` | `components.rs:721` | 存进 spec | **拼音族不看**（上游同款）；**码表族未实现** | `config_field_audit.rs::a_missing_feature_is_reported_not_silently_ignored` | ✅ **降级诊断** |
 | `initial_quality` | `components.rs:722` | `scheme.rs` 两条路径都 `.with_initial_quality(...)` | `translator.rs` 加对数域常数 | `initial_quality_actually_changes_the_scores`、`..._is_per_translator_instance_not_global` | — |
@@ -51,17 +51,34 @@
 实例词库早已被装载、编译、按别名选用。错误的那一行已按实际实现改写——
 "一条与事实相反的记录，比没有记录更糟"。
 
-顺带把这一节所有**行号**核对了一遍（解析点漂移会让"解析位置"这条链名存实亡）：
+顺带把这一节所有**行号**核对了一遍（解析点漂移会让"解析位置"这条链名存实亡）。
+**行号是最脆的东西，这一轮就漂了两次**，两次都记在这里：
 
-| 字段 | 旧行号 | 实际 |
+| 字段 | 原始表写的 | 现在（已更正） |
 | --- | --- | --- |
-| `read_translator` 的 `dictionary` | `705` | `715` |
-| `enable_word_completion` / `enable_completion` | `709-710` | `719-720` |
-| `enable_sentence` | `711` | `721` |
-| `initial_quality` | `712` | `722` |
-| `punctuator` | `583` | `154` |
-| `reverse_lookup_filter` | `578` | `584` |
-| 主词库物化点 | `scheme.rs:285` | `scheme.rs:295` |
+| `read_translator` 的 `dictionary` | `components.rs:705` | `components.rs:715` |
+| `enable_word_completion` / `enable_completion` | `components.rs:709-710` | `components.rs:719-720` |
+| `enable_sentence` | `components.rs:711` | `components.rs:721` |
+| `initial_quality` | `components.rs:712` | `components.rs:722` |
+| `punctuator` | `components.rs:583` | `components.rs:154` |
+| `reverse_lookup_filter` | `components.rs:578` | `components.rs:584` |
+| 主词库物化点 | `scheme.rs:285` | `scheme.rs:303` |
+| 实例词库编译 | （原表无此行） | `scheme.rs:319-337` |
+| `lexicon_for` | （原表无此行） | `scheme.rs:720` |
+| 实例词库消费点 | （原表无此行） | `scheme.rs:1052` |
+| `check_translator_specs` 的词库分支 | （原表无此行） | `scheme.rs:411-419` |
+
+两次漂移的原因是同一类事，值得记下来：
+
+1. `components.rs` 的 `read_translator` 相关字段整体下移（本轮第一次核对）；
+2. 第一次核对**之后**、同一轮里，给 `qingjian-engine/src/scheme.rs` 的
+   `entry()` 换了一段会编译的文档示例（原先是一段 ` ```ignore `、内容不是
+   合法 Rust）——那个文件里**本节引用的每一行都整体 +8**，于是 `scheme.rs`
+   的四行在第一次核对过的当轮就再次过期。
+
+所以 §6 的维护规则里加了第 4 条，并且有一条**会变红的**守卫测试
+（`config_field_audit.rs::the_line_references_in_the_audit_table_still_point_at_their_fields`）：
+它把这张表里写的 `文件:行号` 钉在该行的内容上，代码一挪就报错。
 
 ### 这四条里有两处是本次修复的
 
@@ -142,3 +159,7 @@
 2. 删掉一个消费点时，`config_field_audit.rs::the_audited_field_list_is_covered_by_this_file`
    会提醒你回来改这张表。
 3. 这张表的"消费"列必须指向**真实文件**，不是"应该在某处"。
+4. **行号会漂**：改了 `components.rs` / `file.rs` / `scheme.rs`，回来核对本表
+   的行号。这不是靠自觉——`config_field_audit.rs::the_line_references_in_the_audit_table_still_point_at_their_fields`
+   把表里写的 `文件:行号` 钉在那一行必须包含的内容上，位置一挪测试就红。
+   （本轮之前它已经悄悄漂过两次。）

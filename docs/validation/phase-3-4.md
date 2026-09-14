@@ -284,7 +284,8 @@ sha256 校验通过），再重新生成；词库正文 414,525 条与 YAML 头�
 | `tools/librime-probe/probe.c` 文件头 | 缺 BSD-3-Clause 随附声明（notices §1.4 已指向 licenses/） |
 | 已提交的 `generated.dict.yaml` 头部 | ~~把 jieba 标成 THUOCL~~ **已消除**：本轮重新生成后头部写的是 `jieba_dict.txt（jieba，MIT）` |
 | `opencc.manifest.yaml` 的 emoji 许可 | ~~标成 Apache-2.0~~ **已消除**：现为 `GPL-3.0-only`（notices §5.2 已同步） |
-| `scheme::entry` 的文档示例 | ~~` ```ignore ` 且不是合法 Rust~~ **已消除**：改成会编译会跑的例子，`--include-ignored` 下也过 |
+| `scheme::entry` 的文档示例 | ~~` ```ignore ` 且不是合法 Rust~~ **已消除**：改成会编译会跑的例子，`--include-ignored` 下也过。**代价记一笔**：这次改动让 `docs/config-field-audit.md` 引用的 `scheme.rs` 行号整体 +8（已更正，并由 `config_field_audit.rs` 的守卫测试看住——见 `validation/README.md` 反馈 ②） |
+| 字母表/规则孪生体测试的承诺 | ~~`sort()`+`dedup()` 只验集合、`rules` 只验非空~~ **已消除**：改为有序逐项比较 + 无重复项断言 + `rules` 正文比较 + 解析结果对照，四条都用破坏测试验证过（`validation/README.md` 反馈 ①） |
 | git 历史 | 仍含被移除的 GPL Lua 旧版本（历史改写不在本次范围） |
 | 会话分段 / 重开（阶段 2 的 F） | **部分完成**：余码保留与标点语义已交付并有测试；逐段确认、重开、任意 span 未做。见 `docs/validation/phase-2.md` §8 |
 | 正则引擎的自动机替换 | 只有缓解 + 设计，见 `docs/regex-engine-design.md` |

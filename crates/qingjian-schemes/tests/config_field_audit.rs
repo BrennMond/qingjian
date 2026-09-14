@@ -322,3 +322,171 @@ fn the_audited_field_list_is_covered_by_this_file() {
     // 翻译器族分类必须与实现一致（`enable_sentence` 只属于码表族）。
     assert_ne!(TranslatorKind::SpellingGraph, TranslatorKind::ExactCode);
 }
+
+/// 审计表里的一行：`(行首前缀, 这一行必须带上的 `文件:行号` 坐标)`。
+type RowSpec = (&'static str, &'static [&'static str]);
+
+/// 审计表里的一张表：`(表头行, 要核对的行)`。
+type TableSpec = (&'static str, &'static [RowSpec]);
+
+/// **审计表里写的 `文件:行号` 不能悄悄漂走。**
+///
+/// `docs/config-field-audit.md` 用 `文件:行号` 标出"解析 / 装配 / 消费"在哪。
+/// 那些行号**已经漂过两次**（`components.rs` 的 `read_translator` 字段整体
+/// 下移；`scheme.rs` 因为换了一段会编译的文档示例整体 +8），而且漂了不会让
+/// 任何测试变红——只有人肉眼核对才发现。
+///
+/// 这条守卫查两头，缺一不可：
+///
+/// 1. **文档**：表里**每一行**都必须自己带上正确的坐标。不能只查
+///    "文档里出现过这个坐标"——`components.rs:715` 这种坐标在表里出现两次，
+///    随便哪一行留着它都会让弱断言通过（第一版就是这么写的，破坏测试证明
+///    它抓不住"把某一行的行号改错"）。
+/// 2. **代码**：那个坐标指的**那一行**必须仍然包含它该有的片段。
+///    这一头抓的是"代码挪了、文档没跟"。
+///
+/// 失败时要做的事只有一件：把 `docs/config-field-audit.md` 的行号（以及
+/// 下面这两张表）改到正确位置——两边必须一致，这正是本测试要的。
+#[test]
+fn the_line_references_in_the_audit_table_still_point_at_their_fields() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let doc_path = root.join("docs/config-field-audit.md");
+    let doc = std::fs::read_to_string(&doc_path)
+        .unwrap_or_else(|e| panic!("读不了 {}：{e}", doc_path.display()));
+
+    // ① 文档侧：先按**表头**定位到那张表，再在表内按行查。
+    //
+    // 不能全文 `find`：§2 里那张"行号漂移记录"表也留着旧行号，全文查找会先
+    // 命中它——第一版就是这么写的，破坏测试证明它抓不住 §3 里 `punctuator`
+    // 那一行被改错（记录表在前，恰好替它"顶了包"）。
+    let tables: &[TableSpec] = &[
+        (
+            "| 字段 | 解析 | 装配 | 消费 | 端到端测试 | 不支持时 |",
+            &[
+                (
+                    "| `dictionary`（主实例） |",
+                    &["components.rs:715", "file.rs:511", "scheme.rs:303"],
+                ),
+                (
+                    "| `dictionary`（`@别名` 实例） |",
+                    &[
+                        "components.rs:715",
+                        "file.rs:793-847",
+                        "file.rs:841-844",
+                        "scheme.rs:319-337",
+                        "scheme.rs:720",
+                        "scheme.rs:1052",
+                        "scheme.rs:411-419",
+                    ],
+                ),
+                (
+                    "| `enable_completion` / `enable_word_completion` |",
+                    &["components.rs:719-720"],
+                ),
+                ("| `enable_sentence` |", &["components.rs:721"]),
+                ("| `initial_quality` |", &["components.rs:722"]),
+            ],
+        ),
+        (
+            "| 字段 | 解析 | 装配 | 消费 | 测试 | 备注 |",
+            &[
+                ("| `speller.rules` / `algebra` |", &["file.rs:408"]),
+                ("| `punctuator` |", &["components.rs:154"]),
+                ("| `reverse_lookup_filter@别名` |", &["components.rs:584"]),
+            ],
+        ),
+    ];
+    for (header, rows) in tables {
+        let start = doc
+            .find(header)
+            .unwrap_or_else(|| panic!("审计表里找不到这张表的表头：`{header}`"));
+        // 跳过表头与 `| --- |` 分隔行，取到表体结束。
+        let body: Vec<&str> = doc[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .collect();
+        for (row_prefix, refs) in *rows {
+            let row = body
+                .iter()
+                .find(|l| l.starts_with(row_prefix))
+                .unwrap_or_else(|| {
+                    panic!("表 `{header}` 里找不到这一行（`{row_prefix}`）：表和守卫必须一起改")
+                });
+            for reference in *refs {
+                assert!(
+                    row.contains(reference),
+                    "审计表的这一行里没有 `{reference}`（或行号被改错了）：\n  {row}"
+                );
+            }
+        }
+    }
+
+    // ② 代码侧：坐标指的那一行必须仍然包含它该有的片段。
+    // (相对仓库根的路径, 行号, 该行必须包含的片段)
+    let anchors: &[(&str, usize, &str)] = &[
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            154,
+            "fn read_punctuator",
+        ),
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            584,
+            "fn read_reverse_lookup",
+        ),
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            715,
+            "dictionary: node.get",
+        ),
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            719,
+            "enable_word_completion",
+        ),
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            721,
+            "enable_sentence",
+        ),
+        (
+            "crates/qingjian-schemes/src/components.rs",
+            722,
+            "initial_quality",
+        ),
+        ("crates/qingjian-schemes/src/file.rs", 408, "rules_node"),
+        ("crates/qingjian-schemes/src/file.rs", 511, "deploy_dict"),
+        ("crates/qingjian-schemes/src/file.rs", 793, "extra_lexicons"),
+        ("crates/qingjian-schemes/src/file.rs", 841, "match loaded"),
+        ("crates/qingjian-engine/src/scheme.rs", 303, "let lexicon"),
+        (
+            "crates/qingjian-engine/src/scheme.rs",
+            319,
+            "extra_lexicons",
+        ),
+        (
+            "crates/qingjian-engine/src/scheme.rs",
+            411,
+            "alias.is_empty()",
+        ),
+        (
+            "crates/qingjian-engine/src/scheme.rs",
+            720,
+            "fn lexicon_for",
+        ),
+        ("crates/qingjian-engine/src/scheme.rs", 1052, "lexicon_for"),
+    ];
+    for (rel, line, needle) in anchors {
+        let text =
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("读不了 {rel}：{e}"));
+        let got = text.lines().nth(line - 1).unwrap_or("");
+        assert!(
+            got.contains(needle),
+            "`{}:{line}` 漂了：那一行现在是 `{got}`，期望它包含 `{needle}`。\
+             请把 {} 里的行号改到正确位置。",
+            rel.rsplit('/').next().unwrap_or(rel),
+            doc_path.display()
+        );
+    }
+}
